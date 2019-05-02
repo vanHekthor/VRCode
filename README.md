@@ -1,7 +1,8 @@
 # VR-VIS THESIS 2018/19
 
-A virtual reality application to explore and analyze software systems  
+A virtual reality framework to explore and analyze software systems  
 using available performance, feature and control flow data.  
+Please refer to the publication for detailed information.  
 
 
 <br/>
@@ -55,13 +56,12 @@ The currently supported XML structure looks like the following:
 | name | string | The name of this option.<br/>Can consist of letters, numbers and only **_** as a special character.
 | outputString | string | How this option should be shown/named in the application.
 | parent | string | The name of the parent option or empty to use "root".
-| impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option `<option>B | C | D</option>` to A.
-| excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If only one of them can be selected at a time, add the excluded option `B | C | D` to A.
+| impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option "<option>B | C | D</option>" to A.
+| excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>Entries like "A | B | C" will be split up and added as single entries.
 | optional | boolean | **(BIN. OPTIONS ONLY)** Tells of this option is **optional** to be selected **mandatory**.
 | minValue | float | **(NUM. OPTIONS ONLY)** Minimum value a numeric option can take.
 | maxValue | float | **(NUM. OPTIONS ONLY)** Maximum value a numeric option can take.
 | stepFunction | string | **(NUM. OPTIONS ONLY)** Tells how to continue starting from "minValue" until "maxValue" is reached ("n" can be placed and represents this numeric option value)
-
 
 ## Option Groups
 
@@ -69,7 +69,7 @@ There are **two types** of option groups supported.
 
 #### OR-GROUP
 
-"OR" represents a group of options where at least one of them has to be selected.  
+`OR` represents a group of options where **at least one** of them has to be selected.  
 They will be represented by `<impliedOptions>` in the XML document.  
 Such a group exists, if:  
 - all involved options share the same parent option, and  
@@ -77,8 +77,8 @@ Such a group exists, if:
 
 #### ALTERNATIVE-GROUP (ALT-GROUP)
 
-"ALT" represents a group of alternative options where only one of them can be selected at a time.  
+`ALT` represents a group of alternative options where **exactly one** of them can be selected at a time (`xor`).  
 They will be represented by `<excludedOptions>` in the XML document.  
 Such a group exists, if:  
 - all involved options share the same parent option, and  
-- according entries in `excludedOptions` exist.  
+- all involved options exclude each other through according entries in `excludedOptions`.  
