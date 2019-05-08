@@ -4,7 +4,7 @@ A virtual reality framework to explore and analyze software systems
 using available performance, feature model, and control flow data.  
 Please refer to the publication for more detailed information.  
 
-Specifications in form of README files can be found in the according folder.
+Specifications in form of README files can be found in [this repository](vrvis-thesis-docs).
 
 
 # Installation
