@@ -1,84 +1,54 @@
 # VR-VIS THESIS 2018/19
 
 A virtual reality framework to explore and analyze software systems  
-using available performance, feature and control flow data.  
-Please refer to the publication for detailed information.  
+using available performance, feature model, and control flow data.  
+Please refer to the publication for more detailed information.  
+
+Specifications in form of README files can be found in the according folder.
 
 
-<br/>
+# Installation
 
-# Feature Model Definitions
+## Required Software
 
-The support of the feature model is based on [SPL Conqueror](https://github.com/se-passau/SPLConqueror).  
+The following software must be installed.  
+
+Software | Tested Version
+---- | ----
+[SteamVR](https://store.steampowered.com/app/250820/SteamVR) | 1.3.22, 1.4.1
+[Unity](https://unity3d.com/de/get-unity/download/archive) | 2018.2.10f1 with .NET 4.x enabled
+[SteamVR Plugin](https://assetstore.unity.com/packages/tools/integration/steamvr-plugin-32647) | 2.2.0
+[TextMeshPro Plugin](https://assetstore.unity.com/packages/essentials/beta-projects/textmesh-pro-84126) | 1.2.2
+
+Newer versions were not tested.  
+Therefore, we cannot guarantee that they work.  
+
+## Preparation
+
+After installing SteamVR and Unity, start Unity and install the two aforementioned plugins using the [Asset Store](https://docs.unity3d.com/Manual/AssetStore.html).  
+Most important is, that you are able to use the components of the SteamVR Plugin (e.g. Window -> SteamVR Input).  
+If this works, you can open the project of this repository with Unity.  
+Make sure the scene "Assets/Scenes/ExampleScene_Catena.unity" or any of the scenes located in the "Assets/Scenes/tasks" folder is loaded that supports VR.  
+Also ensure that SteamVR is up and running.  
+Sometimes, you have to be logged into your Steam account for full functionality!  
+You can try to run the application and see if basic things like the controllers work.  
+In case they don't, exit the application, open "Window -> SteamVR Input" and open the "bindings menu".  
+The default bindings must be loaded.  
+Using it as a base, edit it and in case you see a warning for an unassigned button (Trackpad), add it accordingly under the default tab.  
+Apply the binding, close the bindings menu and inside the "SteamVR Input" menu that you have opened previously, click at "Save and generate".  
+Try running the application again.  
+
+Further information with possible troubleshooting will be added here in a while.  
 
 
-## XML Structure
+## No VR
+(Limited functionality, for testing purposes only!)
 
-The currently supported XML structure looks like the following:  
-
-```xml
-<vm name="model name">
-	<binaryOptions>
-		<configurationOption>
-			<name>Option_Name</name>
-			<outputString>My Option Name</outputString>
-			<parent/>
-			<impliedOptions>
-				<option>Implied_Option_Name</option>
-				<option>Op1 | Op2 | Op3</option>
-			</impliedOptions>
-			<excludedOptions>
-				<option>Excluded_Option_Name</option>
-				<option>Op4 | Op5 | Op6</option>
-			</excludedOptions>
-			<optional>True</optional>
-		</configurationOption>
-	</binaryOptions>
-	<numericOptions>
-		<configurationOption>
-			<name>Numeric_Option_Name</name>
-			<outputString>My Numeric Option Name</outputString>
-			<parent>Option_Name</parent>
-			<impliedOptions/>
-			<excludedOptions/>
-			<minValue>0.1</minValue>
-			<maxValue>0.4</maxValue>
-			<stepFunction>n * 2</stepFunction>
-		</configurationOption>
-	</numericOptions>
-</vm>
-```
-
-#### XML-Element Information
-
-| XML-Element | Type | Description
-| ---- | ---- | ----
-| name | string | The name of this option.<br/>Can consist of letters, numbers and only **_** as a special character.
-| outputString | string | How this option should be shown/named in the application.
-| parent | string | The name of the parent option or empty to use "root".
-| impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option "<option>B | C | D</option>" to A.
-| excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>Entries like "A | B | C" will be split up and added as single entries.
-| optional | boolean | **(BIN. OPTIONS ONLY)** Tells of this option is **optional** to be selected **mandatory**.
-| minValue | float | **(NUM. OPTIONS ONLY)** Minimum value a numeric option can take.
-| maxValue | float | **(NUM. OPTIONS ONLY)** Maximum value a numeric option can take.
-| stepFunction | string | **(NUM. OPTIONS ONLY)** Tells how to continue starting from "minValue" until "maxValue" is reached ("n" can be placed and represents this numeric option value)
-
-## Option Groups
-
-There are **two types** of option groups supported.  
-
-#### OR-GROUP
-
-`OR` represents a group of options where **at least one** of them has to be selected.  
-They will be represented by `<impliedOptions>` in the XML document.  
-Such a group exists, if:  
-- all involved options share the same parent option, and  
-- the according entry in `impliedOptions` exists.  
-
-#### ALTERNATIVE-GROUP (ALT-GROUP)
-
-`ALT` represents a group of alternative options where **exactly one** of them can be selected at a time (`xor`).  
-They will be represented by `<excludedOptions>` in the XML document.  
-Such a group exists, if:  
-- all involved options share the same parent option, and  
-- all involved options exclude each other through according entries in `excludedOptions`.  
+Previous steps are still required (installing and preparing Unity).  
+In case you do not have a VR setup available, open the scene under "Assets/Scenes/ExampleScene_Catena_NoVR.unity".  
+Press the "Play" button and you should be able to move around using your keyboard and mouse.  
+Keyboard "W, S, A and D" control the direction.  
+Holding "SHIFT" pressed will let you fly faster.  
+Move the mouse while holding the button pressed to look around.  
+You can interact with basic things, spawn files and close them using the "Mouse Wheel Button".  
+GUI elements can be used as well but the VR tools (controllers) are not available in this mode.  
