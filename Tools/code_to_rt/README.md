@@ -22,6 +22,12 @@ python main.py
 -c "schema/color1.json"
 ```
 
+To retrieve detailed information of how to run the script, use:  
+```
+python3 main.py -h
+```
+
+
 The exported file will have the same name but a different extension.  
 For the previous command, the output file would be `Main.java.rt`.  
 With `rt` as a shortcut for `Rich Text`.  
@@ -94,4 +100,4 @@ vertices (char * 4): 36248
 ## ToDo
 
 - [X] Export result to file
-- [ ] Export whole program code (currently only one file)
+- [X] Export whole program code (currently only one file)
