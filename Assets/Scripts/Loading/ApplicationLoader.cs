@@ -49,6 +49,8 @@ namespace VRVis.IO {
         public DEFAULT_PATH usePath = DEFAULT_PATH.INPUT;
         public string example_folder = "example_8_04022019";
 
+        public SpawnerEntry[] spawners;
+
 
         // --------------------------------------------------------------------
         // Loaders to get resources from disk, required for visualizations.
@@ -279,9 +281,12 @@ namespace VRVis.IO {
         // --------------------------------------------------------------------
         // New spawner management. A spawner equals a visualization.
 
+        [System.Serializable]
         public class SpawnerEntry {
 
             public ASpawner spawner;
+            public string name;
+
         }
         
 
