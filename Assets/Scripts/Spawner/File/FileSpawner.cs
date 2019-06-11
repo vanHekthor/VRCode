@@ -230,7 +230,7 @@ namespace VRVis.Spawner {
             }
 
             // get according and required code file instance
-            CodeFile file = ApplicationLoader.GetInstance().GetStructureLoader().GetFileByFullPath(fileNode.GetFullPath());
+            CodeFile file = fileNode.GetCodeFile();
             if (file == null) {
                 Debug.LogError("Failed to get CodeFile instance for file: " + fileNode.GetFullPath());
                 return null;
