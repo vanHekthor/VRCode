@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner.Structure;
 
@@ -11,7 +12,7 @@ namespace VRVis.Spawner {
     /// This is the second version using the same concept as the variability model spawner.
     /// </summary>
     [System.Serializable]
-    public class StructureSpawnerV2 : MonoBehaviour {
+    public class StructureSpawnerV2 : ASpawner {
     
         // prefabs for folders and files
         public GameObject folderPrefab;
@@ -94,6 +95,27 @@ namespace VRVis.Spawner {
 
         /// <summary>Get the angle in radians.</summary>
         private float DegreeToRadians(float degree) { return Utilities.Utility.DegreeToRadians(degree); }
+
+
+        /// <summary>Prepares and spawns the visualization.</summary>
+        public override bool SpawnVisualization() {
+
+            StructureLoader sl = ApplicationLoader.GetInstance().GetStructureLoader();
+
+            if (!sl.LoadedSuccessful()) {
+                Debug.LogWarning("Failed to spawn structure! Loading was not successful.");
+                return false;
+            }
+
+            // set root node and spawn the structure
+            SetRootNode(sl.GetRootNode());
+            bool success = SpawnStructure();
+
+            if (!success) { Debug.LogWarning("Failed to spawn software structure v2."); }
+            else { Debug.Log("Software structure v2 successfully spawned."); }
+
+            return success;
+        }
 
 
         /// <summary>Spawn the software system structure.</summary>

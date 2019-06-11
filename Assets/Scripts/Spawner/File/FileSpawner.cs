@@ -16,7 +16,7 @@ namespace VRVis.Spawner {
     /// which show the content of a code file.<para/>
     /// There can only be one instance of this class!
     /// </summary>
-    public class FileSpawner : MonoBehaviour {
+    public class FileSpawner : ASpawner {
 
         private static FileSpawner INSTANCE;
 

@@ -21,7 +21,7 @@ namespace VRVis.Spawner {
     /// The CodeFile itself does not do this job because it is not attached to any GameObject<para/>
     /// and thus, it does not derive from the MonoBehaviour class and can not spawn new GameObjects.
     /// </summary>
-    public class RegionSpawner : MonoBehaviour {
+    public class RegionSpawner : ASpawner {
 
         private static readonly bool LOGGING = false;
         private static RegionSpawner INSTANCE;

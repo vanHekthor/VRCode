@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using VRVis.Effects;
+using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.Spawner.ConfigModel;
 
@@ -11,7 +12,7 @@ namespace VRVis.Spawner {
     /// Spawns the variability model in 3D space.<para/>
     /// To be more precise, it spawns the option hierarchy tree in space.
     /// </summary>
-    public class VariabilityModelSpawner : MonoBehaviour {
+    public class VariabilityModelSpawner : ASpawner {
 
         public GameObject binaryOptionPrefab;
         public GameObject numericOptionPrefab;
@@ -81,6 +82,26 @@ namespace VRVis.Spawner {
                 Gizmos.DrawWireSphere(origin, minimumRadius <= 0 ? 1 : minimumRadius);
                 Gizmos.DrawLine(origin, origin + hierarchyParent.rotation * Vector3.left);
             }
+        }
+
+
+        /// <summary>Prepares and spawns the visualization.</summary>
+        public override bool SpawnVisualization() {
+
+            VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
+
+            if (!vml.LoadedSuccessful()) {
+                Debug.LogWarning("Failed to spawn variability model! Loading was not successful.");
+                return false;
+            }
+
+            // try to spawn the model
+            bool success = Spawn(vml.GetModel());
+
+            if (!success) { Debug.LogWarning("Failed to spawn variability model."); }
+            else { Debug.Log("Variability model successfully spawned."); }
+
+            return success;
         }
 
 

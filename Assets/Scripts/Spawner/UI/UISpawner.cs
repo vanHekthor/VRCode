@@ -15,7 +15,7 @@ namespace VRVis.Spawner {
     /// once the application finished loading.<para/>
     /// Used and called by the ApplicationLoader class so attach it to the same GameObject.
     /// </summary>
-    public class UISpawner : MonoBehaviour {
+    public class UISpawner : ASpawner {
 
         [Tooltip("Name of this spawner to identify it")]
         public string spawnerName = "MySpawner";

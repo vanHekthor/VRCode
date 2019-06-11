@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using VRVis.Effects;
+using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner.Structure;
 
@@ -13,7 +14,7 @@ namespace VRVis.Spawner {
     /// care of spawning the software system structure in space.
     /// </summary>
     [System.Serializable]
-    public class StructureSpawner : MonoBehaviour {
+    public class StructureSpawner : ASpawner {
 
         public enum LayoutDirection { LEFT, RIGHT };
         public LayoutDirection layoutDirection = LayoutDirection.RIGHT;
@@ -65,6 +66,27 @@ namespace VRVis.Spawner {
             Gizmos.color = Color.red;
             Gizmos.DrawWireSphere(origin, 0.1f);
             Gizmos.DrawLine(origin, origin + Quaternion.Euler(structureRootRotation) * Vector3.left);
+        }
+
+
+        /// <summary>Prepares and spawns the visualization.</summary>
+        public override bool SpawnVisualization() {
+
+            StructureLoader sl = ApplicationLoader.GetInstance().GetStructureLoader();
+
+            if (!sl.LoadedSuccessful()) {
+                Debug.LogWarning("Failed to spawn structure! Loading was not successful.");
+                return false;
+            }
+
+            // set root node and spawn the structure
+            SetRootNode(sl.GetRootNode());
+            bool success = SpawnStructure();
+
+            if (!success) { Debug.LogWarning("Failed to spawn software structure v1."); }
+            else { Debug.Log("Software structure v1 successfully spawned."); }
+
+            return success;
         }
 
 

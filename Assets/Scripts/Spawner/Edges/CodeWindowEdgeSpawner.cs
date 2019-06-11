@@ -15,7 +15,7 @@ namespace VRVis.Spawner {
     /// There should only be one instance of this class!
     /// Ensure to check if this is the case, because the script currently does not prevent it.
     /// </summary>
-    public class CodeWindowEdgeSpawner : MonoBehaviour {
+    public class CodeWindowEdgeSpawner : ASpawner {
 
         [Tooltip("The edge representing GameObject with the LineRenderer component")]
 	    public GameObject edgeConnectionPrefab;

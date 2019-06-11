@@ -415,7 +415,7 @@ namespace VRVis.Interaction.Controller {
                 // define spawn position and spawn code window
                 Vector3 spawnPos = lastRayPoint + fileSpawnOffset;
                 //CodeFile file = ApplicationLoader.GetInstance().fileSpawner.SpawnFile(selectedNode, spawnPos, Quaternion.identity);
-                CodeFile file = ApplicationLoader.GetInstance().fileSpawner.SpawnFile(selectedNode, spawnPos, placementObject.transform.rotation);
+                CodeFile file = ApplicationLoader.GetInstance().GetFileSpawner().SpawnFile(selectedNode, spawnPos, placementObject.transform.rotation);
 
                 if (file == null) {
                     Debug.LogWarning("Spawning file failed (" + selectedNode.GetName() + ")!");

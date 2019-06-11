@@ -254,7 +254,9 @@ namespace VRVis.Interaction.Controller {
 
                 // try to delete the code window
                 if (isCodeWindow) {
+
                     Debug.LogWarning("Deleting a code window...");
+
                     if (!ApplicationLoader.GetInstance().GetFileSpawner().DeleteFileWindow(fileRefs.GetCodeFile())) {
                         Debug.LogWarning("Failed to delete code window!", go);
                     }
@@ -262,6 +264,7 @@ namespace VRVis.Interaction.Controller {
                         deleted++;
                         yield return new WaitForSecondsRealtime(waitAfterCodeWindowDeleted);
                     }
+
                     continue;
                 }
 

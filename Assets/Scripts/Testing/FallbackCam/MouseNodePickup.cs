@@ -105,7 +105,7 @@ namespace VRVis.Fallback {
 
                     // spawn the code window
                     Debug.Log("Spawning code window at position: " + spawnPos);
-                    ApplicationLoader.GetInstance().fileSpawner.SpawnFile(attachedNode, spawnPos + Vector3.up * 0.5f, spawnRot);
+                    ApplicationLoader.GetInstance().GetFileSpawner().SpawnFile(attachedNode, spawnPos + Vector3.up * 0.5f, spawnRot);
 
                     // cleanup
                     Destroy(placeHolderInstance);
