@@ -304,7 +304,9 @@ namespace VRVis.IO {
 
                     // create node instance
                     SNode fileNode = new SNode(relativePath, fullPath, name, SNode.DNodeTYPE.FILE);
-                    files.Add(fullPath, new CodeFile(fileNode)); // CREATE CODE FILE INSTANCE (! IMPORTANT STEP !)
+                    CodeFile codeFile = new CodeFile(fileNode);
+                    fileNode.SetCodeFile(codeFile); // back reference to node
+                    files.Add(fullPath, codeFile); // CREATE CODE FILE INSTANCE (! IMPORTANT STEP !)
                     filesFullPath.Add(relativePath, fullPath);
                     node.AddNode(fileNode);
                     filesTotal++;

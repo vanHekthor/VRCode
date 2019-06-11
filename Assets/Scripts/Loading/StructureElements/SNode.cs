@@ -19,6 +19,7 @@ namespace VRVis.IO.Structure {
         private readonly string name;
         private readonly DNodeTYPE nodeType = DNodeTYPE.UNKNOWN;
         private List<SNode> nodes = new List<SNode>();
+        private CodeFile codeFile;
 
         public SNode(string path, string fullPath, string name, DNodeTYPE nodeType) {
             this.path = Utility.GetFormattedPath(path);
@@ -45,6 +46,10 @@ namespace VRVis.IO.Structure {
 
         /// <summary>Add a child node.</summary>
         public void AddNode(SNode node) { nodes.Add(node); }
+
+        /// <summary>Get the code file regarding this node.</summary>
+        public CodeFile GetCodeFile() { return codeFile; }
+        public void SetCodeFile(CodeFile cf) { codeFile = cf; }
 
     }
 }
