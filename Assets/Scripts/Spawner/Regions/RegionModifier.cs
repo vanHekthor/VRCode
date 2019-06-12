@@ -20,7 +20,8 @@ namespace VRVis.Spawner.Regions {
     /// </summary>
     public class RegionModifier {
 
-	    private readonly CodeFile codeFile;
+	    private readonly CodeFile file;
+        private readonly RegionSpawner regionSpawner;
         //private readonly VisualPropertiesLoader visPropLoader;
 
         // heightmap scale from and to
@@ -30,8 +31,10 @@ namespace VRVis.Spawner.Regions {
 
         // CONSTRUCTOR
 
-        public RegionModifier(CodeFile codeFile) {
-            this.codeFile = codeFile;
+        public RegionModifier(CodeFile codeFile, RegionSpawner regionSpawner) {
+            
+            this.file = codeFile;
+            this.regionSpawner = regionSpawner;
 
             //visPropLoader = ApplicationLoader.GetInstance().GetVisualPropertiesLoader();
             //if (visPropLoader == null) {
@@ -57,10 +60,10 @@ namespace VRVis.Spawner.Regions {
                     // update heightmap labels according to which min/max values are currently used as reference
                     UpdateHeightmapLabels();
 
-                    codeFile.GetSpawnedRegions(ARProperty.TYPE.NFP).ForEach(region => ApplyRegionValues_NFP(region));
+                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.NFP).ForEach(region => ApplyRegionValues_NFP(region));
                 }
                 else if (type == ARProperty.TYPE.FEATURE) {
-                    codeFile.GetSpawnedRegions(ARProperty.TYPE.FEATURE).ForEach(region => ApplyRegionValues_Features(region));
+                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.FEATURE).ForEach(region => ApplyRegionValues_Features(region));
                 }
                 else {
                     // ... more ...
@@ -401,7 +404,7 @@ namespace VRVis.Spawner.Regions {
         /// <param name="setInvalid">Mark label values as invalid using "/"</param>
         private void UpdateHeightmapLabels(bool setInvalid = false) {
 
-            if (!codeFile.GetReferences().GetHeightmap().activeInHierarchy) { return; }
+            if (!file.GetReferences().GetHeightmap().activeInHierarchy) { return; }
 
             // get the name of the currently selected non functional property
             string nfpName = ApplicationLoader.GetApplicationSettings().GetSelectedNFP().ToLower();
@@ -416,7 +419,7 @@ namespace VRVis.Spawner.Regions {
             // get currently relevant min/max values
             //AColorMethod colMethod = setting.GetColorMethod(ApplicationSettings.NFP_VIS.HEIGHTMAP); // ToDo: cleanup
             //MinMaxValue minMax = GetMinMaxValues(nfpName, codeFile, colMethod.GetRange()); // ToDo: cleanup
-            MinMaxValue minMax = GetMinMaxValues(nfpName, codeFile, setting.GetMinMaxValue(), true);
+            MinMaxValue minMax = GetMinMaxValues(nfpName, file, setting.GetMinMaxValue(), true);
             string minStr = "/", maxStr = "/";
             if (minMax != null) {
                 minStr = minMax.GetMinValue().ToString();
@@ -431,8 +434,8 @@ namespace VRVis.Spawner.Regions {
 
             // try to update the heightmap labels
             //Debug.Log("Updating heightmap labels of: " + codeFile.GetNode().GetName(), codeFile.GetReferences().gameObject);
-            codeFile.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
-            codeFile.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
+            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
+            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
         }
 
 

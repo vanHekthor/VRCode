@@ -49,6 +49,7 @@ namespace VRVis.IO {
         public DEFAULT_PATH usePath = DEFAULT_PATH.INPUT;
         public string example_folder = "example_8_04022019";
 
+        [Tooltip("A list of public registered spawners. Do not add \"sub-spawners\" to it.")]
         public SpawnerEntry[] spawners;
 
 
@@ -165,11 +166,14 @@ namespace VRVis.IO {
         private void Start() {
 
             // Execute spawners that should run on startup.
+            foreach (SpawnerEntry e in spawners) {
+                if (!e.executeOnStartup || e.spawner == null) { continue; }
+                Debug.Log("Executing spawner: " + e.name);
+                e.spawner.SpawnVisualization();
+            }
 
-            // TODO!
 
-
-            // TODO: remove and run through execute spawners (see above)
+            // TODO: see if we can get this running with the same system as above?
             // prepare user interface
             UISpawner[] uiSpawner = GetComponents<UISpawner>();
             foreach (UISpawner spawner in uiSpawner) { spawner.InitialSpawn(this); }
@@ -210,10 +214,25 @@ namespace VRVis.IO {
         
         // SPAWNER
 
-        // TODO: remove the spawner methods, replace their functionality and fix code sections that use these methods!
-        public FileSpawner GetFileSpawner() { return null; }
-        public CodeWindowEdgeSpawner GetEdgeSpawner() { return null; }
+        /// <summary>
+        /// Returns the according spawner when the name is given or null.<para/>
+        /// The name wont be modified so that the case matters!<para/>
+        /// Only spawner names listed in the component are supported.
+        /// </summary>
+        public ASpawner GetSpawner(string name) {
 
+            ASpawner applies = null;
+
+            foreach (SpawnerEntry e in spawners) {
+                if (!e.name.Equals(name)) { continue; }
+                applies = e.spawner;
+                break;
+            }
+
+            return applies;
+        }
+
+        // ToDo: see if we can get this running with the same system as for the other spawners
         public UISpawner[] GetAttachedUISpawners() { return GetComponents<UISpawner>(); }
 
 
@@ -286,6 +305,7 @@ namespace VRVis.IO {
 
             public ASpawner spawner;
             public string name;
+            public bool executeOnStartup = false;
 
         }
         

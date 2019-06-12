@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using TMPro;
@@ -8,6 +9,7 @@ using VRVis.IO.Structure;
 using VRVis.RegionProperties;
 using VRVis.Settings;
 using VRVis.Spawner.File;
+using VRVis.Spawner.Regions;
 
 namespace VRVis.Spawner {
 
@@ -16,6 +18,8 @@ namespace VRVis.Spawner {
     /// which show the content of a code file.<para/>
     /// There can only be one instance of this class!
     /// </summary>
+    [RequireComponent(typeof(RegionSpawner))]
+    [RequireComponent(typeof(CodeWindowEdgeSpawner))]
     public class FileSpawner : ASpawner {
 
         private static FileSpawner INSTANCE;
@@ -29,8 +33,11 @@ namespace VRVis.Spawner {
         [Tooltip("Prefab with TextMeshPro component and content size fitter")]
         public GameObject textPrefab;
 
-        //[Tooltip("Due to TextMeshPro, it is sometimes necessary to try again adding the regions")]
-        //public int addFileRegionTriesMax = 5;
+        [Tooltip("Instance of the according region spawner")]
+        public RegionSpawner regionSpawner;
+
+        [Tooltip("Instance of the according edge spawner")]
+        public CodeWindowEdgeSpawner edgeSpawner;
 
         // after how many characters we have to split up the text
         // and add the rest to another text element
@@ -38,12 +45,20 @@ namespace VRVis.Spawner {
         public int LIMIT_CHARACTERS_PER_TEXT = 10000;
 
         private Dictionary<string, CodeFile> spawnedFiles = new Dictionary<string, CodeFile>();
-        private CodeFile currentFile;
         private bool scrollbarDisabled = false;
-        private int fileSpawningStep = 0;
+        
+        // information required during spawn procedure
+        private bool spawning = false; // tells if there is currently a file to be spawned
+        private CodeFile spawn_file;
+        private SNode spawn_node;
+        private Vector3 spawn_position;
+        private Quaternion spawn_rotation;
+        private GameObject spawn_window;
+
 
         // will be notified about code window related events if attached to the same object
-        private CodeWindowEdgeSpawner cwEdgeSpawner;
+        //private CodeWindowEdgeSpawner cwEdgeSpawner;
+        // ToDo: cleanup
 
 
         // "Constructor"
@@ -60,11 +75,17 @@ namespace VRVis.Spawner {
                 Debug.LogError("Missing code window prefab!");
             }
 
+            // ToDo: cleanup?
+            /*
             cwEdgeSpawner = GetComponent<CodeWindowEdgeSpawner>();
             if (!cwEdgeSpawner) { cwEdgeSpawner = ApplicationLoader.GetInstance().GetEdgeSpawner(); }
             if (cwEdgeSpawner) {
                 Debug.Log("CodeWindowEdgeSpawner script found!\nNotification about code window related events enabled.");
             }
+            */
+
+            if (!edgeSpawner) { Debug.LogError("Missing edge spawner!"); }
+            if (!regionSpawner) { Debug.LogError("Missing region spawner!"); }
         }
 
 
@@ -96,121 +117,46 @@ namespace VRVis.Spawner {
 
         // FUNCTIONALITY
 
-        /**
-         * Adding regions is done here because the required
-         * text information is not available right after spawning the element.
-         */
         void Update() {
 
             if (scrollbarDisabled) {
                 scrollbarDisabled = false;
 
                 // enable scroll rect to fix the scroll bar bug
-                if (currentFile.GetReferences().GetScrollRect()) {
-                    currentFile.GetReferences().GetScrollRect().enabled = true;
+                if (spawn_file.GetReferences().GetScrollRect()) {
+                    spawn_file.GetReferences().GetScrollRect().enabled = true;
                 }
             }
 
         }
 
-        /** Called after all Update functions are called. */
-        void LateUpdate() {
+
+        // numbers behind name must not be given explicitly if order is not relevant
+        public new enum SpawnerList {
+            RegionSpawner = 0,
+            EdgeSpawner = 1
+        }
+
+        /// <summary>Returns the according spawner or null if invalid.</summary>
+        public override ASpawner GetSpawner(uint spawner) {
             
-            // last step of the file spawning process is to notify the code file itself about it
-            if (fileSpawningStep > 0) {
-
-                // wait a bit so that the text mesh is aligned
-                // (one iteration should be sufficient but we use more than one to ensure)
-                if (fileSpawningStep > 2) {
-                    currentFile.JustSpawnedEvent(cwEdgeSpawner);
-                    fileSpawningStep = 0;
-                }
-                else {
-                    fileSpawningStep++;
-                }
+            switch (spawner) {
+                case (uint) SpawnerList.EdgeSpawner: return edgeSpawner;
+                case (uint) SpawnerList.RegionSpawner: return regionSpawner;
             }
 
-        }
-
-        /// <summary>Refresh all the spawned regions of the given type for all spawned files.</summary>
-        public void RefreshSpawnedFileRegions(ARProperty.TYPE propType) {
-        
-            bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
-
-            foreach (CodeFile file in GetSpawnedFiles()) {
-
-                // false (default - hides height map) means code marking
-                // true means height map visualization (show height map)
-                file.ToggleHeightMap(heightMapVisible);
-
-                // refresh the NFP region visualization
-                file.RefreshRegions(propType, true);
-            }
-        }
-
-        /// <summary>
-        /// Refresh represented values of the spawned regions for all spawned files.
-        /// (basically re-apply the visual properties)
-        /// </summary>
-        public void RefreshSpawnedFileRegionValues(ARProperty.TYPE propType) {
-            foreach (CodeFile file in GetSpawnedFiles()) {
-                file.RefreshRegionValues(propType);
-            }
-        }
-
-
-        /// <summary>
-        /// Removes all regions of the property type from spawned file windows
-        /// using the cleanup method of the RegionSpawner class.
-        /// </summary>
-        public void RemoveSpawnedFileRegions(ARProperty.TYPE propType) {
-
-            foreach (CodeFile file in GetSpawnedFiles()) {
-                
-                switch(propType) {
-                    case ARProperty.TYPE.NFP: RegionSpawner.CleanupNFPRegions(file); break;
-                    case ARProperty.TYPE.FEATURE: RegionSpawner.CleanupFeatureRegions(file); break;
-                }
-            }
-        }
-
-
-        /// <summary>Delete the current code window representing this file.</summary>
-        public bool DeleteFileWindow(CodeFile codeFile) {
-
-            if (codeFile == null) { return false; }
-
-            if (!IsFileSpawned(codeFile.GetNode().GetFullPath())) {
-                Debug.LogError("Tried to delete a file that is not spawned yet!");
-                return false;
-            }
-
-            if (!codeFile.IsCodeWindowExisting()) {
-                Debug.LogError("Code window references missing!");
-                return false;
-            }
-
-            // notify edge spawner to take care of removing edges
-            Debug.Log("Deleting code window of file: " + codeFile.GetNode().GetName());
-            if (cwEdgeSpawner) { cwEdgeSpawner.CodeWindowRemovedEvent(codeFile); }
-
-            // unregister the file from "spawned" list
-            spawnedFiles.Remove(codeFile.GetNode().GetFullPath());
-
-            // destroy code file references
-            Destroy(codeFile.GetReferences().gameObject);
-            codeFile.SetReferences(null);
-            return true;
+            return null;
         }
 
 
         /// <summary>
         /// Spawn a code window showing the file content.<para/>
         /// A file is unique and can not be spawned multiple times.<para/>
-        /// Returns the code window CodeFile or null on errors.<para/>
-        /// Returns null if already spawned.
+        /// Calls the callback method/action and passes the CodeFile instance on success or null otherwise!
+        /// The boolean parameter tells about the success so that no "null"-check is required.
+        /// The string parameter of the callback function includes a failure message.
         /// </summary>
-        public CodeFile SpawnFile(SNode fileNode, Vector3 position, Quaternion rotation) {
+        public void SpawnFile(SNode fileNode, Vector3 position, Quaternion rotation, Action<bool, CodeFile, string> callback) {
 
             // DONE: Spawn the game object (from prefab) of the code window
             // DONE: Attach a new instance of the "SpawnedFileInfo" script
@@ -219,41 +165,97 @@ namespace VRVis.Spawner {
             // DONE: Spawn the file regions for the current selection
             // DONE: Color the file regions according to their visual attributes
 
-            if (fileSpawningStep != 0) {
-                Debug.Log("Currently spawning a file...");
+            if (spawning) {
+                callback(false, null, "Currently spawning a file...");
+                return;
             }
 
             // prevent spawning the same file multiple times
             if (IsFileSpawned(fileNode.GetFullPath())) {
-                Debug.LogWarning("File already spawned: " + fileNode.GetName());
-                return null;
+                callback(false, null, "File already spawned: " + fileNode.GetName());
+                return;
             }
 
             // get according and required code file instance
-            CodeFile file = fileNode.GetCodeFile();
-            if (file == null) {
-                Debug.LogError("Failed to get CodeFile instance for file: " + fileNode.GetFullPath());
-                return null;
+            CodeFile codeFile = fileNode.GetCodeFile();
+            if (codeFile == null) {
+                callback(false, null, "Failed to get CodeFile instance for file: " + fileNode.GetFullPath());
+                return;
             }
+
+            // assign required information
+            spawn_file = codeFile;
+            spawn_node = fileNode;
+            spawn_position = position;
+            spawn_rotation = rotation;
+            spawning = true;
+
+            // start the spawn coroutine
+            StartCoroutine(SpawnCoroutine(callback));
+        }
+
+
+        /// <summary>
+        /// The spawning procedure consists of multiple steps.<para/>
+        /// This is due to the time it takes to align the UI components.<para/>
+        /// So we have to wait until alignment is finished.
+        /// </summary>
+        IEnumerator SpawnCoroutine(Action<bool, CodeFile, string> callback) {
+
+            for (uint i = 0; i < 3; i++) {
+                
+                switch(i) {
+
+                    case 0: 
+                        string failure = SpawnCodeWindow();
+                        if (failure != null) {
+                            Debug.LogError("Spawn step " + i + " failure!");
+                            callback(false, null, failure);
+                            spawning = false;
+                            yield break;
+                        }
+                        break;
+
+                    case 1:
+                        string msg = SpawnRegions();
+                        if (msg != null) { Debug.LogWarning(msg); }
+                        break;
+
+                    case 2:
+                        // notify edge spawner to take care of spawning node edges
+                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file); }
+                        break;
+                }
+
+                yield return null;
+            }
+
+            // when we arrive here, everything completed successful
+            Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
+            spawning = false;
+        }
+
+
+        /// <summary>
+        /// Spawns the code window.
+        /// Returns a failure message on failure or null otherwise.
+        /// </summary>
+        private string SpawnCodeWindow() {
 
             // instantiate a new game object and attach to parent
-            fileSpawningStep = 1;
-            GameObject newCodeWindow = Instantiate(codeWindowPrefab, position, rotation);
-            newCodeWindow.transform.SetParent(codeWindowParent, true);
+            spawn_window = Instantiate(codeWindowPrefab, spawn_position, spawn_rotation);
+            spawn_window.transform.SetParent(codeWindowParent, true);
 
             // use CodeFileReferences (should already be attached to the code window prefab)
-            CodeFileReferences fileRefs = newCodeWindow.GetComponent<CodeFileReferences>();
+            CodeFileReferences fileRefs = spawn_window.GetComponent<CodeFileReferences>();
             if (!fileRefs) {
-                Debug.LogError("Spawning file failed! Missing CodeFileReferences component!");
-                DestroyImmediate(newCodeWindow);
-                return null;
+                DestroyImmediate(spawn_window);
+                return "Spawning file failed! Missing CodeFileReferences component!";
             }
-
-            // store reference to the current file for later usage
-            // and set the reference to the CodeFileReferences instance
-            currentFile = file;
-            currentFile.SetReferences(fileRefs);
-            fileRefs.SetCodeFile(currentFile);
+            
+            // set the reference to the CodeFileReferences instance
+            spawn_file.SetReferences(fileRefs);
+            fileRefs.SetCodeFile(spawn_file);
 
             // disable and enable later in update to fix scroll bar bug
             scrollbarDisabled = false;
@@ -263,20 +265,53 @@ namespace VRVis.Spawner {
             }
 
             // load the actual file content
-            if (!LoadFileContent(fileNode, textPrefab)) {
-                Debug.LogError("Failed to load content of file: " + fileNode.GetFullPath());
-                currentFile.SetReferences(null);
-                DestroyImmediate(newCodeWindow);
-                return null;
+            if (!LoadFileContent(spawn_node, textPrefab)) {
+                spawn_file.SetReferences(null);
+                DestroyImmediate(spawn_window);
+                return "Failed to load content of file: " + spawn_node.GetFullPath();
             }
 
             // register this file as spawned using its full path as the key
-            spawnedFiles.Add(fileNode.GetFullPath(), currentFile);
-            return file;
+            spawnedFiles.Add(spawn_node.GetFullPath(), spawn_file);
+            return null;
         }
 
 
-        // ################# FILE CONTENT LOADING ################# //
+        /// <summary>
+        /// Takes care of spawning the code regions.<para/>
+        /// This includes creating the visualizations:<para/>
+        /// - nfp region marking<para/>
+        /// - nfp heightmap<para/>
+        /// - feature regions<para/>
+        /// Furthermore, according value mappings will be applied.<para/>
+        /// Returns a failure message or null on success.
+        /// </summary>
+        private string SpawnRegions() {
+
+            // add line numbers (use information from read content)
+            spawn_file.GetReferences().AddLineNumbers((uint) spawn_file.GetContentInfo().linesRead_total);
+
+            // try to get correct line information (height and so on)
+            spawn_file.UpdateLineInfo();
+
+            // enable or disable heightmap based on current application settings
+            bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
+            spawn_file.ToggleHeightMap(heightMapVisible);
+
+            // show/hide active feature visualization according to default state in app settings
+            spawn_file.ToggleActiveFeatureVis(ApplicationLoader.GetApplicationSettings().GetDefaultActiveFeatureVisState());
+
+            // spawn the regions using the RegionSpawner instance
+            if (!regionSpawner) { return "Missing RegionSpawner instance!"; }
+
+            regionSpawner.RefreshRegions(spawn_file, ARProperty.TYPE.NFP, false);
+            regionSpawner.RefreshRegions(spawn_file, ARProperty.TYPE.FEATURE, false);
+
+            // apply visual properties / region coloring and scaling accordingly
+            new RegionModifier(spawn_file, regionSpawner).ApplyRegionValues();
+            return null;
+        }
+
 
         /// <summary>
         /// Loads the highlighted source code from the file.<para/>
@@ -340,8 +375,8 @@ namespace VRVis.Spawner {
                 }
 
                 Debug.Log("Lines read: " + contentInfo.linesRead_total);
-                currentFile.GetReferences().SetLinesTotal(contentInfo.linesRead_total);
-                currentFile.SetContentInfo(contentInfo);
+                spawn_file.GetReferences().SetLinesTotal(contentInfo.linesRead_total);
+                spawn_file.SetContentInfo(contentInfo);
 
                 // save last instance if not done yet
                 if (!saved) {
@@ -353,19 +388,20 @@ namespace VRVis.Spawner {
             return true;
         }
 
-        /**
-         * Creates and returns a new text element using TextMeshPro.
-         */
+
+        /// <summary>
+        /// Creates and returns a new text element using TextMeshPro.
+        /// </summary>
         public GameObject CreateNewTextElement(string name) {
             GameObject text = Instantiate(textPrefab);
             text.name = name;
             return text;
         }
 
-        /**
-         * Save the current text object,
-         * adding its text and adding it to its parent transform.
-         */
+
+        /// <summary>
+        /// Save the current text object, adding its text and adding it to its parent transform.
+        /// </summary>
         void SaveTextObject(GameObject text, string sourceCode) {
 
             // DONE: spawn the TMP element and attach it to the text container
@@ -375,19 +411,91 @@ namespace VRVis.Spawner {
             TextMeshProUGUI tmpgui = text.GetComponent<TextMeshProUGUI>();
             if (tmpgui) {
                 tmpgui.SetText(sourceCode);
-                currentFile.GetReferences().AddTextElement(tmpgui.textInfo);
+                spawn_file.GetReferences().AddTextElement(tmpgui.textInfo);
                 tmpgui.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
             else {
                 TextMeshPro tmp = text.GetComponent<TextMeshPro>();
                 if (!tmp) { tmp = text.AddComponent<TextMeshPro>(); }
                 tmp.SetText(sourceCode);
-                currentFile.GetReferences().AddTextElement(tmp.textInfo);
+                spawn_file.GetReferences().AddTextElement(tmp.textInfo);
                 tmp.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
 
             // set the element parent without keeping world coordinates
-            text.transform.SetParent(currentFile.GetReferences().textContainer, false);
+            text.transform.SetParent(spawn_file.GetReferences().textContainer, false);
+        }
+
+
+        /// <summary>Refresh all the spawned regions of the given type for all spawned files.</summary>
+        public void RefreshSpawnedFileRegions(ARProperty.TYPE propType) {
+        
+            bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
+
+            foreach (CodeFile file in GetSpawnedFiles()) {
+
+                // false (default - hides height map) means code marking
+                // true means height map visualization (show height map)
+                file.ToggleHeightMap(heightMapVisible);
+
+                // refresh the NFP region visualization
+                regionSpawner.RefreshRegions(file, propType, true);
+            }
+        }
+
+        /// <summary>
+        /// Refresh represented values of the spawned regions for all spawned files.
+        /// (basically re-apply the visual properties)
+        /// </summary>
+        public void RefreshSpawnedFileRegionValues(ARProperty.TYPE propType) {
+            foreach (CodeFile file in GetSpawnedFiles()) {
+                regionSpawner.RefreshRegionValues(file, propType);
+            }
+        }
+
+
+        /// <summary>
+        /// Removes all regions of the property type from spawned file windows
+        /// using the cleanup method of the RegionSpawner class.
+        /// </summary>
+        public void RemoveSpawnedFileRegions(ARProperty.TYPE propType) {
+
+            foreach (CodeFile file in GetSpawnedFiles()) {
+                
+                switch(propType) {
+                    case ARProperty.TYPE.NFP: RegionSpawner.CleanupNFPRegions(file); break;
+                    case ARProperty.TYPE.FEATURE: RegionSpawner.CleanupFeatureRegions(file); break;
+                }
+            }
+        }
+
+
+        /// <summary>Delete the current code window representing this file.</summary>
+        public bool DeleteFileWindow(CodeFile codeFile) {
+
+            if (codeFile == null) { return false; }
+
+            if (!IsFileSpawned(codeFile.GetNode().GetFullPath())) {
+                Debug.LogError("Tried to delete a file that is not spawned yet!");
+                return false;
+            }
+
+            if (!codeFile.IsCodeWindowExisting()) {
+                Debug.LogError("Code window references missing!");
+                return false;
+            }
+
+            // notify edge spawner to take care of removing edges
+            Debug.Log("Deleting code window of file: " + codeFile.GetNode().GetName());
+            if (edgeSpawner) { edgeSpawner.CodeWindowRemovedEvent(codeFile); }
+
+            // unregister the file from "spawned" list
+            spawnedFiles.Remove(codeFile.GetNode().GetFullPath());
+
+            // destroy code file references
+            Destroy(codeFile.GetReferences().gameObject);
+            codeFile.SetReferences(null);
+            return true;
         }
 
     }

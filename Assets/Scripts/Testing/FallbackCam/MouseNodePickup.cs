@@ -4,6 +4,7 @@ using UnityEngine;
 using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.IO.Structure;
+using VRVis.Spawner;
 using VRVis.Spawner.ConfigModel;
 using VRVis.Spawner.File;
 using VRVis.Spawner.Structure;
@@ -104,8 +105,12 @@ namespace VRVis.Fallback {
                     spawnRot.x = spawnRot.z = 0;
 
                     // spawn the code window
+                    spawnPos += Vector3.up * 0.5f;
                     Debug.Log("Spawning code window at position: " + spawnPos);
-                    ApplicationLoader.GetInstance().GetFileSpawner().SpawnFile(attachedNode, spawnPos + Vector3.up * 0.5f, spawnRot);
+
+                    FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+                    if (fs) { fs.SpawnFile(attachedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
+                    else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
                     // cleanup
                     Destroy(placeHolderInstance);
@@ -116,7 +121,19 @@ namespace VRVis.Fallback {
                 buttonWasDown = false;
             }
 
-	    }
+	    } // Update() end
+
+
+        /// <summary>
+        /// Called after the window placement finished.
+        /// </summary>
+        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+
+            if (!success) {
+                Debug.LogError("Failed to place window (" + file.GetNode().GetName() + ")! " + msg);
+                return;
+            }
+        }
 
 
         /// <summary>
@@ -221,9 +238,11 @@ namespace VRVis.Fallback {
 
             // if found, delete the code window
             if (refs) {
+
                 Debug.LogWarning("Code window deletion request!");
-                if (ApplicationLoader.GetInstance().GetFileSpawner().DeleteFileWindow(refs.GetCodeFile()))
-                { Debug.LogWarning("File window removed!"); }
+
+                FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+                if (fs && fs.DeleteFileWindow(refs.GetCodeFile())) { Debug.LogWarning("File window removed!"); }
                 else { Debug.LogError("Failed to delete code window!"); }
                 return;
             }

@@ -7,6 +7,7 @@ using VRVis.Interaction.Controller.Mover;
 using VRVis.Interaction.ControllerSelectionSystem;
 using VRVis.IO;
 using VRVis.IO.Structure;
+using VRVis.Spawner;
 
 namespace VRVis.Interaction.Controller {
 
@@ -414,20 +415,11 @@ namespace VRVis.Interaction.Controller {
 
                 // define spawn position and spawn code window
                 Vector3 spawnPos = lastRayPoint + fileSpawnOffset;
-                //CodeFile file = ApplicationLoader.GetInstance().fileSpawner.SpawnFile(selectedNode, spawnPos, Quaternion.identity);
-                CodeFile file = ApplicationLoader.GetInstance().GetFileSpawner().SpawnFile(selectedNode, spawnPos, placementObject.transform.rotation);
-
-                if (file == null) {
-                    Debug.LogWarning("Spawning file failed (" + selectedNode.GetName() + ")!");
-                }
-                /*
-                else {
-
-                    // rotate window towards ray origin (currently until player can adjust rotation)
-                    Transform cwTransform = file.GetReferences().GetCodeWindow().transform;
-                    cwTransform.rotation = placementObject.transform.rotation;
-                }
-                */
+                Quaternion spawnRot = placementObject.transform.rotation; // Quaternion.identity
+                
+                FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+                if (fs) { fs.SpawnFile(selectedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
+                else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
                 // code window has been placed
                 NodePlacedEvent();
@@ -435,6 +427,18 @@ namespace VRVis.Interaction.Controller {
             }
             else if (TriggerButtonUp() && pressed) {
                 pressed = false;
+            }
+        }
+
+
+        /// <summary>
+        /// Called after the window placement finished.
+        /// </summary>
+        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+
+            if (!success) {
+                Debug.LogError("Failed to place window (" + file.GetNode().GetName() + ")! " + msg);
+                return;
             }
         }
 
@@ -450,6 +454,7 @@ namespace VRVis.Interaction.Controller {
             // make object look in direction of camera or apply rotation that user changed
             // (if user changed the rotation, keep it, otherwise rotate to the user)
             if (!rotationModified) {
+
                 Vector3 v = rayOrigin.position - lastRayPoint;
                 v.x = v.z = 0;
                 selectedObject.transform.LookAt(rayOrigin.position - v);
@@ -458,6 +463,7 @@ namespace VRVis.Interaction.Controller {
 
             // check for button press
             if (TriggerButtonDown() && !pressed) {
+
                 pressed = true;
 
                 // switch controller back to laser

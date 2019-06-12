@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using VRVis.IO;
+using VRVis.Spawner;
 
 namespace VRVis.Tutorial {
 
@@ -40,6 +41,9 @@ namespace VRVis.Tutorial {
 
         private bool startedSpawning = false;
         private bool finished = false;
+
+        private bool windowSpawning = false;
+        private bool windowSpawned = false;
 
 
         void Start() {
@@ -100,10 +104,7 @@ namespace VRVis.Tutorial {
             foreach (CWEntry e in entries) {
 
                 // wait before spawning another window
-                if (winNo > 0) {
-                    yield return new WaitForSecondsRealtime(spawnTimeWindow);
-                }
-
+                if (winNo > 0) { yield return new WaitForSecondsRealtime(spawnTimeWindow); }
                 winNo++;
 
                 // validate path
@@ -122,13 +123,35 @@ namespace VRVis.Tutorial {
                 }
 
                 // spawn window
-                cf = loader.GetFileSpawner().SpawnFile(cf.GetNode(), e.position, Quaternion.Euler(e.rotation + windowRotationOffset));
-                if (cf == null) { Debug.LogError("Failed to spawn code window " + winNo); continue; }
-                spawned++;
+                windowSpawning = true;
+                Quaternion spawnRot = Quaternion.Euler(e.rotation + windowRotationOffset);
+
+                FileSpawner fs = (FileSpawner) loader.GetSpawner("FileSpawner");
+                if (fs) { fs.SpawnFile(cf.GetNode(), e.position, spawnRot, WindowSpawnedCallback); }
+                else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
+                
+                // wait until spawning is finished
+                yield return new WaitUntil(() => windowSpawning == false);
+                if (windowSpawned) { spawned++; }
             }
             
             Debug.Log("Finished spawning " + spawned + "/" + entries.Length + " code windows.");
             finished = true;
+        }
+
+
+        /// <summary>
+        /// Called after the window placement finished.
+        /// </summary>
+        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+
+            windowSpawned = success;
+            windowSpawning = false;
+
+            if (!success) {
+                Debug.LogError("Failed to place window (" + file.GetNode().GetName() + ")! " + msg);
+                return;
+            }
         }
 
 

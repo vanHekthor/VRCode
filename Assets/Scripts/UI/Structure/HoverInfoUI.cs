@@ -7,6 +7,7 @@ using Valve.VR.InteractionSystem;
 using VRVis.Elements;
 using VRVis.IO;
 using VRVis.IO.Structure;
+using VRVis.Spawner;
 using VRVis.Spawner.Structure;
 
 namespace VRVis.UI {
@@ -116,8 +117,9 @@ namespace VRVis.UI {
             if (n.GetNodeType() == SNode.DNodeTYPE.FILE) {
 
                 // spawned information
-                if (loader.GetFileSpawner() != null) {
-                    bool spawned = loader.GetFileSpawner().IsFileSpawned(n.GetFullPath());
+                FileSpawner fs = (FileSpawner) loader.GetSpawner("FileSpawner");
+                if (fs != null) {
+                    bool spawned = fs.IsFileSpawned(n.GetFullPath());
                     additionalInfo.Append("- Spawned: ");
                     additionalInfo.Append(spawned ? "<b><color=#92d992>yes</color></b>" : "no");
                     additionalInfo.Append("\n");

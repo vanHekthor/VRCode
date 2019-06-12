@@ -311,7 +311,8 @@ namespace VRVis.Settings {
             activeFeatureVisVisible = visible;
 
             // update all spawned code files accordingly
-            FileSpawner fs = ApplicationLoader.GetInstance().GetFileSpawner();
+            FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            if (!fs) { return; }
             foreach (CodeFile spawned in fs.GetSpawnedFiles()) {
                 spawned.ToggleActiveFeatureVis(activeFeatureVisVisible);
             }
@@ -327,8 +328,10 @@ namespace VRVis.Settings {
         /// </summary>
         private void ActiveEdgeTypesChanged() {
 
-            CodeWindowEdgeSpawner eSpawner = ApplicationLoader.GetInstance().GetEdgeSpawner();
-            if (eSpawner == null) { return; }
+            FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            if (!fs) { return; }
+            CodeWindowEdgeSpawner eSpawner = (CodeWindowEdgeSpawner) fs.GetSpawner((uint) FileSpawner.SpawnerList.EdgeSpawner);
+            if (!eSpawner) { return; }
 
             uint edgesAdded = 0;
             uint edgesRemoved = 0;

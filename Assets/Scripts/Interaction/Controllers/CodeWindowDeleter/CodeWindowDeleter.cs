@@ -4,6 +4,7 @@ using UnityEngine;
 using Valve.VR;
 using Valve.VR.InteractionSystem;
 using VRVis.IO;
+using VRVis.Spawner;
 using VRVis.Spawner.File;
 
 namespace VRVis.Interaction.Controller {
@@ -257,7 +258,8 @@ namespace VRVis.Interaction.Controller {
 
                     Debug.LogWarning("Deleting a code window...");
 
-                    if (!ApplicationLoader.GetInstance().GetFileSpawner().DeleteFileWindow(fileRefs.GetCodeFile())) {
+                    FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+                    if (!fs || !fs.DeleteFileWindow(fileRefs.GetCodeFile())) {
                         Debug.LogWarning("Failed to delete code window!", go);
                     }
                     else {
