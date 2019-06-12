@@ -231,8 +231,9 @@ namespace VRVis.Spawner {
             }
 
             // when we arrive here, everything completed successful
-            Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
             spawning = false;
+            Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
+            callback(true, spawn_file, "");
         }
 
 
