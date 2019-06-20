@@ -31,7 +31,7 @@ namespace VRVis.UI.Terminal {
         private Transform grabbed;
 
         private bool wasRotating = false;
-        private static uint queueCapacity = 5;
+        private static readonly uint queueCapacity = 5;
         private Queue<float> lastRotAngleQueue = new Queue<float>((int) queueCapacity);
         private Vector3 prevDirection = Vector3.zero;
         private bool prevDirSet = false;
