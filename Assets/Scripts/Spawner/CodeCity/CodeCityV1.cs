@@ -48,6 +48,14 @@ namespace VRVis.Spawner {
 
             public float GetWidth() { return size.x; }
             public float GetLength() { return size.y; }
+
+            public Vector3 GetUnityPos() {
+                return new Vector3(
+                    pos.x + size.x * 0.5f,
+                    0,
+                    pos.y + size.y * 0.5f
+                );
+            }
         }
 
         private PNode pTreeRoot = null;
@@ -136,11 +144,11 @@ namespace VRVis.Spawner {
             // check if is leaf or not
             if (node.GetNodesCount() <= 0) { // this is a leaf node
 
-                Vector2 size = GetNodeSize(node);
+                Vector2 size = new Vector2(100, 100); //GetNodeSize(node);
 
                 PNode leaf = new PNode(Vector2.zero, size, node) {
                     isLeave = true,
-                    height = 5
+                    height = GetLOC(node.GetFullPath()) / 100f
                 };
 
                 // ToDo: set height of leave nodes accordingly!
@@ -269,6 +277,7 @@ namespace VRVis.Spawner {
                     target.left = el;
                     target.right = new PNode(
                         target.pos + new Vector2(0, el.GetLength()),
+                        //new Vector2(0, el.GetLength()),
                         new Vector2(target.GetWidth(), sdiff.y),
                         null
                     );
@@ -285,6 +294,7 @@ namespace VRVis.Spawner {
                     // add a new node that holds the element and introduces a free node
                     if (sdiff.y > 0) {
                         thisTarget = new PNode(target.pos, new Vector2(target.GetWidth(), el.GetLength()), null);
+                        //thisTarget = new PNode(Vector2.zero, new Vector2(target.GetWidth(), el.GetLength()), null);
                         target.left = thisTarget;
                     }
 
@@ -292,6 +302,7 @@ namespace VRVis.Spawner {
                     thisTarget.left = el;
                     thisTarget.right = new PNode(
                         thisTarget.pos + new Vector2(el.GetWidth(), 0),
+                        //new Vector2(el.GetWidth(), 0),
                         new Vector2(sdiff.x, thisTarget.GetLength()),
                         null
                     );
@@ -302,6 +313,7 @@ namespace VRVis.Spawner {
                 emptyNodes.Remove(target);
             }
 
+            root.size = bounds;
             return root;
         }
 
@@ -433,23 +445,23 @@ namespace VRVis.Spawner {
 
             if (node.isGround || node.isLeave) {
 
-                float div = 10000f;
+                float div = 1000f;  
+                float height = 0.01f;
+                parentPosWorld += new Vector3(node.pos.x / div * 0.5f, height, node.pos.y / div * 0.5f); // * 0.5 important!
                 
-                float height = 0.1f;
                 if (node.isLeave) { height = node.height / 10f; }
-                parentPosWorld += new Vector3(node.pos.x / div, height, node.pos.y / div);
-                Debug.Log("PWP: " + parentPosWorld);
-
-                GameObject cube = Instantiate(cubePrefab, parentPosWorld, Quaternion.identity);
-                cube.name = node.corNode.GetName();
 
                 // ToDo: improve
                 Vector3 size = new Vector3(
-                    node.GetWidth() / div,
+                    node.GetWidth() / div / 2,
                     height,
-                    node.GetLength() / div
+                    node.GetLength() / div / 2
                 );
 
+                // cubePos corrects position of block
+                Vector3 cubePos = parentPosWorld + new Vector3(size.x, height, size.z) * 0.5f;
+                GameObject cube = Instantiate(cubePrefab, cubePos, Quaternion.identity);
+                cube.name = node.corNode.GetName();
                 cube.transform.localScale = size;
                 cube.transform.SetParent(trans, true);
 
@@ -459,8 +471,6 @@ namespace VRVis.Spawner {
                     if (cube.GetComponent<Renderer>()) {
                         cube.GetComponent<Renderer>().material.color = Color.red;
                     }
-
-                    return;
                 }
 
                 trans = cube.transform;
