@@ -72,7 +72,8 @@ namespace VRVis.IO {
         /// <summary>
         /// Get all regions that belong to a file.<para/>
         /// If a file is unknown or has no regions,
-        /// an empty list will be returned.
+        /// an empty list will be returned.<para/>
+        /// Uses the relative path of a file!
         /// </summary>
         public List<Region> GetFileRegions(string file) {
 

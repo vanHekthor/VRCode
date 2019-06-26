@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -13,6 +14,13 @@ namespace VRVis.Spawner {
         public GameObject cubePrefab;
         public GameObject spherePrefab;
         public bool PRINT_DEBUG = true;
+        public bool addSpaceAndMargin = true;
+        public Vector2 citySize = new Vector2(10, 10);
+        public Vector2 space = new Vector2(10, 10);
+
+        // ToDo: fix, is weird if numbers are way higher!
+        public Vector2 spaceGround = new Vector2(10, 10);
+        public float groundHeight = 0.01f;
 
 
         /// <summary>
@@ -33,7 +41,14 @@ namespace VRVis.Spawner {
             public SNode corNode = null; // corresponding node
             public float height = 1;
             public bool isGround = false;
-            public bool isLeave = false;
+            public bool isLeaf = false;
+
+            // for spacing between elements (districts)
+            public Vector2 spacing = new Vector2(10, 10);
+
+            // ToDo: use margin!
+            // margin between elements
+            public Vector2 margin = new Vector2(0, 0);
 
             public PNode() {}
 
@@ -43,22 +58,32 @@ namespace VRVis.Spawner {
                 this.corNode = corNode;
             }
 
+            public Vector2 GetSize(bool addSpaceAndMargin = false) {
+                if (addSpaceAndMargin) { return size + spacing * 2 + margin * 2; }
+                return size;
+            }
+
             public Vector2 GetMin() { return pos; }
-            public Vector2 GetMax() { return pos + size; }
+            public Vector2 GetMax(bool addSpaceAndMargin = false) {
+                if (addSpaceAndMargin) { return pos + size + spacing * 2 + margin * 2; }
+                return pos + size;
+            }
 
-            public float GetWidth() { return size.x; }
-            public float GetLength() { return size.y; }
-
-            public Vector3 GetUnityPos() {
-                return new Vector3(
-                    pos.x + size.x * 0.5f,
-                    0,
-                    pos.y + size.y * 0.5f
-                );
+            public float GetWidth(bool addSpaceAndMargin = false) {
+                if (addSpaceAndMargin) { return size.x + spacing.x * 2 + margin.x * 2; }
+                return size.x;
+            }
+            public float GetLength(bool addSpaceAndMargin = false) {
+                if (addSpaceAndMargin) { return size.y + spacing.y * 2 + margin.y * 2; }
+                return size.y;
             }
         }
 
         private PNode pTreeRoot = null;
+
+        // information about the currently spawned city
+        private float i_max_height = 0;
+        private Vector2 i_max_size = Vector2.zero;
 
 
         /// <summary>Prepares and spawns the visualization.</summary>
@@ -85,6 +110,10 @@ namespace VRVis.Spawner {
 
             // create the layout with relative positions of nodes
             pTreeRoot = RecursiveLayout(rootNode);
+            i_max_size = pTreeRoot.GetSize(addSpaceAndMargin);
+
+            Debug.Log("Code City Partition Tree Created. (" +
+                "max_size: " + i_max_size + ", max_height: " + i_max_height + ")");
 
             // spawn the layout
             SpawnCity(pTreeRoot);
@@ -144,11 +173,20 @@ namespace VRVis.Spawner {
             // check if is leaf or not
             if (node.GetNodesCount() <= 0) { // this is a leaf node
 
-                Vector2 size = new Vector2(100, 100); //GetNodeSize(node);
+                //Vector2 size = new Vector2(100, 100);
+                Vector2 size = GetNodeSize(node);
+
+                // ToDo: separate size from actual value?
+                // (e.g.: what if there is no value or the value is 0?)
+                if (size.x + size.y < 2) { size = new Vector2(1, 1); }
+
+                float height = GetNodeHeight(node);
+                if (height > i_max_height) { i_max_height = height; }
 
                 PNode leaf = new PNode(Vector2.zero, size, node) {
-                    isLeave = true,
-                    height = GetLOC(node.GetFullPath()) / 100f
+                    isLeaf = true,
+                    height = height,
+                    spacing = space
                 };
 
                 // ToDo: set height of leave nodes accordingly!
@@ -162,11 +200,11 @@ namespace VRVis.Spawner {
             foreach (SNode n in node.GetNodes()) {
                 PNode pnode = RecursiveLayout(n);
                 elements.Add(pnode);
-                sizeSum += pnode.size;
+                sizeSum += pnode.GetSize(addSpaceAndMargin);
             }
 
             // introduce "root" and set its size
-            PNode root = new PNode(Vector2.zero, sizeSum, node) { isGround = true };
+            PNode root = new PNode(Vector2.zero, sizeSum, node) { isGround = true, spacing = spaceGround };
             if (PRINT_DEBUG) { Debug.Log("Introducing root for: " + node.GetName() + " (leafs: " + elements.Count + ", size: " + sizeSum + ")"); }
 
             // order elements by one dimension (e.g. width)
@@ -195,15 +233,17 @@ namespace VRVis.Spawner {
                 float distance = 0;
                 Vector2 expandedBounds = bounds;
 
+                Vector2 elSize = el.GetSize(addSpaceAndMargin);
+
                 foreach (PNode pn in emptyNodes) {
                     
                     // check if there is even enough space to place [el] in (pn)
                     // if not, then this (pn) is no candidate and can be skipped
-                    Vector2 sizeDiff = pn.size - el.size;
+                    Vector2 sizeDiff = pn.GetSize() - elSize;
                     if (sizeDiff.x < 0 || sizeDiff.y < 0) { continue; }
 
                     // check if placing [el] in (pn) would preserve bounds
-                    Vector2 el_max = pn.pos + el.size;
+                    Vector2 el_max = pn.pos + elSize;
                     if (el_max.x <= bounds.x && el_max.y <= bounds.y) {
                         
                         // calculate remaining space when using this node (pn)
@@ -239,11 +279,12 @@ namespace VRVis.Spawner {
 
                 // prefer bounds preservers over expanders
                 PNode target = preserver ?? expander;
-
                 if (target == null) {
                     if (PRINT_DEBUG) { Debug.LogError("Got NULL for target!"); }
                     continue;
                 }
+
+                Vector2 targetSize = target.GetSize();
 
 
                 if (PRINT_DEBUG) {
@@ -260,7 +301,7 @@ namespace VRVis.Spawner {
                 if (target == expander) { bounds = expandedBounds; }
 
                 // check if [el] perfectly fits (target)
-                if (target.size == el.size) {
+                if (targetSize == elSize) {
                     target.left = el;
                     emptyNodes.Remove(target);
                     continue;
@@ -268,7 +309,7 @@ namespace VRVis.Spawner {
 
 
                 // split the target accordingly if the element is smaller
-                Vector2 sdiff = target.size - el.size;
+                Vector2 sdiff = targetSize - elSize;
                 
                 // split horizontally ( -- )
                 if (sdiff.y > 0) {
@@ -276,11 +317,10 @@ namespace VRVis.Spawner {
                     // upper half is the element itself, lower is new
                     target.left = el;
                     target.right = new PNode(
-                        target.pos + new Vector2(0, el.GetLength()),
-                        //new Vector2(0, el.GetLength()),
+                        target.pos + new Vector2(0, el.GetLength(addSpaceAndMargin)),
                         new Vector2(target.GetWidth(), sdiff.y),
                         null
-                    );
+                    ){ spacing = space };
 
                     emptyNodes.Add(target.right);
                 }
@@ -293,19 +333,17 @@ namespace VRVis.Spawner {
                     // if we did already split horizontally,
                     // add a new node that holds the element and introduces a free node
                     if (sdiff.y > 0) {
-                        thisTarget = new PNode(target.pos, new Vector2(target.GetWidth(), el.GetLength()), null);
-                        //thisTarget = new PNode(Vector2.zero, new Vector2(target.GetWidth(), el.GetLength()), null);
+                        thisTarget = new PNode(target.pos, new Vector2(target.GetWidth(), el.GetLength(addSpaceAndMargin)), null){ spacing = space };
                         target.left = thisTarget;
                     }
 
                     // left in tree is element and right is a free node
                     thisTarget.left = el;
                     thisTarget.right = new PNode(
-                        thisTarget.pos + new Vector2(el.GetWidth(), 0),
-                        //new Vector2(el.GetWidth(), 0),
+                        thisTarget.pos + new Vector2(el.GetWidth(addSpaceAndMargin), 0),
                         new Vector2(sdiff.x, thisTarget.GetLength()),
                         null
-                    );
+                    ){ spacing = space };
 
                     emptyNodes.Add(thisTarget.right);
                 }
@@ -313,6 +351,7 @@ namespace VRVis.Spawner {
                 emptyNodes.Remove(target);
             }
 
+            // apply max bounds
             root.size = bounds;
             return root;
         }
@@ -334,15 +373,40 @@ namespace VRVis.Spawner {
                 case 1:
                     long locs = GetLOC(node.GetFullPath());
                     return new Vector2(locs, locs);
+
+                // version 2 using amount of regions
+                case 2:
+                    int regs = GetNumOfRegions(node);
+                    return new Vector2(regs, regs);
             }
 
             return Vector2.zero;
         }
 
         /// <summary>
+        /// Get the height for a single node.<para/>
+        /// Can return zero in special cases.
+        /// </summary>
+        public float GetNodeHeight(SNode node) {
+
+            int v = 2;
+
+            switch (v) {
+
+                // version 1 using lines of code
+                case 1: return GetLOC(node.GetFullPath());
+                
+                // version 2 using number of regions
+                case 2: return GetNumOfRegions(node);
+            }
+            
+            return 0;
+        }
+
+        /// <summary>
         /// Returns the lines of code or 0 if the file does not exist.
         /// </summary>
-        public long GetLOC(string file) {
+        private long GetLOC(string file) {
 
             if (!System.IO.File.Exists(file)) { return 0; }
 
@@ -350,7 +414,14 @@ namespace VRVis.Spawner {
             char LF = '\n'; // line feed
             char CR = '\r'; // carriage return
 
-            FileStream stream = new FileStream(file, FileMode.Open);
+            FileStream stream = null;
+            try { stream = new FileStream(file, FileMode.Open); }
+            catch (Exception ex) {
+                Debug.LogError("Failed to open file: " + file);
+                Debug.LogError(ex.StackTrace);
+                return 0;
+            }
+
             byte[] buff = new byte[512*512];
             int bytesRead = 0;
             char prev = (char) 0;
@@ -384,6 +455,17 @@ namespace VRVis.Spawner {
 
             return cnt;
         }
+
+        /// <summary>
+        /// Get number of regions for this node.
+        /// </summary>
+        private int GetNumOfRegions(SNode node) {
+
+            RegionLoader rl = ApplicationLoader.GetInstance().GetRegionLoader();
+            if (!rl.LoadedSuccessful()) { return 0; }
+
+            return rl.GetFileRegions(node.GetPath()).Count;
+        }
         
 
         // ---------------------------------------------------------------------------------
@@ -405,11 +487,13 @@ namespace VRVis.Spawner {
             }
 
             //SpawnTestTree(root, parent, parent.position, 0);
-            SpawnCityRecursively(root, null, parent.position, parent);
+            //SpawnCityRecursivelyV1(root, null, parent.position, parent);
+            SpawnCityRecursivelyV2(root, null, parent.position, parent);
             return true;
         }
 
 
+        // ToDo: DEBUG - remove if no longer required!
         private void SpawnTestTree(PNode node, Transform parent, Vector3 lastPos, int depth) {
 
             lastPos += Vector3.down;
@@ -420,7 +504,7 @@ namespace VRVis.Spawner {
                 go.transform.SetParent(parent, false);
                 go.transform.localScale = go.transform.localScale / depth;
                 go.name = node.corNode.GetName();
-                if (node.isLeave) { go.name = go.name + " Leaf"; }
+                if (node.isLeaf) { go.name = go.name + " Leaf"; }
                 if (node.isGround) { go.name = go.name + " Ground"; }
             }
             else {
@@ -428,7 +512,7 @@ namespace VRVis.Spawner {
                 GameObject go = Instantiate(spherePrefab, lastPos, Quaternion.identity);
                 go.transform.localScale = go.transform.localScale / depth;
                 go.transform.SetParent(parent, false);
-                if (node.isLeave) { go.name = go.name + " Leaf"; }
+                if (node.isLeaf) { go.name = go.name + " Leaf"; }
                 if (node.isGround) { go.name = go.name + " Ground"; }
             }
 
@@ -441,15 +525,15 @@ namespace VRVis.Spawner {
         /// <summary>
         /// Spawns city sections recursively.
         /// </summary>
-        private void SpawnCityRecursively(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
+        private void SpawnCityRecursivelyV1(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
 
-            if (node.isGround || node.isLeave) {
+            if (node.isGround || node.isLeaf) {
 
                 float div = 1000f;  
                 float height = 0.01f;
                 parentPosWorld += new Vector3(node.pos.x / div * 0.5f, height, node.pos.y / div * 0.5f); // * 0.5 important!
                 
-                if (node.isLeave) { height = node.height / 10f; }
+                if (node.isLeaf) { height = node.height / 1000f; }
 
                 // ToDo: improve
                 Vector3 size = new Vector3(
@@ -466,7 +550,7 @@ namespace VRVis.Spawner {
                 cube.transform.SetParent(trans, true);
 
                 // ToDo: improve
-                if (node.isLeave) {
+                if (node.isLeaf) {
 
                     if (cube.GetComponent<Renderer>()) {
                         cube.GetComponent<Renderer>().material.color = Color.red;
@@ -476,8 +560,72 @@ namespace VRVis.Spawner {
                 trans = cube.transform;
             }
             
-            if (node.left != null) { SpawnCityRecursively(node.left, node, parentPosWorld, trans); }
-            if (node.right != null) { SpawnCityRecursively(node.right, node, parentPosWorld, trans); }
+            if (node.left != null) { SpawnCityRecursivelyV1(node.left, node, parentPosWorld, trans); }
+            if (node.right != null) { SpawnCityRecursivelyV1(node.right, node, parentPosWorld, trans); }
+        }
+
+        /// <summary>
+        /// Spawns city sections recursively.
+        /// </summary>
+        /// <param name="scaleSub">local scale subtraction value to get "pyramids"</param>
+        private void SpawnCityRecursivelyV2(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
+
+            if (node.isGround || node.isLeaf) {
+                
+                Vector2 city_height_range = new Vector2(0.01f, 1);
+                Vector2 divBy = i_max_size;
+                Vector2 multBy = new Vector2(citySize.x, citySize.y) * 0.5f; // * 0.5 important!
+
+                // default ground height
+                float height = groundHeight;
+
+                // positioning and spacing correction
+                float pos_x = node.pos.x + (addSpaceAndMargin ? node.spacing.x : 0);
+                float pos_y = node.pos.y + (addSpaceAndMargin ? node.spacing.y : 0);
+
+                // debug: to test if spacing works
+                //float pos_x = node.pos.x;
+                //float pos_y = node.pos.y;
+                parentPosWorld += new Vector3(pos_x / divBy.x * multBy.x, height, pos_y / divBy.y * multBy.y);
+                
+                // leaf height calculation
+                if (node.isLeaf) {
+
+                    // get percentage of height in the range
+                    float hperc = node.height / (i_max_height == 0 ? 1 : i_max_height);
+                    height = hperc * (city_height_range.y - city_height_range.x) + city_height_range.x;
+                }
+
+                // scaling and margin apply
+                float size_x = node.GetWidth();// - (addSpaceAndMargin ? node.spacing.x : 0);
+                float size_y = node.GetLength();// - (addSpaceAndMargin ? node.spacing.y : 0);
+                
+                // debug: to test if spacing works
+                //float size_x = node.GetWidth(addSpaceAndMargin);
+                //float size_y = node.GetLength(addSpaceAndMargin);
+                Vector3 size = new Vector3(size_x / divBy.x * multBy.x, height, size_y / divBy.y * multBy.y);
+
+                // position correction according to unity scales
+                Vector3 cubePos = parentPosWorld + new Vector3(size.x, height, size.z) * 0.5f; // * 0.5 important!
+
+                GameObject cube = Instantiate(cubePrefab, cubePos, Quaternion.identity);
+                cube.name = node.corNode.GetName();
+                cube.transform.localScale = size;
+                cube.transform.SetParent(trans, true);
+
+
+                // ToDo: improve
+                if (node.isLeaf) {
+                    if (cube.GetComponent<Renderer>()) {
+                        cube.GetComponent<Renderer>().material.color = Color.red;
+                    }
+                }
+
+                trans = cube.transform;
+            }
+            
+            if (node.left != null) { SpawnCityRecursivelyV2(node.left, node, parentPosWorld, trans); }
+            if (node.right != null) { SpawnCityRecursivelyV2(node.right, node, parentPosWorld, trans); }
         }
 
     }
