@@ -490,7 +490,7 @@ namespace VRVis.Spawner {
                 }
                 else if (progress == 1) {
                     statusTextApply.text = "Finished";
-                    statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_VALID);
+                    statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_VALID, SendMessageOptions.DontRequireReceiver);
                 }
                 else {
                     float percentage = Mathf.Round(progress * 10000f) / 10000f * 100f;

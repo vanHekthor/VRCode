@@ -38,7 +38,7 @@ namespace VRVis.Spawner {
         public float groundHeight = 0.01f;
 
         [Tooltip("Range of height of the city buildings")]
-        Vector2 cityHeightRange = new Vector2(0.01f, 1);
+        public Vector2 cityHeightRange = new Vector2(0.01f, 1);
 
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
@@ -529,7 +529,7 @@ namespace VRVis.Spawner {
             }
             
             // start recursive creation of city
-            SpawnCityRecursively(root, null, parent.position, parent);
+            SpawnCityRecursively(root, null, parent.position - new Vector3(0, groundHeight, 0), parent);
             return true;
         }
 
@@ -543,7 +543,7 @@ namespace VRVis.Spawner {
 
                 // default ground height
                 float height = groundHeight;
-
+                
                 // positioning and spacing correction
                 float pos_x = node.pos.x + (addSpaceAndMargin ? node.spacing.x : 0);
                 float pos_y = node.pos.y + (addSpaceAndMargin ? node.spacing.y : 0);
@@ -552,7 +552,7 @@ namespace VRVis.Spawner {
                     height,
                     pos_y / spawn_divBy * spawn_multBy.y
                 );
-                
+
                 // leaf height calculation
                 if (node.isLeaf) {
 
