@@ -8,47 +8,65 @@ using VRVis.IO.Structure;
 
 namespace VRVis.Spawner {
 
+    /// <summary>
+    /// Code City Visualization.<para/>
+    /// 
+    /// Created: 06/25/2019
+    /// Updated: 06/28/2019
+    /// 
+    /// Created by Leon Hutans, according to
+    /// "Software Systems as Cities" by Richard Wettel.
+    /// </summary>
     public class CodeCityV1 : ASpawner {
 
         public Transform parent;
         public GameObject cubePrefab;
-        public GameObject spherePrefab;
-        public bool PRINT_DEBUG = true;
-        public bool addSpaceAndMargin = true;
-        public Vector2 citySize = new Vector2(10, 10);
-        public Vector2 space = new Vector2(10, 10);
 
-        // ToDo: fix, is weird if numbers are way higher!
-        public Vector2 spaceGround = new Vector2(10, 10);
+        [Tooltip("Total size of the city (width/height)")]
+        public Vector2 citySize = new Vector2(10, 10);
+
+        [Tooltip("Enable/Disable space and margin")]
+        public bool addSpaceAndMargin = true;
+
+        [Tooltip("Space between elements")]
+        public Vector2 spacing = new Vector2(10, 10);
+
+        [Tooltip("Space between elements and their parent border")]
+        public Vector2 margin = new Vector2(20, 20);
+
+        [Tooltip("Height of packages")]
         public float groundHeight = 0.01f;
+
+        [Tooltip("Range of height of the city buildings")]
+        Vector2 cityHeightRange = new Vector2(0.01f, 1);
+
+        [Header("Debug")]
+        public bool PRINT_DEBUG = true;
 
 
         /// <summary>
-        /// A single node of a ptree (2D kd-tree).<para/>
-        /// 
-        /// ToDo:<para/>
-        /// - [ ] width/length/height values<para/>
-        /// - [ ] coloring<para/>
-        /// - [ ] spawning size of the city fixed/relative
+        /// Class representing a node of the partitioning tree.<para/>
+        /// (With respect to the publication: ptree (2D kd-tree)).
         /// </summary>
         public class PNode {
 
+            /// <summary>Position relative to parent node</summary>
+            public Vector2 pos = Vector2.zero;
+
+            /// <summary>Corresponding structure node</summary>
+            public SNode corNode = null;
+
+            /// <summary>Values for gap calculation</summary>
+            public Vector2 spacing = Vector2.zero;
+
             public PNode left = null;
             public PNode right = null;
-            public Vector2 pos = Vector2.zero; // always relative to parent
-            public Vector2 size = Vector2.zero;
-            //public PNode placedElement = null;
-            public SNode corNode = null; // corresponding node
-            public float height = 1;
-            public bool isGround = false;
+            public bool isPackage = false;
             public bool isLeaf = false;
+            public float height = 1;
 
-            // for spacing between elements (districts)
-            public Vector2 spacing = new Vector2(10, 10);
+            private Vector2 size = Vector2.zero;
 
-            // ToDo: use margin!
-            // margin between elements
-            public Vector2 margin = new Vector2(0, 0);
 
             public PNode() {}
 
@@ -58,25 +76,15 @@ namespace VRVis.Spawner {
                 this.corNode = corNode;
             }
 
-            public Vector2 GetSize(bool addSpaceAndMargin = false) {
-                if (addSpaceAndMargin) { return size + spacing * 2 + margin * 2; }
-                return size;
-            }
 
+            // GETTER/SETTER METHODS
+            public Vector2 GetSize() { return size; }
+            public void SetSize(Vector2 size) { this.size = size;}
             public Vector2 GetMin() { return pos; }
-            public Vector2 GetMax(bool addSpaceAndMargin = false) {
-                if (addSpaceAndMargin) { return pos + size + spacing * 2 + margin * 2; }
-                return pos + size;
-            }
-
-            public float GetWidth(bool addSpaceAndMargin = false) {
-                if (addSpaceAndMargin) { return size.x + spacing.x * 2 + margin.x * 2; }
-                return size.x;
-            }
-            public float GetLength(bool addSpaceAndMargin = false) {
-                if (addSpaceAndMargin) { return size.y + spacing.y * 2 + margin.y * 2; }
-                return size.y;
-            }
+            public Vector2 GetMax() { return pos + size; }
+            public float GetWidth() { return size.x; }
+            public float GetLength() { return size.y; }
+            public float GetHeight() { return height; }
         }
 
         private PNode pTreeRoot = null;
@@ -84,6 +92,11 @@ namespace VRVis.Spawner {
         // information about the currently spawned city
         private float i_max_height = 0;
         private Vector2 i_max_size = Vector2.zero;
+        private uint i_spawned_elements = 0;
+        private uint i_spawned_packages = 0;
+
+        private float spawn_divBy = 1;
+        private Vector2 spawn_multBy = Vector2.one;
 
 
         /// <summary>Prepares and spawns the visualization.</summary>
@@ -109,52 +122,32 @@ namespace VRVis.Spawner {
         public bool SpawnCodeCity(SNode rootNode) {
 
             // create the layout with relative positions of nodes
+            float ts = Time.time;
             pTreeRoot = RecursiveLayout(rootNode);
-            i_max_size = pTreeRoot.GetSize(addSpaceAndMargin);
-
-            Debug.Log("Code City Partition Tree Created. (" +
+            float td = Mathf.Round((Time.realtimeSinceStartup - ts) * 1000f) / 1000f;
+            float ttotal = td;
+            i_max_size = pTreeRoot.GetSize();
+            Debug.Log("Code City Partition Tree Created [" + td + " seconds].\n(" +
                 "max_size: " + i_max_size + ", max_height: " + i_max_height + ")");
 
-            // spawn the layout
-            SpawnCity(pTreeRoot);
+            // division and multiplication factors to keep city in scales
+            spawn_divBy = i_max_size.x > i_max_size.y ? i_max_size.x : i_max_size.y;
+            spawn_multBy = new Vector2(citySize.x, citySize.y) * 0.5f; // * 0.5 important bc. of Unity scales!
 
+            // spawn the city layout
+            i_spawned_elements = 0;
+            i_spawned_packages = 0;
+            ts = Time.realtimeSinceStartup;
+            SpawnCity(pTreeRoot);
+            td = Mathf.Round((Time.realtimeSinceStartup - ts) * 1000f) / 1000f;
+            ttotal += td;
+            Debug.Log("Code City Spawned [" + td + " seconds, total: " + ttotal + "].\n(" + 
+                "elements: " + i_spawned_elements + ", packages: " + i_spawned_packages + ")");
             return true;
         }
 
-
-        /// <summary>
-        /// Default version of the layout/packing of elements of a single hierarchy layer.
-        /// </summary>
-        /*
-        public void Layout1(SNode node, List<SNode> elements) {
-
-            // rot size is sum of all sub-elements sizes
-            // also checks if NInf already exists
-            Vector2 sizeSum = Vector2.zero;
-            foreach (SNode n in elements) {
-                if (!ninfos.ContainsKey(n)) { ninfos.Add(n, new NInf()); }
-                NInf ni = ninfos[n];
-                sizeSum += ni.size;
-            }
-
-            // order elements by one dimension (e.g. width)
-            elements.Sort(SortDescending);
-
-            // place first element at (0, 0) and set bounds
-            NInf cur = ninfos[node];
-            NInf ni1 = ninfos[elements[0]];
-            
-            ni1.pos = Vector2.zero;
-            Vector2 bounds = ni1.size;
-
-            // check where we can place the next element
-            // so that bounds expend with aspect ratio closer to a square
-
-        }
-        */
-
          
-        // ---------------------------------------------------------------------------------
+        // ---------------------------------------------------------------------------------------
         // Recursive City-Layout Creation.
         
         /// <summary>Sort in descending order.</summary>
@@ -185,8 +178,7 @@ namespace VRVis.Spawner {
 
                 PNode leaf = new PNode(Vector2.zero, size, node) {
                     isLeaf = true,
-                    height = height,
-                    spacing = space
+                    height = height
                 };
 
                 // ToDo: set height of leave nodes accordingly!
@@ -200,11 +192,16 @@ namespace VRVis.Spawner {
             foreach (SNode n in node.GetNodes()) {
                 PNode pnode = RecursiveLayout(n);
                 elements.Add(pnode);
-                sizeSum += pnode.GetSize(addSpaceAndMargin);
+                sizeSum += pnode.GetSize(); //(addSpaceAndMargin);
+            }
+
+            // add spacing and margin to size (second margin is added at the end)
+            if (addSpaceAndMargin) {
+                sizeSum += margin + spacing * (elements.Count - 1);
             }
 
             // introduce "root" and set its size
-            PNode root = new PNode(Vector2.zero, sizeSum, node) { isGround = true, spacing = spaceGround };
+            PNode root = new PNode(Vector2.zero, sizeSum, node) { isPackage = true };
             if (PRINT_DEBUG) { Debug.Log("Introducing root for: " + node.GetName() + " (leafs: " + elements.Count + ", size: " + sizeSum + ")"); }
 
             // order elements by one dimension (e.g. width)
@@ -216,14 +213,6 @@ namespace VRVis.Spawner {
 
             foreach (PNode el in elements) {
 
-                /*
-                // if placed in here, bounds would be preserved but "float" is wasted space
-                Dictionary<PNode, float> preservers = new Dictionary<PNode, float>();
-
-                // if placed in here, bounds would be expanded and deviation from 1:1 ratio is "float"
-                Dictionary<PNode, float> expanders = new Dictionary<PNode, float>();
-                */
-
                 // possible preserver for current bounds and remaining space
                 PNode preserver = null;
                 float remaining = 0;
@@ -233,10 +222,28 @@ namespace VRVis.Spawner {
                 float distance = 0;
                 Vector2 expandedBounds = bounds;
 
-                Vector2 elSize = el.GetSize(addSpaceAndMargin);
+                Vector2 elSize = el.GetSize();
+                Dictionary<PNode, Vector2> pnSizeAdd = new Dictionary<PNode, Vector2>();
 
                 foreach (PNode pn in emptyNodes) {
                     
+                    // change size of element according to position
+                    if (addSpaceAndMargin) {
+
+                        // would be "hit" a border placing it here?
+                        bool x_hb = pn.pos.x == 0;
+                        bool y_hb = pn.pos.y == 0;
+
+                        Vector2 sizeAdd = new Vector2(
+                            x_hb ? margin.x : spacing.x,
+                            y_hb ? margin.y : spacing.y
+                        );
+
+                        // store new element size including the margin and spacing
+                        pnSizeAdd.Add(pn, sizeAdd);
+                        elSize = el.GetSize() + sizeAdd;
+                    }
+
                     // check if there is even enough space to place [el] in (pn)
                     // if not, then this (pn) is no candidate and can be skipped
                     Vector2 sizeDiff = pn.GetSize() - elSize;
@@ -284,7 +291,17 @@ namespace VRVis.Spawner {
                     continue;
                 }
 
+
+                // get size of target and element with spacing/margin accordingly
                 Vector2 targetSize = target.GetSize();
+                if (addSpaceAndMargin) {
+
+                    Vector2 sizeAdd = pnSizeAdd[target];
+                    elSize = el.GetSize() + sizeAdd;
+
+                    // store spacing (required for later correction)
+                    el.spacing = sizeAdd;
+                }
 
 
                 if (PRINT_DEBUG) {
@@ -317,10 +334,10 @@ namespace VRVis.Spawner {
                     // upper half is the element itself, lower is new
                     target.left = el;
                     target.right = new PNode(
-                        target.pos + new Vector2(0, el.GetLength(addSpaceAndMargin)),
+                        target.pos + new Vector2(0, elSize.y),
                         new Vector2(target.GetWidth(), sdiff.y),
                         null
-                    ){ spacing = space };
+                    );
 
                     emptyNodes.Add(target.right);
                 }
@@ -333,17 +350,17 @@ namespace VRVis.Spawner {
                     // if we did already split horizontally,
                     // add a new node that holds the element and introduces a free node
                     if (sdiff.y > 0) {
-                        thisTarget = new PNode(target.pos, new Vector2(target.GetWidth(), el.GetLength(addSpaceAndMargin)), null){ spacing = space };
+                        thisTarget = new PNode(target.pos, new Vector2(target.GetWidth(), elSize.y), null);
                         target.left = thisTarget;
                     }
 
                     // left in tree is element and right is a free node
                     thisTarget.left = el;
                     thisTarget.right = new PNode(
-                        thisTarget.pos + new Vector2(el.GetWidth(addSpaceAndMargin), 0),
+                        thisTarget.pos + new Vector2(elSize.x, 0),
                         new Vector2(sdiff.x, thisTarget.GetLength()),
                         null
-                    ){ spacing = space };
+                    );
 
                     emptyNodes.Add(thisTarget.right);
                 }
@@ -351,13 +368,13 @@ namespace VRVis.Spawner {
                 emptyNodes.Remove(target);
             }
 
-            // apply max bounds
-            root.size = bounds;
+            // apply max bounds and add margin
+            root.SetSize(bounds + (addSpaceAndMargin ? margin : Vector2.zero));
             return root;
         }
 
 
-        // ---------------------------------------------------------------------------------
+        // ---------------------------------------------------------------------------------------
         // Getting a leaf node's size.
 
         /// <summary>
@@ -365,7 +382,7 @@ namespace VRVis.Spawner {
         /// </summary>
         public Vector2 GetNodeSize(SNode node) {
 
-            int v = 1;
+            int v = 4;
 
             switch (v) {
                 
@@ -378,6 +395,14 @@ namespace VRVis.Spawner {
                 case 2:
                     int regs = GetNumOfRegions(node);
                     return new Vector2(regs, regs);
+
+                // version 3 using file size in bytes
+                case 3:
+                    long bytes = GetFileSizeBytes(node.GetFullPath());
+                    return new Vector2(bytes, bytes);
+                
+                // fixed size
+                case 4: return new Vector2(10, 10);
             }
 
             return Vector2.zero;
@@ -389,7 +414,7 @@ namespace VRVis.Spawner {
         /// </summary>
         public float GetNodeHeight(SNode node) {
 
-            int v = 2;
+            int v = 3;
 
             switch (v) {
 
@@ -398,19 +423,23 @@ namespace VRVis.Spawner {
                 
                 // version 2 using number of regions
                 case 2: return GetNumOfRegions(node);
+
+                // version 3 using file size in bytes
+                case 3: return GetFileSizeBytes(node.GetFullPath());
             }
             
             return 0;
         }
 
         /// <summary>
-        /// Returns the lines of code or 0 if the file does not exist.
+        /// Returns the lines of code or 0 if the file does not exist.<para/>
+        /// Implemented with respect to the optimization approach of:<para/>
+        /// https://nima-ara-blog.azurewebsites.net/counting-lines-of-a-text-file/
         /// </summary>
         private long GetLOC(string file) {
 
             if (!System.IO.File.Exists(file)) { return 0; }
 
-            // optimized using: https://nima-ara-blog.azurewebsites.net/counting-lines-of-a-text-file/
             char LF = '\n'; // line feed
             char CR = '\r'; // carriage return
 
@@ -422,7 +451,7 @@ namespace VRVis.Spawner {
                 return 0;
             }
 
-            byte[] buff = new byte[512*512];
+            byte[] buff = new byte[1024 * 1024];
             int bytesRead = 0;
             char prev = (char) 0;
             bool pending = false;
@@ -452,13 +481,10 @@ namespace VRVis.Spawner {
             }
 
             if (pending) { cnt++; }
-
             return cnt;
         }
 
-        /// <summary>
-        /// Get number of regions for this node.
-        /// </summary>
+        /// <summary>Get number of regions for this node.</summary>
         private int GetNumOfRegions(SNode node) {
 
             RegionLoader rl = ApplicationLoader.GetInstance().GetRegionLoader();
@@ -467,8 +493,24 @@ namespace VRVis.Spawner {
             return rl.GetFileRegions(node.GetPath()).Count;
         }
         
+        /// <summary>Get the size of a file in bytes.</summary>
+        private long GetFileSizeBytes(string file) {
 
-        // ---------------------------------------------------------------------------------
+            if (!System.IO.File.Exists(file)) { return 0; }
+            
+            FileInfo fi = null;
+            try { fi = new FileInfo(file); }
+            catch (Exception e) {
+                Debug.LogWarning("Failed to get size of file: " + file + "!");
+                Debug.LogWarning(e.StackTrace);
+                return 0;
+            }
+
+            return fi.Length;
+        }
+
+
+        // ---------------------------------------------------------------------------------------
         // Spawning the city's visual representation.
 
         /// <summary>
@@ -485,96 +527,19 @@ namespace VRVis.Spawner {
                 Debug.LogError("Missing Code City cube prefab!");
                 return false;
             }
-
-            //SpawnTestTree(root, parent, parent.position, 0);
-            //SpawnCityRecursivelyV1(root, null, parent.position, parent);
-            SpawnCityRecursivelyV2(root, null, parent.position, parent);
-            return true;
-        }
-
-
-        // ToDo: DEBUG - remove if no longer required!
-        private void SpawnTestTree(PNode node, Transform parent, Vector3 lastPos, int depth) {
-
-            lastPos += Vector3.down;
-
-            if (node.corNode != null) {
-
-                GameObject go = Instantiate(cubePrefab, lastPos, Quaternion.identity);
-                go.transform.SetParent(parent, false);
-                go.transform.localScale = go.transform.localScale / depth;
-                go.name = node.corNode.GetName();
-                if (node.isLeaf) { go.name = go.name + " Leaf"; }
-                if (node.isGround) { go.name = go.name + " Ground"; }
-            }
-            else {
-
-                GameObject go = Instantiate(spherePrefab, lastPos, Quaternion.identity);
-                go.transform.localScale = go.transform.localScale / depth;
-                go.transform.SetParent(parent, false);
-                if (node.isLeaf) { go.name = go.name + " Leaf"; }
-                if (node.isGround) { go.name = go.name + " Ground"; }
-            }
-
-            float fac = (200 - depth) / 200f * 10f;
-            if (node.left != null) { SpawnTestTree(node.left, parent, lastPos + Vector3.left * fac, depth + 1); }
-            if (node.right != null) { SpawnTestTree(node.right, parent, lastPos + Vector3.right * fac, depth + 1); }
-        }
-
-
-        /// <summary>
-        /// Spawns city sections recursively.
-        /// </summary>
-        private void SpawnCityRecursivelyV1(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
-
-            if (node.isGround || node.isLeaf) {
-
-                float div = 1000f;  
-                float height = 0.01f;
-                parentPosWorld += new Vector3(node.pos.x / div * 0.5f, height, node.pos.y / div * 0.5f); // * 0.5 important!
-                
-                if (node.isLeaf) { height = node.height / 1000f; }
-
-                // ToDo: improve
-                Vector3 size = new Vector3(
-                    node.GetWidth() / div / 2,
-                    height,
-                    node.GetLength() / div / 2
-                );
-
-                // cubePos corrects position of block
-                Vector3 cubePos = parentPosWorld + new Vector3(size.x, height, size.z) * 0.5f;
-                GameObject cube = Instantiate(cubePrefab, cubePos, Quaternion.identity);
-                cube.name = node.corNode.GetName();
-                cube.transform.localScale = size;
-                cube.transform.SetParent(trans, true);
-
-                // ToDo: improve
-                if (node.isLeaf) {
-
-                    if (cube.GetComponent<Renderer>()) {
-                        cube.GetComponent<Renderer>().material.color = Color.red;
-                    }
-                }
-
-                trans = cube.transform;
-            }
             
-            if (node.left != null) { SpawnCityRecursivelyV1(node.left, node, parentPosWorld, trans); }
-            if (node.right != null) { SpawnCityRecursivelyV1(node.right, node, parentPosWorld, trans); }
+            // start recursive creation of city
+            SpawnCityRecursively(root, null, parent.position, parent);
+            return true;
         }
 
         /// <summary>
         /// Spawns city sections recursively.
         /// </summary>
         /// <param name="scaleSub">local scale subtraction value to get "pyramids"</param>
-        private void SpawnCityRecursivelyV2(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
+        private void SpawnCityRecursively(PNode node, PNode parent, Vector3 parentPosWorld, Transform trans) {
 
-            if (node.isGround || node.isLeaf) {
-                
-                Vector2 city_height_range = new Vector2(0.01f, 1);
-                Vector2 divBy = i_max_size;
-                Vector2 multBy = new Vector2(citySize.x, citySize.y) * 0.5f; // * 0.5 important!
+            if (node.isPackage || node.isLeaf) {
 
                 // default ground height
                 float height = groundHeight;
@@ -582,50 +547,67 @@ namespace VRVis.Spawner {
                 // positioning and spacing correction
                 float pos_x = node.pos.x + (addSpaceAndMargin ? node.spacing.x : 0);
                 float pos_y = node.pos.y + (addSpaceAndMargin ? node.spacing.y : 0);
-
-                // debug: to test if spacing works
-                //float pos_x = node.pos.x;
-                //float pos_y = node.pos.y;
-                parentPosWorld += new Vector3(pos_x / divBy.x * multBy.x, height, pos_y / divBy.y * multBy.y);
+                parentPosWorld += new Vector3(
+                    pos_x / spawn_divBy * spawn_multBy.x,
+                    height,
+                    pos_y / spawn_divBy * spawn_multBy.y
+                );
                 
                 // leaf height calculation
                 if (node.isLeaf) {
 
                     // get percentage of height in the range
                     float hperc = node.height / (i_max_height == 0 ? 1 : i_max_height);
-                    height = hperc * (city_height_range.y - city_height_range.x) + city_height_range.x;
+                    height = hperc * (cityHeightRange.y - cityHeightRange.x) + cityHeightRange.x;
                 }
 
-                // scaling and margin apply
-                float size_x = node.GetWidth();// - (addSpaceAndMargin ? node.spacing.x : 0);
-                float size_y = node.GetLength();// - (addSpaceAndMargin ? node.spacing.y : 0);
-                
-                // debug: to test if spacing works
-                //float size_x = node.GetWidth(addSpaceAndMargin);
-                //float size_y = node.GetLength(addSpaceAndMargin);
-                Vector3 size = new Vector3(size_x / divBy.x * multBy.x, height, size_y / divBy.y * multBy.y);
+                // scaling (uses initial scales without margin/spacing)
+                Vector3 size = new Vector3(
+                    node.GetWidth() / spawn_divBy * spawn_multBy.x,
+                    height,
+                    node.GetLength() / spawn_divBy * spawn_multBy.y
+                );
 
                 // position correction according to unity scales
                 Vector3 cubePos = parentPosWorld + new Vector3(size.x, height, size.z) * 0.5f; // * 0.5 important!
 
+                // create the cube object in the scene
                 GameObject cube = Instantiate(cubePrefab, cubePos, Quaternion.identity);
                 cube.name = node.corNode.GetName();
                 cube.transform.localScale = size;
                 cube.transform.SetParent(trans, true);
 
-
-                // ToDo: improve
+                // ToDo: improved color mapping and texturing of buildings
+                // add color and more according to type of node
                 if (node.isLeaf) {
+
+                    i_spawned_elements++;
+
+                    // ToDo: testing - improve!
                     if (cube.GetComponent<Renderer>()) {
-                        cube.GetComponent<Renderer>().material.color = Color.red;
+                        cube.GetComponent<Renderer>().material.color = Color.gray;
+
+                        string name = node.corNode.GetName();
+                        if (name.EndsWith(".js")) {
+                            cube.GetComponent<Renderer>().material.color = Color.red;
+                        }
+                        else if (name.EndsWith(".cs")) {
+                            cube.GetComponent<Renderer>().material.color = Color.blue;
+                        }
+                        else if (name.EndsWith(".c") || name.EndsWith(".cpp") || name.EndsWith(".h")) {
+                            cube.GetComponent<Renderer>().material.color = Color.green;
+                        }
                     }
+                }
+                else if (node.isPackage) {
+                    i_spawned_packages++;
                 }
 
                 trans = cube.transform;
             }
             
-            if (node.left != null) { SpawnCityRecursivelyV2(node.left, node, parentPosWorld, trans); }
-            if (node.right != null) { SpawnCityRecursivelyV2(node.right, node, parentPosWorld, trans); }
+            if (node.left != null) { SpawnCityRecursively(node.left, node, parentPosWorld, trans); }
+            if (node.right != null) { SpawnCityRecursively(node.right, node, parentPosWorld, trans); }
         }
 
     }
