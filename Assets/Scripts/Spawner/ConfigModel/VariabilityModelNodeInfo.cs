@@ -8,7 +8,7 @@ using VRVis.IO.Features;
 namespace VRVis.Spawner.ConfigModel {
 
     /// <summary>
-    /// This script should be attached to each GameObject instance,
+    /// This script should be attached to each GameObject instance
     /// that represents a node of the variability model.<para/>
     /// The attachment should not happen on runtime but already on the prefab.<para/>
     /// It holds information like the level in the hierarchy and so on.<para/>

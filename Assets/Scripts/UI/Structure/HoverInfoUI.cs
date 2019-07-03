@@ -2,9 +2,7 @@
 using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using Valve.VR.InteractionSystem;
-using VRVis.Elements;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;

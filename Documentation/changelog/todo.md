@@ -49,3 +49,7 @@
 - [ ] Improve counting of edges
 - [ ] Advanced positioning and rotating of code windows
 - [ ] Code cleanup
+
+## Bugs
+- [ ] State of nodes of the variability model not always updating properly
+- [ ] Laser pointer sometimes not working right after startup (rare)
