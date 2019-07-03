@@ -1,7 +1,7 @@
 # To Do List
 
 ## Major
-- [X] Advanced spawner system (register new in editor, use others, ...) *()*
+- [X] Advanced spawner system (register new in editor, use others, ...) *(12.06.2019)*
 - [X] Basic **code city** visualization *(28.06.2019)*
 - [ ] Improve code city visualization
   - [ ] Textures to show regions
