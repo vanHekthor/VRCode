@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 
-namespace VRVis.UI {
+namespace VRVis.UI.Structure {
 
     /// <summary>
     /// Script that is attached to the structure hover ui.<para/>

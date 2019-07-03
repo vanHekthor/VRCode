@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
-using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner.Structure;
 

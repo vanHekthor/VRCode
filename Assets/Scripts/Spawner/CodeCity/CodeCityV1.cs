@@ -5,6 +5,7 @@ using System.IO;
 using UnityEngine;
 using VRVis.IO;
 using VRVis.IO.Structure;
+using VRVis.Spawner.CodeCity;
 
 namespace VRVis.Spawner {
 
@@ -85,9 +86,11 @@ namespace VRVis.Spawner {
             public float GetWidth() { return size.x; }
             public float GetLength() { return size.y; }
             public float GetHeight() { return height; }
+
         }
 
         private PNode pTreeRoot = null;
+
 
         // information about the currently spawned city
         private float i_max_height = 0;
@@ -577,6 +580,10 @@ namespace VRVis.Spawner {
                 cube.transform.localScale = size;
                 cube.transform.SetParent(trans, true);
 
+                // add code city element and information
+                CodeCityElement cce = cube.AddComponent<CodeCityElement>();
+                cce.SetNode(node);
+                
                 // ToDo: improved color mapping and texturing of buildings
                 // add color and more according to type of node
                 if (node.isLeaf) {

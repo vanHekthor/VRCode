@@ -8,7 +8,7 @@ using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.Structure;
 
-namespace VRVis.UI {
+namespace VRVis.UI.Structure {
 
     /// <summary>
     /// A script used by the VR pointer to show information
