@@ -17,6 +17,10 @@ namespace VRVis.IO {
     /// </summary>
     public class StructureLoader : BasicLoader {
 
+        // prints excluded files in the console
+        private bool DEBUG_EXCLUDED = false;
+
+
         // path to the folder that includes the root folder of the analyzed software system
         private string softwareSystemPath; // root path with slash at the end!
 
@@ -327,7 +331,7 @@ namespace VRVis.IO {
 
                 // skip this node if it should be excluded
                 if (IsExcluded(fullPath)) {
-                    Debug.Log("[Excluded] Skipping folder node: " + fullPath);
+                    if (DEBUG_EXCLUDED) { Debug.Log("[Excluded] Skipping folder node: " + fullPath); }
                     continue;
                 }
 

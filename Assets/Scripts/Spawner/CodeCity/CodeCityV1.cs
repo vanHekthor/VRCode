@@ -41,8 +41,24 @@ namespace VRVis.Spawner {
         [Tooltip("Range of height of the city buildings")]
         public Vector2 cityHeightRange = new Vector2(0.01f, 1);
 
+        [Tooltip("Packages differ in color according to their depth")]
+        public Color packageColorFrom = new Color(0.3f, 0.3f, 0.3f);
+        public Color packageColorTo = new Color(0.9f, 0.9f, 0.9f);
+
+        public ClassMapping[] classMappings;
+
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
+
+
+        // ToDo: for testing purposes - put in value mappings format later
+        [Serializable]
+        public class ClassMapping {
+            public string name;
+            public bool apply = true;
+            public string[] fileEndings;
+            public Color color = Color.white;
+        }
 
 
         /// <summary>
@@ -67,6 +83,12 @@ namespace VRVis.Spawner {
             public float height = 1;
 
             private Vector2 size = Vector2.zero;
+
+            // additional information (not required for building ptree)
+            public uint depthPos = 0;
+            public int subElements = 0;
+            public float heightPercentage = 0;
+            public float cityHeight = 0;
 
 
             public PNode() {}
@@ -97,6 +119,7 @@ namespace VRVis.Spawner {
         private Vector2 i_max_size = Vector2.zero;
         private uint i_spawned_elements = 0;
         private uint i_spawned_packages = 0;
+        private uint i_max_depth = 0;
 
         private float spawn_divBy = 1;
         private Vector2 spawn_multBy = Vector2.one;
@@ -126,7 +149,8 @@ namespace VRVis.Spawner {
 
             // create the layout with relative positions of nodes
             float ts = Time.time;
-            pTreeRoot = RecursiveLayout(rootNode);
+            i_max_depth = 0;
+            pTreeRoot = RecursiveLayout(rootNode, 0);
             float td = Mathf.Round((Time.realtimeSinceStartup - ts) * 1000f) / 1000f;
             float ttotal = td;
             i_max_size = pTreeRoot.GetSize();
@@ -164,7 +188,9 @@ namespace VRVis.Spawner {
         /// Run recursive layout.<para/>
         /// Returns the size of that node.
         /// </summary>
-        public PNode RecursiveLayout(SNode node) {
+        public PNode RecursiveLayout(SNode node, uint depth) {
+
+            if (depth > i_max_depth) { i_max_depth = depth; }
 
             // check if is leaf or not
             if (node.GetNodesCount() <= 0) { // this is a leaf node
@@ -181,7 +207,8 @@ namespace VRVis.Spawner {
 
                 PNode leaf = new PNode(Vector2.zero, size, node) {
                     isLeaf = true,
-                    height = height
+                    height = height,
+                    depthPos = depth
                 };
 
                 // ToDo: set height of leave nodes accordingly!
@@ -193,9 +220,9 @@ namespace VRVis.Spawner {
             List<PNode> elements = new List<PNode>();
             Vector2 sizeSum = Vector2.zero;
             foreach (SNode n in node.GetNodes()) {
-                PNode pnode = RecursiveLayout(n);
+                PNode pnode = RecursiveLayout(n, depth + 1);
                 elements.Add(pnode);
-                sizeSum += pnode.GetSize(); //(addSpaceAndMargin);
+                sizeSum += pnode.GetSize();
             }
 
             // add spacing and margin to size (second margin is added at the end)
@@ -204,7 +231,12 @@ namespace VRVis.Spawner {
             }
 
             // introduce "root" and set its size
-            PNode root = new PNode(Vector2.zero, sizeSum, node) { isPackage = true };
+            PNode root = new PNode(Vector2.zero, sizeSum, node) {
+                isPackage = true,
+                subElements = elements.Count,
+                depthPos = depth
+            };
+
             if (PRINT_DEBUG) { Debug.Log("Introducing root for: " + node.GetName() + " (leafs: " + elements.Count + ", size: " + sizeSum + ")"); }
 
             // order elements by one dimension (e.g. width)
@@ -560,9 +592,15 @@ namespace VRVis.Spawner {
                 if (node.isLeaf) {
 
                     // get percentage of height in the range
-                    float hperc = node.height / (i_max_height == 0 ? 1 : i_max_height);
+                    float hperc = node.height / (i_max_height == 0 ? 1 : i_max_height);                    
                     height = hperc * (cityHeightRange.y - cityHeightRange.x) + cityHeightRange.x;
+
+                    // additional info
+                    node.heightPercentage = hperc;
                 }
+
+                // additional info
+                node.cityHeight = height;
 
                 // scaling (uses initial scales without margin/spacing)
                 Vector3 size = new Vector3(
@@ -592,22 +630,41 @@ namespace VRVis.Spawner {
 
                     // ToDo: testing - improve!
                     if (cube.GetComponent<Renderer>()) {
-                        cube.GetComponent<Renderer>().material.color = Color.gray;
 
                         string name = node.corNode.GetName();
-                        if (name.EndsWith(".js")) {
-                            cube.GetComponent<Renderer>().material.color = Color.red;
+                        Color c = Color.gray;
+
+                        foreach (ClassMapping cm in classMappings) {
+
+                            if (!cm.apply) { continue; }
+                            bool applies = false;
+
+                            foreach (string e in cm.fileEndings) {
+                                if (name.EndsWith(e)) {
+                                    applies = true;
+                                    break;
+                                }
+                            }
+
+                            if (applies) {
+                                c = cm.color;
+                                break;
+                            }
                         }
-                        else if (name.EndsWith(".cs")) {
-                            cube.GetComponent<Renderer>().material.color = Color.blue;
-                        }
-                        else if (name.EndsWith(".c") || name.EndsWith(".cpp") || name.EndsWith(".h")) {
-                            cube.GetComponent<Renderer>().material.color = Color.green;
-                        }
+
+                        cube.GetComponent<Renderer>().material.color = c;
                     }
                 }
                 else if (node.isPackage) {
+
                     i_spawned_packages++;
+
+                    // assign color according to depth
+                    if (cube.GetComponent<Renderer>()) {
+                        float dp = node.depthPos / (float) i_max_depth;
+                        Color c = (1 - dp) * packageColorFrom + dp * packageColorTo;
+                        cube.GetComponent<Renderer>().material.color = c;
+                    }
                 }
 
                 trans = cube.transform;

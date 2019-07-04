@@ -5,10 +5,10 @@ using UnityEngine;
 
 namespace VRVis.IO {
 
-    /**
-     * Abstract base class for "loaders".
-     * Those can be file loaders as well as the structure loader.
-     */
+    /// <summary>
+    /// Abstract base class for "loaders".<para/>
+    /// Those can be file loaders as well as the structure loader.
+    /// </summary>
     public abstract class BasicLoader {
 
         protected bool loadingSuccessful = false;
@@ -29,11 +29,11 @@ namespace VRVis.IO {
 
 
         // FUNCTIONALITY
-
-        /**
-         * Load the information from the file.
-         * Returns true if successful.
-         */
+        
+        /// <summary>
+        /// Load the information from the file.<para/>
+        /// Returns true if successful.
+        /// </summary>
         public abstract bool Load();
 
     }

@@ -55,11 +55,11 @@ namespace VRVis.Utilities {
             return textOut;
         }
 
-        /**
-         * Tries to convert an object to float.
-         * Returns true if successful.
-         * The "out" floatValue will be 0 if formatting fails!
-         */
+        /// <summary>
+        /// Tries to convert an object to float.<para/>
+        /// Returns true if successful.<para/>
+        /// The "out" floatValue will be 0 if formatting fails!
+        /// </summary>
         public static bool ObjectToFloat(object value, out float floatValue) {
             try {
                 float converted = Convert.ToSingle(value);
@@ -190,6 +190,11 @@ namespace VRVis.Utilities {
 
         /// <summary>Convert the given degree to radians.</summary>
         public static float DegreeToRadians(float degree) { return degree / 180f * Mathf.PI; }
+
+        /// <summary>Converts float to str and ensures to use dot instead of comma.</summary>
+        public static string ToStr(object f) {
+            return Convert.ToString(f, new CultureInfo("en"));
+        }
 
     }
 }

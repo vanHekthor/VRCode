@@ -1,6 +1,8 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.Utilities;
 
 namespace VRVis.Spawner.CodeCity {
 
@@ -38,8 +40,17 @@ namespace VRVis.Spawner.CodeCity {
             info.Add("Type", pNode.corNode.GetNodeType().ToString());
 
             // ToDo: fix sub-element count
-            info.Add("Sub-Elements", GetSubElementCount(pNode).ToString());
-            info.Add("Height", pNode.GetHeight().ToString());
+            info.Add("Sub-Elements", pNode.subElements.ToString()); //GetSubElementCount(pNode).ToString());
+            
+            // prepare additional height information
+            float ch = (float) Math.Round(pNode.cityHeight, 2);
+            string heightAdd = Utility.ToStr(ch);
+            if (pNode.isLeaf) {
+                float hp = (float) Math.Round(pNode.heightPercentage * 100, 2);
+                heightAdd += ", " + Utility.ToStr(hp) + " %";
+            }
+
+            info.Add("Height", pNode.GetHeight().ToString() + " (" + heightAdd + ")");
             info.Add("Width", pNode.GetWidth().ToString());
             info.Add("Length", pNode.GetLength().ToString());
 
