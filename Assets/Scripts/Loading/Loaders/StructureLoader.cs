@@ -18,7 +18,7 @@ namespace VRVis.IO {
     public class StructureLoader : BasicLoader {
 
         // prints excluded files in the console
-        private bool DEBUG_EXCLUDED = false;
+        private readonly bool DEBUG_EXCLUDED = false;
 
 
         // path to the folder that includes the root folder of the analyzed software system

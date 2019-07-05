@@ -38,10 +38,11 @@ namespace VRVis.Spawner.CodeCity {
             info.Clear();
             info.Add("Name", pNode.corNode.GetName());
             info.Add("Type", pNode.corNode.GetNodeType().ToString());
-
-            // ToDo: fix sub-element count
-            info.Add("Sub-Elements", pNode.subElements.ToString()); //GetSubElementCount(pNode).ToString());
+            info.Add("Sub-Elements", pNode.subElements.ToString());
             
+            // sub-element count and similar can be calculated recursively
+            // [to see an example have a look at GetSubElementCount()]
+
             // prepare additional height information
             float ch = (float) Math.Round(pNode.cityHeight, 2);
             string heightAdd = Utility.ToStr(ch);
@@ -70,7 +71,7 @@ namespace VRVis.Spawner.CodeCity {
         private uint GetSubElementCountRecursive(CodeCityV1.PNode node) {
             if (node == null) { return 0; }
             if (node.isLeaf || node.isPackage) { return 1; }
-            return GetSubElementCount(node.left) + GetSubElementCount(node.right);
+            return GetSubElementCountRecursive(node.left) + GetSubElementCountRecursive(node.right);
         }
 
     }
