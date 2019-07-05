@@ -1,30 +1,37 @@
 # To Do List
 
 ## Major
+
+(**#1**) = important
+
 - [X] Advanced spawner system (register new in editor, use others, ...) *(12.06.2019)*
 - [X] Basic **code city** visualization *(28.06.2019)*
-- [ ] Improve code city visualization
-  - [ ] Textures to show regions
+- [ ] **#1** Improve code city visualization
+  - [ ] Textures to show regions and their performance
   - [ ] Interaction
     - [ ] Selecting elements
-    - [ ] Info on hover
+    - [X] Info on hover
     - [ ] "Be the data" (maybe)
 - [ ] External visualization settings (can be used for later loading of workspace)
-- [ ] Overview of code regions
-- [ ] Overview of feature regions
+- [ ] **#1** Overview of code regions
+- [ ] **#1** Overview of feature regions
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
-- [ ] New UI (more generic and not all windows opened at once)
-- [ ] Advanced accessibility and registration of loaders (like done with spawners)
-- [ ] Advanced loading screen on startup
-- [ ] Search for files and highlighting in e.g. graph or code city
+- [ ] **#2** New UI (more generic and not all windows opened at once)
+  - [ ] Radial Menu (at users hand)
+- [ ] **#1** Advanced accessibility and registration of loaders (like done with spawners)
+- [ ] Text Input (VR keyboard)
+  - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application
 - [ ] Storing configured frameworks from within application
-- [ ] Loading frameworks/settings from within application
-- [ ] Support of different controller types
-- [ ] Configuration of button layout through user
+- [ ] Entry Room on app startup (similar to SteamVR Home)
+  - [ ] Advanced loading screen on startup
+  - [ ] Loading frameworks/settings from within application
+  - [ ] Support of different controller types
+  - [ ] Configuration of button layout through user
 - [ ] Support of different HMDs
 - [ ] Multi-user VR experience
+- [ ] **#2** Minimal cone tree layout 
 
 ## Minor
 - [ ] Better font for code in code window (e.g. Consolas)
