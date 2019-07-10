@@ -35,7 +35,7 @@
 
 ## Minor
 - [ ] Better font for code in code window (e.g. Consolas)
-- [ ] Enable/Disable all visualizations in UI (includes graphs)
+- [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
 - [ ] Tilt hover window to user
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
