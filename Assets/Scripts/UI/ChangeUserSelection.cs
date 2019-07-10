@@ -11,7 +11,8 @@ namespace VRVis.Testing.Interaction {
 
     /// <summary>
     /// To easily test user selection changing
-    /// using basic UI components (onClick and so on).
+    /// using basic UI components (onClick and so on).<para/>
+    /// ToDo: Improve in future versions and for new GUI
     /// </summary>
     public class ChangeUserSelection : MonoBehaviour {
 
@@ -85,6 +86,21 @@ namespace VRVis.Testing.Interaction {
         public void ShowNFPHeightmap(bool show) {
             ApplicationLoader.GetApplicationSettings().SetNFPVisActive(Settings.ApplicationSettings.NFP_VIS.HEIGHTMAP, show, true);
         }
+
+
+        // ------------------------------------------------------------
+        // Show/hide other visualizations
+
+        /// <summary>Shows/hides the visualization of a spawner.</summary>
+        private void SetSpawnerVis(string name, bool active) {
+            ASpawner s = ApplicationLoader.GetInstance().GetSpawner(name);
+            if (s == null) { return; }
+            s.ShowVisualization(active);
+        }
+
+        public void ToggleSoftwareGraphVisualization(bool show) { SetSpawnerVis("StructureSpawnerV2", show); }
+        public void ToggleFeatureGraphVisualization(bool show) { SetSpawnerVis("VariabilityModelSpawner", show); }
+        public void ToggleCodeCityVisualization(bool show) { SetSpawnerVis("CodeCityV1", show); }
 
 
         /// <summary>Simply validate the feature model configuration.</summary>

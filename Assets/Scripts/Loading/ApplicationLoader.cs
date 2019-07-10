@@ -170,6 +170,7 @@ namespace VRVis.IO {
                 if (!e.executeOnStartup || e.spawner == null) { continue; }
                 Debug.Log("Executing spawner: " + e.name);
                 e.spawner.SpawnVisualization();
+                e.spawner.ShowVisualization(!e.hideAfterSpawn);
             }
 
 
@@ -305,8 +306,12 @@ namespace VRVis.IO {
 
             public ASpawner spawner;
             public string name;
+
+            [Tooltip("Execute spawner with application startup")]
             public bool executeOnStartup = false;
 
+            [Tooltip("Hide spawned elements")]
+            public bool hideAfterSpawn = false;
         }
         
 

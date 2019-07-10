@@ -118,6 +118,14 @@ namespace VRVis.Spawner {
         }
 
 
+        /// <summary>Show/Hide the visualization.</summary>
+        public override void ShowVisualization(bool state) {
+
+            if (!done || !hierarchyParent) { return; }
+            hierarchyParent.gameObject.SetActive(state);
+        }
+
+
         /// <summary>Spawn the software system structure.</summary>
         public bool SpawnStructure() {
 

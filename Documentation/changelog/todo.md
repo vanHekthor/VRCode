@@ -40,6 +40,7 @@
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
   - [ ] Automated check/validation of alternate group selection
+  - [ ] Selecting and configuring numerical options (requires UI concerns)
 - [ ] Possibility to zoom on text for better readability
 - [ ] Feature regions counter to show amount
 - [ ] Instant snap to start/end of file instead of "endless" scrolling

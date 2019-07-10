@@ -31,6 +31,12 @@ namespace VRVis.Spawner {
         public virtual bool SpawnVisualization() { return false; }
 
         /// <summary>
+        /// Show/Hide the visualization.<para/>
+        /// This usually simply enables/disables the according gameobject.
+        /// </summary>
+        public virtual void ShowVisualization(bool state) {}
+
+        /// <summary>
         /// Returns a spawner or null if not implemented/available.<para/>
         /// Use the enum "SpawnerList" to retrieve names of available spawners!
         /// </summary>

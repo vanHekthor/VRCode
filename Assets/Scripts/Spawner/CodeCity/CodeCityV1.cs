@@ -20,7 +20,10 @@ namespace VRVis.Spawner {
     /// </summary>
     public class CodeCityV1 : ASpawner {
 
+        [Tooltip("Parent element to attach objects to")]
         public Transform parent;
+
+        [Tooltip("Basic cube prefab for the city buildings")]
         public GameObject cubePrefab;
 
         [Tooltip("Total size of the city (width/height)")]
@@ -112,6 +115,9 @@ namespace VRVis.Spawner {
         }
 
         private PNode pTreeRoot = null;
+        private float spawn_divBy = 1;
+        private Vector2 spawn_multBy = Vector2.one;
+        private bool isSpawned = false;
 
 
         // information about the currently spawned city
@@ -121,12 +127,14 @@ namespace VRVis.Spawner {
         private uint i_spawned_packages = 0;
         private uint i_max_depth = 0;
 
-        private float spawn_divBy = 1;
-        private Vector2 spawn_multBy = Vector2.one;
-
 
         /// <summary>Prepares and spawns the visualization.</summary>
         public override bool SpawnVisualization() {
+
+            if (isSpawned) {
+                Debug.LogWarning("Code city is already spawned!");
+                return false;
+            }
 
             StructureLoader sl = ApplicationLoader.GetInstance().GetStructureLoader();
 
@@ -139,10 +147,22 @@ namespace VRVis.Spawner {
             bool success = SpawnCodeCity(sl.GetRootNode());
 
             if (!success) { Debug.LogWarning("Failed to spawn code city v1."); }
-            else { Debug.Log("Code City V1 successfully spawned."); }
+            else {
+                Debug.Log("Code City V1 successfully spawned.");
+                isSpawned = true;
+            }
 
             return success;
         }
+
+
+        /// <summary>Show/Hide the visualization.</summary>
+        public override void ShowVisualization(bool state) {
+
+            if (!isSpawned || !parent) { return; }
+            parent.gameObject.SetActive(state);
+        }
+
 
         /// <summary>Spawns the code city visualization.</summary>
         public bool SpawnCodeCity(SNode rootNode) {

@@ -16,6 +16,7 @@ namespace VRVis.Testing.Texturing {
 
         private MeshFilter mf;
 
+        private bool done = false;
 
 	    void Start () {
 		
@@ -25,12 +26,20 @@ namespace VRVis.Testing.Texturing {
                 Debug.LogError("Could not find MeshFilter component!");
                 return;
             }
-
-            // set the UV mesh and creates the texture
-            mf.mesh.SetUVs(0, GetCubeUVs());
-            Texture2D t = CreateCubeTexture(4, 4);
-            GetComponent<Renderer>().material.mainTexture = t;
 	    }
+
+
+        private void Update() {
+            
+            if (!done && Time.realtimeSinceStartup > 3) {
+                done = true;
+
+                // set the UV mesh and creates the texture
+                mf.mesh.SetUVs(0, GetCubeUVs());
+                Texture2D t = CreateCubeTexture(4, 4);
+                GetComponent<Renderer>().material.mainTexture = t;
+            }
+        }
 
 
         /// <summary>
@@ -62,12 +71,12 @@ namespace VRVis.Testing.Texturing {
                     Color c = Color.white;
 
                     // part color selection
-                    if (y == 0 && x == 1) { c = Color.red; } // front - 
+                    if (y == 0 && x == 1) { c = Color.red; } // front
                     else if (y == 1 && x == 0) { c = Color.green; } // left
                     else if (y == 1 && x == 1) { c = Color.blue; } // top
-                    else if (y == 1 && x == 2) { c = Color.magenta; } // right -
-                    else if (y == 1 && x == 3) { c = Color.cyan; } // bottom -
-                    else if (y == 2 && x == 1) { c = Color.yellow; } // back -
+                    else if (y == 1 && x == 2) { c = Color.magenta; } // right
+                    else if (y == 1 && x == 3) { c = Color.cyan; } // bottom
+                    else if (y == 2 && x == 1) { c = Color.yellow; } // back
 
                     ColorPart(tex, x * width_side, y * height_side, width_side, height_side, c);
                 }
@@ -87,7 +96,7 @@ namespace VRVis.Testing.Texturing {
             for (int w = 0; w < width; w++) {
                 for (int h = 0; h < height; h++) {
                     tex.SetPixel(x + w, y + h, c);
-                    Debug.Log("Setting pixel: x=" + (x+w) + ", y=" + (y+h));
+                    //Debug.Log("Setting pixel: x=" + (x+w) + ", y=" + (y+h));
                 }
             }
         }
@@ -114,14 +123,14 @@ namespace VRVis.Testing.Texturing {
             float y2 = 2f / 3f;
             float y3 = 1;
 
-            // NOTE: order matters (F, T, K, B, L, R)
+            // NOTE: order matters (F, T, K, B, R, L)
 
             // front
             uvs.Add(new Vector2(x1, y0));
             uvs.Add(new Vector2(x2, y0));
             uvs.Add(new Vector2(x1, y1));
             uvs.Add(new Vector2(x2, y1));
-
+            
             // top
             uvs.Add(new Vector2(x1, y1));
             uvs.Add(new Vector2(x2, y1));
@@ -140,17 +149,17 @@ namespace VRVis.Testing.Texturing {
             uvs.Add(new Vector2(x3, y2));
             uvs.Add(new Vector2(x4, y2));
 
-            // left
-            uvs.Add(new Vector2(x0, y1));
-            uvs.Add(new Vector2(x1, y1));
-            uvs.Add(new Vector2(x0, y2));
-            uvs.Add(new Vector2(x1, y2));
-
             // right
             uvs.Add(new Vector2(x2, y1));
             uvs.Add(new Vector2(x3, y1));
             uvs.Add(new Vector2(x2, y2));
             uvs.Add(new Vector2(x3, y2));
+
+            // left
+            uvs.Add(new Vector2(x0, y1));
+            uvs.Add(new Vector2(x1, y1));
+            uvs.Add(new Vector2(x0, y2));
+            uvs.Add(new Vector2(x1, y2));
 
             return uvs;
         }

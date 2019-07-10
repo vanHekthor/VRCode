@@ -105,6 +105,14 @@ namespace VRVis.Spawner {
         }
 
 
+        /// <summary>Show/Hide the visualization.</summary>
+        public override void ShowVisualization(bool state) {
+
+            if (!isSpawned || !hierarchyParent) { return; }
+            hierarchyParent.gameObject.SetActive(state);
+        }
+
+
         /// <summary>
         /// Spawns the model hierarchy in space according to the settings.
         /// </summary>
