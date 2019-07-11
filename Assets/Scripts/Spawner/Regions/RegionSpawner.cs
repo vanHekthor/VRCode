@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.Elements;
 using VRVis.IO;
 using VRVis.IO.Features;
@@ -41,6 +42,11 @@ namespace VRVis.Spawner {
         // pixel error per text-element to consider for region creation
         [Tooltip("Error correction value for multiple text instances")]
         public float ERROR_PER_ELEMENT = 0.2f; // 0.2 seems to be a good value for font-size 8-14
+
+        // callbacks for when the regions were spawned (e.g. used by overview)
+        [HideInInspector]
+        public CodeFileIntEvent onNFPRegionsSpawned = new CodeFileIntEvent();
+        public class CodeFileIntEvent : UnityEvent<CodeFile, int> {}
 
         private string activeNFP; // stores active property temporarily
         private CodeFile currentFile; // regions currently spawned for this file
@@ -282,6 +288,9 @@ namespace VRVis.Spawner {
             // (this reference is required to color or scale them)
             AddSpawnedRegions(file, regionsSpawned);
             if (LOGGING) { Debug.Log("NFP regions spawned: " + regionsSpawned.Count); }
+
+            // invoke event to notify scripts that use it
+            onNFPRegionsSpawned.Invoke(file, regionsSpawned.Count);
             return true;
         }
 

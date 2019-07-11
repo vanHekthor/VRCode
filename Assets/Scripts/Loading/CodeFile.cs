@@ -138,7 +138,7 @@ namespace VRVis.IO {
                 // force a mesh update before reading the properties
                 textInfo.textComponent.ForceMeshUpdate();
                 totalLineCount += textInfo.lineCount;
-                Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount);
+                //Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount); // debug
 
                 if (lineHeight <= 0) {
                     TMP_Text text = textInfo.textComponent;
