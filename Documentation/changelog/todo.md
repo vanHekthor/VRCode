@@ -10,8 +10,8 @@
   - [ ] Textures to show regions and their performance
   - [ ] Interaction
     - [ ] Selecting elements
-    - [X] Info on hover
-    - [ ] "Be the data" (maybe)
+    - [X] Info on hover *(04.07.2019)*
+    - [ ] "Be the data" approach (maybe?)
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] **#1** Overview of code regions
 - [ ] **#1** Overview of feature regions
@@ -34,8 +34,14 @@
 - [ ] **#2** Minimal cone tree layout 
 
 ## Minor
-- [ ] Better font for code in code window (e.g. Consolas)
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
+- [ ] Put oerview texture generation in a curoutine to avoid performance issues
+- [ ] Improve overview texture generation by NOT pre-calculating line patterns
+- [ ] Add raycast to check that code city hover window is not inside building
+- [ ] Add possibility to enable/disable code/region overview window
+- [ ] Add possibility to show/hide code or regions or both in overview window
+- [ ] Better font for code in code window (e.g. Consolas)
+- [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Tilt hover window to user
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated

@@ -132,7 +132,7 @@ namespace VRVis.IO {
             int totalLineCount = 0;
             float lineHeight = -1;
             float lineWidth = -1;
-            int textNo = 0;
+            //int textNo = 0;
             foreach (TMP_TextInfo textInfo in GetReferences().GetTextElements()) {
 
                 // force a mesh update before reading the properties
