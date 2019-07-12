@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.RegionProperties;
@@ -38,6 +39,11 @@ namespace VRVis.Spawner {
 
         [Tooltip("Instance of the according edge spawner")]
         public CodeWindowEdgeSpawner edgeSpawner;
+
+        // callbacks for when the file was spawned (e.g. used by content overview)
+        [HideInInspector]
+        public CodeFileEvent onFileSpawned = new CodeFileEvent();
+        public class CodeFileEvent : UnityEvent<CodeFile> {}
 
         // after how many characters we have to split up the text
         // and add the rest to another text element
@@ -234,6 +240,7 @@ namespace VRVis.Spawner {
             spawning = false;
             Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
             callback(true, spawn_file, "");
+            onFileSpawned.Invoke(spawn_file);
         }
 
 

@@ -149,7 +149,9 @@ namespace VRVis.Tutorial {
             windowSpawning = false;
 
             if (!success) {
-                Debug.LogError("Failed to place window (" + file.GetNode().GetName() + ")! " + msg);
+                string name = "";
+                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }
         }

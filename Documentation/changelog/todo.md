@@ -13,7 +13,9 @@
     - [X] Info on hover *(04.07.2019)*
     - [ ] "Be the data" approach (maybe?)
 - [ ] External visualization settings (can be used for later loading of workspace)
-- [ ] **#1** Overview of code regions
+- [ ] Code Window Content Overview
+  - [X] **#1** Overview of code window content *(12.07.2019)*
+  - [ ] **#1** Overview of code regions
 - [ ] **#1** Overview of feature regions
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
@@ -65,5 +67,7 @@
 - [ ] Code cleanup
 
 ## Bugs
+- [X] NullPointerException when calling "WindowSpawnedCallback" function with no CodeFile *(12.07.2019)*
+- [X] Last line number not shown in code file *(12.07.2019)*
 - [ ] State of nodes of the variability model not always updating properly
 - [ ] Laser pointer sometimes not working right after startup (rare)

@@ -7,7 +7,7 @@ namespace VRVis.Spawner.File.Overview {
 
     /// <summary>
     /// Component for the overview windows.<para/>
-    /// Allows to link two scrollbars, whereby the second receives the size of the first.
+    /// Allows to link two scrollbars, whereby the second receives the size of the first initially in LINK mode.
     /// </summary>
     public class LinkScrollHandles : MonoBehaviour {
 
@@ -37,6 +37,22 @@ namespace VRVis.Spawner.File.Overview {
                 sb2_last_val = scrollBar2.value;
             }
 	    }
+
+
+        /// <summary>
+        /// Set the scale y-axis of the second scrollbar.<para/>
+        /// (This is used for the code overview window.)
+        /// </summary>
+        /// <param name="maxHeightPerc">Max height in percentage between 0 and 1</param>
+        public void SetScrollbar2ScaleY(float maxHeightPerc) {
+
+            if (maxHeightPerc > 1) { maxHeightPerc = 1; }
+            else if (maxHeightPerc < 0) { maxHeightPerc = 0; }
+
+            Vector3 s = scrollBar2.gameObject.transform.localScale;
+            s.y = maxHeightPerc;
+            scrollBar2.gameObject.transform.localScale = s;
+        }
 
     }
 }
