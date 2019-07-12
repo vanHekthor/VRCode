@@ -238,8 +238,9 @@ namespace VRVis.Spawner.File.Overview {
 
                             // for other patterns, use: System.Convert.ToInt32("111111111", 2);
                             char c = ci.character;
+                            int patfull = System.Convert.ToInt32("111111111", 2);;
                             if (char.IsLetterOrDigit(c)) {
-                                if (char.IsUpper(c)) { pattern = 255; }
+                                if (char.IsUpper(c)) { pattern = patfull; }
                                 else { pattern = System.Convert.ToInt32("000111111", 2); }
                             }
                             else if (c == '{') { pattern = System.Convert.ToInt32("110011110", 2); }
@@ -248,6 +249,7 @@ namespace VRVis.Spawner.File.Overview {
                             else if (c == '-') { pattern = System.Convert.ToInt32("000111000", 2); }
                             else if (c == '+') { pattern = System.Convert.ToInt32("010111010", 2); }
                             else if (c == ',' || c == '.') { pattern = System.Convert.ToInt32("000000010", 2); }
+                            else { pattern = patfull; }
                         }
 
                         // encode color
