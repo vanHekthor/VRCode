@@ -423,7 +423,7 @@ namespace VRVis.Spawner.File.Overview {
 
             // how many pixels on the y-axis are occupied at the end
             // (this value is then used to calculate the overview scrollbar height)
-            pixelsOccupiedPercentage = (previous_pp_y + lineHeight - 1) / height;
+            pixelsOccupiedPercentage = (previous_pp_y + lineHeight) / height;
             if (pixelsOccupiedPercentage > 1) { pixelsOccupiedPercentage = 1; }
             else if (pixelsOccupiedPercentage < 0) { pixelsOccupiedPercentage = 0; }
 
@@ -540,7 +540,7 @@ namespace VRVis.Spawner.File.Overview {
 
             // how many pixels on the y-axis are occupied at the end
             // (this value is then used to calculate the overview scrollbar height)
-            pixelsOccupiedPercentage = (previous_pp_y + lineHeight - 1) / height;
+            pixelsOccupiedPercentage = (previous_pp_y + lineHeight) / height;
             if (pixelsOccupiedPercentage > 1) { pixelsOccupiedPercentage = 1; }
             else if (pixelsOccupiedPercentage < 0) { pixelsOccupiedPercentage = 0; }
 
