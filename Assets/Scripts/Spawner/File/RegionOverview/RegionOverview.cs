@@ -322,9 +322,19 @@ namespace VRVis.Spawner.File.Overview {
             };
 
             // make texture transparent
+            /*
             Color[] transparentLine = new Color[width];
             for (int x_ = 0; x_ < width; x_++) { transparentLine[x_] = new Color(1, 1, 1, 0); }
             for (int y_ = 0; y_ < height; y_++) { tex.SetPixels(0, y_, width, 1, transparentLine); }
+            */
+            int pixels_total = tex.width * tex.height;
+            Color[] colors = new Color[pixels_total];
+            Color c_transparent = new Color(1, 1, 1, 0);
+            for (int y_ = 0; y_ < width; y_++) {
+                for (int x_ = 0; x_ < height; x_++) {
+                    colors[y_ * width + x_] = c_transparent;
+                }
+            }
 
             // calculate text/code patterns
             List<List<int>> linePatterns = CalculateLinePatterns();
@@ -385,6 +395,7 @@ namespace VRVis.Spawner.File.Overview {
 
                         // create the block representing a character on the texture
                         // (uses inverted texture generation)
+                        /*
                         int y_s = height - pixelPos_y - 3;
                         for (int y = y_s; y < y_s + 3; y++) {
                             for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
@@ -393,9 +404,20 @@ namespace VRVis.Spawner.File.Overview {
                                 pattern = pattern >> 1;
                             }
                         }
+                        */
+                        int y_s = height - pixelPos_y - 3;
+                        for (int y = y_s; y < y_s + 3; y++) {
+                            for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
+                                int pos = y * width + x;
+                                if ((pattern & 1) == 1) { colors[pos] = c; }
+                                else { colors[pos] = invisibleColor; }
+                                pattern = pattern >> 1;
+                            }
+                        }
                     }
 
                     pixelPos_x += x_increment;
+                    if (pixelPos_x >= width) { break; }
                 }
             }
 
@@ -405,7 +427,8 @@ namespace VRVis.Spawner.File.Overview {
             if (pixelsOccupiedPercentage > 1) { pixelsOccupiedPercentage = 1; }
             else if (pixelsOccupiedPercentage < 0) { pixelsOccupiedPercentage = 0; }
 
-            // apply changed pixels
+            // apply all pixel colors at once instead of single calls & apply
+            tex.SetPixels(colors);
             tex.Apply();
             return tex;
         }
