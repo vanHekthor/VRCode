@@ -280,12 +280,19 @@ namespace VRVis.Spawner.File.Overview {
                 if (char.IsUpper(c)) { pattern = patfull; }
                 else { pattern = BitStringToInt("000111111"); }
             }
-            else if (c == '{') { pattern = BitStringToInt("110011110"); }
-            else if (c == '(') { pattern = BitStringToInt("011001011"); }
+            //else if (c == '{') { pattern = BitStringToInt("110011110"); }
+            //else if (c == '}') { pattern = BitStringToInt("011110011"); }
+            else if (c == '(' || c == '[' || c == '{') { pattern = BitStringToInt("011001011"); }
+            else if (c == ')' || c == ']' || c == '}') { pattern = BitStringToInt("110100110"); }
             else if (c == '|') { pattern = BitStringToInt("010010010"); }
+            else if (c == '/') { pattern = BitStringToInt("010011001"); } //BitStringToInt("100010001"); }
+            else if (c == '\\') { pattern = BitStringToInt("010110100"); } //BitStringToInt("001010100"); }
             else if (c == '-') { pattern = BitStringToInt("000111000"); }
             else if (c == '+') { pattern = BitStringToInt("010111010"); }
+            else if (c == '*') { pattern = BitStringToInt("010000000"); }
             else if (c == ',' || c == '.') { pattern = BitStringToInt("000000010"); }
+            else if (c == ';' || c == ':') { pattern = BitStringToInt("000010010"); }
+            else if (c == '_') { pattern = BitStringToInt("000000111"); }
             else { pattern = patfull; }
 
             // store in index
@@ -322,11 +329,6 @@ namespace VRVis.Spawner.File.Overview {
             };
 
             // make texture transparent
-            /*
-            Color[] transparentLine = new Color[width];
-            for (int x_ = 0; x_ < width; x_++) { transparentLine[x_] = new Color(1, 1, 1, 0); }
-            for (int y_ = 0; y_ < height; y_++) { tex.SetPixels(0, y_, width, 1, transparentLine); }
-            */
             int pixels_total = tex.width * tex.height;
             Color[] colors = new Color[pixels_total];
             Color c_transparent = new Color(1, 1, 1, 0);
@@ -389,22 +391,12 @@ namespace VRVis.Spawner.File.Overview {
                     if (lineHeight < 3) {
 
                         // check if any pixel is visible (uses inverted texture generation)
-                        if (pattern > 0) { tex.SetPixel(pixelPos_x, height - pixelPos_y, c); }
+                        if (pattern > 0) { colors[(height - pixelPos_y - 1) * width + pixelPos_x] = c; }
                     }
                     else {
 
                         // create the block representing a character on the texture
                         // (uses inverted texture generation)
-                        /*
-                        int y_s = height - pixelPos_y - 3;
-                        for (int y = y_s; y < y_s + 3; y++) {
-                            for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
-                                if ((pattern & 1) == 1) { tex.SetPixel(x, y, c); }
-                                else { tex.SetPixel(x, y, invisibleColor); }
-                                pattern = pattern >> 1;
-                            }
-                        }
-                        */
                         int y_s = height - pixelPos_y - 3;
                         for (int y = y_s; y < y_s + 3; y++) {
                             for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
@@ -515,7 +507,7 @@ namespace VRVis.Spawner.File.Overview {
                         if (lineHeight < 3) {
 
                             // check if any pixel is visible (uses inverted texture generation)
-                            if (pattern > 0) { tex.SetPixel(pixelPos_x, height - pixelPos_y, ci.color); }
+                            if (pattern > 0) { colors[(height - pixelPos_y - 1) * width + pixelPos_x] = ci.color; }
                         }
                         else {
 

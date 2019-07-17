@@ -15,6 +15,9 @@ namespace VRVis.Spawner.File.Overview {
         public Scrollbar scrollBar1;
         public Scrollbar scrollBar2;
 
+        public bool firstHasAffect = true;
+        public bool secondHasAffect = true;
+
         private float sb1_last_val = 0;
         private float sb2_last_val = 0;
 
@@ -27,8 +30,8 @@ namespace VRVis.Spawner.File.Overview {
             
                 float sb1v = scrollBar1.value;
                 float sb2v = scrollBar2.value;
-                bool sb1_changed = Mathf.Abs(sb1v - sb1_last_val) > 0.0001f;
-                bool sb2_changed = Mathf.Abs(sb2v - sb2_last_val) > 0.0001f;
+                bool sb1_changed = firstHasAffect && Mathf.Abs(sb1v - sb1_last_val) > 0.0001f;
+                bool sb2_changed = secondHasAffect && Mathf.Abs(sb2v - sb2_last_val) > 0.0001f;
 
                 if (sb1_changed) { scrollBar2.value = sb1v; }
                 else if (sb2_changed) { scrollBar1.value = sb2v; }
