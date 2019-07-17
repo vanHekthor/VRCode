@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using VRVis.Elements;
 using VRVis.IO;
 
 namespace VRVis.Spawner.File.Overview {
@@ -43,6 +44,10 @@ namespace VRVis.Spawner.File.Overview {
 
         // this texture always stays the same and can be reused
         private Texture2D codeTexture = null;
+        private Texture2D regionTexture = null;
+
+        // line height used to generate code texture
+        private float ct_lineHeight = 0;
 
         // in percentage how many pixels are occupied on the y-axis
         private float pixelsOccupiedPercentage = 0;
@@ -130,12 +135,12 @@ namespace VRVis.Spawner.File.Overview {
 
             if (amount > 0) {
                 
-                // ToDo: regenerate the region texture, overlay on code texture and apply result
-                // ToDo: is it posible & faster to assign 2 textures and overlay them in the shader?
+                // generate the region texture, overlay on code texture and apply result
+                regionTexture = GenerateRegionTexture(codeTexture.width, codeTexture.height);
+                ApplyTextureToUIImage(OverlayTextures(codeTexture, regionTexture, Overlay1));
+                regionsApplied = true;
 
-                // don't forget:
-                // ApplyTextureToUIImage(compositeTexture)
-                // regionsApplied = true;
+                // ToDo: is it posible & faster to assign 2 textures and overlay them in the shader?
             }
             else if (regionsApplied) {
                 
@@ -362,6 +367,9 @@ namespace VRVis.Spawner.File.Overview {
             int x_increment = lineHeight < 3 ? 1 : 3;
             int previous_pp_y = -1; // previous pixel position
 
+            // store to re-use in region texture generation
+            ct_lineHeight = lineHeight;
+
             foreach (List<int> linePattern in linePatterns) {
 
                 int pixelPos_x = 0;
@@ -480,6 +488,9 @@ namespace VRVis.Spawner.File.Overview {
             int x_increment = lineHeight < 3 ? 1 : 3;
             int previous_pp_y = -1; // previous pixel position
 
+            // store to re-use in region texture generation
+            ct_lineHeight = lineHeight;
+
             foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) {
                 for (int n = 0; n < ti.lineCount; n++) {
                     
@@ -549,14 +560,99 @@ namespace VRVis.Spawner.File.Overview {
         /// </summary>
         private Texture2D GenerateRegionTexture(int width, int height) {
 
-            Texture2D tex = new Texture2D(width, height);
+            Debug.LogWarning("Generating region texture...");
 
-            // ToDo: calculate nfp regions
-            // ToDo: render nfp regions (simulate alpha value for overlapping)
+            Texture2D tex = new Texture2D(width, height) {
+                filterMode = FilterMode.Point,
+                alphaIsTransparency = true
+            };
 
-            // apply changed pixels
+            // make texture transparent
+            int pixels_total = tex.width * tex.height;
+            Color[] colors = new Color[pixels_total];
+            Color c_transparent = new Color(1, 1, 1, 0);
+            for (int y_ = 0; y_ < width; y_++) {
+                for (int x_ = 0; x_ < height; x_++) {
+                    colors[y_ * width + x_] = c_transparent;
+                }
+            }
+
+            // get region spawner to retrieve spawned regions
+            ASpawner sp = ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            if (sp == null || !(sp is FileSpawner)) { Debug.LogError("FileSpawner not found!"); return tex; }
+            RegionSpawner rsp = (RegionSpawner) ((FileSpawner) sp).GetSpawner((int) FileSpawner.SpawnerList.RegionSpawner);
+            
+            foreach (Region r in rsp.GetSpawnedRegions(fileRefs.GetCodeFile())) {
+                foreach (Region.Section s in r.GetSections()) {
+
+                    int y_start = Mathf.RoundToInt((s.start-1) * ct_lineHeight);
+                    int y_end = Mathf.RoundToInt(s.end * ct_lineHeight);
+
+                    // fill up the whole space (whole width and height of section)
+                    for (int y = y_start; y <= y_end; y++) {
+                        for (int x = 0; x < width; x++) {
+                            colors[y * width + x] = r.GetCurrentNFPColor();
+                        }
+                    }
+                }
+            }
+
+            // set pixels and apply changes
+            tex.SetPixels(colors);
             tex.Apply();
             return tex;
+        }
+
+
+        /// <summary>
+        /// Overlay texture 1 with texture 2 with respect to the mode.<para/>
+        /// Returns the merged texture or null in case the dimensions are wrong.
+        /// </summary>
+        /// <param name="operation">A delegate method that tells how to treat two pixels and returns the value.</param>
+        private Texture2D OverlayTextures(Texture2D tex1, Texture2D tex2, System.Func<Color, Color, Color> operation) {
+
+            if (tex1.width != tex2.width || tex1.height != tex2.height) {
+                Debug.LogError("Textures do not have the same dimensions!");
+                return null;
+            }
+
+            Debug.LogWarning("Merging two textures...");
+
+            Texture2D tex = new Texture2D(tex1.width, tex1.height) {
+                filterMode = FilterMode.Point,
+                alphaIsTransparency = true
+            };
+            
+            Color[] colors = tex1.GetPixels();
+
+            // ToDo: fix positions!
+            for (int y = 0; y < tex.height; y++) {
+                for (int x = 0; x < tex.width; x++) {
+                    Color c2 = tex2.GetPixel(x, y);
+                    if (c2.a == 0) { continue; }
+                    int pos = y * tex.width + x;
+                    colors[pos] = operation(colors[pos], c2);
+                }
+            }
+            
+            // set pixels and apply changes
+            tex.SetPixels(colors);
+            tex.Apply();
+            return tex;
+        }
+
+        /// <summary>
+        /// Overlay these colors.<para/>
+        /// The value of a controls how much of c2 is added to the result.
+        /// </summary>
+        private Color Overlay1(Color c1, Color c2) {
+            // ToDo: make configurable!
+            float a = 0.5f;
+            return new Color(
+                (1-a) * c1.r + a * c2.r,
+                (1-a) * c1.g + a * c2.g,
+                (1-a) * c1.b + a * c2.b
+            );
         }
 
     }

@@ -34,6 +34,8 @@ namespace VRVis.Elements {
 
         // to store node sections (e.g. if nodes = [1,2,3,4,8,9] -> [from: 1, to: 4] and [from: 8, to: 9])
         public struct Section {
+
+            /// <summary>Starts at 1 if represents first line in a file</summary>
             public int start;
             public int end;
 
@@ -55,6 +57,9 @@ namespace VRVis.Elements {
 
         // stores min/max values of non functional properties (NFP) (key = prop. name)
         private Dictionary<string, MinMaxValue> nfpMinMaxValues = new Dictionary<string, MinMaxValue>();
+
+        // store current NFP color
+        private Color currentNFPColor = Color.black;
 
 
         // CONSTRUCTOR
@@ -268,6 +273,9 @@ namespace VRVis.Elements {
 
         /// <summary>Get min/max values of all non functional properties.</summary>
         public Dictionary<string, MinMaxValue> GetNFPMinMaxValues() { return nfpMinMaxValues; }
+
+        public void SetCurrentNFPColor(Color c) { currentNFPColor = c; }
+        public Color GetCurrentNFPColor() { return currentNFPColor; }
 
 
         // FUNCTIONALITY

@@ -200,6 +200,7 @@ namespace VRVis.Spawner.Regions {
                 // apply relative color
                 float valuePercentage = minMax.GetRangePercentage(absValue);
                 Color regionColor = colMethod.Evaluate(valuePercentage);
+                region.SetCurrentNFPColor(regionColor);
 
                 // apply scaling on heightmap region as well if this is one
                 if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.CODE_MARKING) {
