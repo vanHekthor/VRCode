@@ -15,6 +15,8 @@ namespace VRVis.Spawner.File.Overview {
         public Scrollbar scrollBar1;
         public Scrollbar scrollBar2;
 
+        public bool sb2CopySizeOfsb1 = true;
+
         public bool firstHasAffect = true;
         public bool secondHasAffect = true;
 
@@ -26,7 +28,7 @@ namespace VRVis.Spawner.File.Overview {
 	
             if (scrollBar1 && scrollBar2) {
 
-                scrollBar2.size = scrollBar1.size;
+                if (sb2CopySizeOfsb1) { scrollBar2.size = scrollBar1.size; }
             
                 float sb1v = scrollBar1.value;
                 float sb2v = scrollBar2.value;
@@ -40,6 +42,18 @@ namespace VRVis.Spawner.File.Overview {
                 sb2_last_val = scrollBar2.value;
             }
 	    }
+
+        private void LateUpdate() {
+            if (scrollBar1 && scrollBar2) {
+                if (sb2CopySizeOfsb1) { scrollBar2.size = scrollBar1.size; }
+            }
+        }
+
+        private void FixedUpdate() {
+            if (scrollBar1 && scrollBar2) {
+                if (sb2CopySizeOfsb1) { scrollBar2.size = scrollBar1.size; }
+            }
+        }
 
 
         /// <summary>
