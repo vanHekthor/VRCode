@@ -50,6 +50,13 @@ namespace VRVis.Spawner.File.Overview {
         // if code regions are applied to the last shown texture
         private bool regionsApplied = false;
 
+        // An index to store already converted byte => int patterns
+        // because it takes long for unity to convert the string to int using Convert.
+        // Using this index, we store already converted bit strings for a faster lookup on next call.
+        private static Dictionary<string, int> bitStringIndex = new Dictionary<string, int>();
+        private static Dictionary<char, int> patternIndex = new Dictionary<char, int>();
+        private static readonly int fullPattern = BitStringToInt("111111111");
+
 
         // !!!
         // TODO: Put generation of line patterns and code texture in one procedure for less memory consumption.
@@ -153,7 +160,7 @@ namespace VRVis.Spawner.File.Overview {
             // generate the code texture
             int texWidth = (int) (textureAspectRatio.x * textureResolution);
             int texHeight = (int) (textureAspectRatio.y * textureResolution);
-            codeTexture = GenerateCodeTexture(texWidth, texHeight);
+            codeTexture = GenerateCodeTextureV2(texWidth, texHeight);
 
             if (apply) { ApplyTextureToUIImage(codeTexture); }
         }
@@ -197,26 +204,7 @@ namespace VRVis.Spawner.File.Overview {
             // ToDo: do this only once bc. text should not change during runtime
             // Contains lists with following information (always 2 entries belong together and rep. 1 char):
             // - [0] = pattern made out of 4 quads in binary (min = 0, max = 111111111 (9 bit))
-            // - [1] = color? converted to integer RGB (each 0 - 255 => 8 bits per color component)
-            /*
-             * The [0] place is always (9 bit), telling about the pattern.
-             * 
-             * # | # | #
-             * # | # | #
-             * # | # | #
-             * 
-             * 6 | 7 | 8
-             * 3 | 4 | 5
-             * 0 | 1 | 2
-             * 
-             * e.g. the pattern to represent underscore "_" (e = empty):
-             * 
-             * e | e | e
-             * e | e | e
-             * # | # | #
-             * 
-             * number would be: 000000111
-             */
+            // - [1] = color, converted to integer RGB (each 0 - 255 => 8 bits per color component)
             List<List<int>> linePatterns = new List<List<int>>();
             
             int charInfoStart = 0;
@@ -233,24 +221,7 @@ namespace VRVis.Spawner.File.Overview {
                         TMP_CharacterInfo ci = ti.characterInfo[i];
 
                         // for now, only distinguish between visible, capital or small
-                        int pattern = 0;
-                        if (ci.isVisible) {
-
-                            // for other patterns, use: System.Convert.ToInt32("111111111", 2);
-                            char c = ci.character;
-                            int patfull = System.Convert.ToInt32("111111111", 2);;
-                            if (char.IsLetterOrDigit(c)) {
-                                if (char.IsUpper(c)) { pattern = patfull; }
-                                else { pattern = System.Convert.ToInt32("000111111", 2); }
-                            }
-                            else if (c == '{') { pattern = System.Convert.ToInt32("110011110", 2); }
-                            else if (c == '(') { pattern = System.Convert.ToInt32("011001011", 2); }
-                            else if (c == '|') { pattern = System.Convert.ToInt32("010010010", 2); }
-                            else if (c == '-') { pattern = System.Convert.ToInt32("000111000", 2); }
-                            else if (c == '+') { pattern = System.Convert.ToInt32("010111010", 2); }
-                            else if (c == ',' || c == '.') { pattern = System.Convert.ToInt32("000000010", 2); }
-                            else { pattern = patfull; }
-                        }
+                        int pattern = GetCharacterPattern(ci);
 
                         // encode color
                         int color = 0;
@@ -269,6 +240,69 @@ namespace VRVis.Spawner.File.Overview {
             }
 
             return linePatterns;
+        }
+
+
+        /// <summary>
+        /// Generates the character pattern based on the character information.<para/>
+        /// 
+        /// PATTERN DESCRIPTION:<para/>
+        /// 
+        /// The pattern is always (9 bit).<para/>
+        /// _ <para/>
+        /// # | # | #<para/>
+        /// # | # | #<para/>
+        /// # | # | #<para/>
+        /// _ <para/>
+        /// 6 | 7 | 8<para/>
+        /// 3 | 4 | 5<para/>
+        /// 0 | 1 | 2<para/>
+        /// _ <para/>
+        /// e.g. the pattern to represent underscore "_" (e = empty):<para/>
+        /// 
+        /// e | e | e<para/>
+        /// e | e | e<para/>
+        /// # | # | #<para/>
+        /// 
+        /// => pattern would be: 000000111
+        /// </summary>
+        public static int GetCharacterPattern(TMP_CharacterInfo ci) {
+
+            if (!ci.isVisible) { return 0; }
+            int pattern = 0;
+
+            char c = ci.character;
+            if (patternIndex.ContainsKey(c)) { return patternIndex[c]; }
+
+            // for other patterns, use: System.Convert.ToInt32("111111111", 2);
+            int patfull = fullPattern;
+            if (char.IsLetterOrDigit(c)) {
+                if (char.IsUpper(c)) { pattern = patfull; }
+                else { pattern = BitStringToInt("000111111"); }
+            }
+            else if (c == '{') { pattern = BitStringToInt("110011110"); }
+            else if (c == '(') { pattern = BitStringToInt("011001011"); }
+            else if (c == '|') { pattern = BitStringToInt("010010010"); }
+            else if (c == '-') { pattern = BitStringToInt("000111000"); }
+            else if (c == '+') { pattern = BitStringToInt("010111010"); }
+            else if (c == ',' || c == '.') { pattern = BitStringToInt("000000010"); }
+            else { pattern = patfull; }
+
+            // store in index
+            patternIndex[c] = pattern;
+            return pattern;
+        }
+
+        /// <summary>
+        /// Converts the string of bits to its integer representation.<para/>
+        /// Uses an index for faster lookup in case a bit string is passed multiple times.
+        /// </summary>
+        private static int BitStringToInt(string bitString) {
+
+            if (bitStringIndex.ContainsKey(bitString)) { return bitStringIndex[bitString]; }
+            int num = System.Convert.ToInt32(bitString, 2);
+            bitStringIndex[bitString] = num;
+            return num;
         }
 
 
@@ -351,7 +385,7 @@ namespace VRVis.Spawner.File.Overview {
 
                         // create the block representing a character on the texture
                         // (uses inverted texture generation)
-                        int y_s = height - pixelPos_y - 2;
+                        int y_s = height - pixelPos_y - 3;
                         for (int y = y_s; y < y_s + 3; y++) {
                             for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
                                 if ((pattern & 1) == 1) { tex.SetPixel(x, y, c); }
@@ -375,6 +409,124 @@ namespace VRVis.Spawner.File.Overview {
             tex.Apply();
             return tex;
         }
+
+
+        /// <summary>
+        /// Generates the overview texture for the pure code and returns it.<para/>
+        /// Does it like e.g. Sublime, an overflow in character count per line will be cut of.<para/>
+        /// But instead of scrolling as soon as we have too many lines, we simply squeeze it.<para/>
+        /// This needs to be improved in future versions!<para/>
+        /// Notable in V2 of this method:<para/>
+        /// - pattern generation and texture generation are no longer separated and happen in one step (no speedup)<para/>
+        /// - colors of pixels are first stored in an array and at the end applied using setPixels() (significant speedup!)<para/>
+        /// Evaluation: Significant speedup (about half the time of previous version) [17.07.2019 - Leon]
+        /// </summary>
+        private Texture2D GenerateCodeTextureV2(int width, int height) {
+
+            Debug.LogWarning("Code texture generation...");
+
+            Texture2D tex = new Texture2D(width, height) {
+                filterMode = FilterMode.Point,
+                alphaIsTransparency = true
+            };
+
+            // make initial texture transparent
+            int pixels_total = tex.width * tex.height;
+            Color[] colors = new Color[pixels_total];
+            Color c_transparent = new Color(1, 1, 1, 0);
+            for (int y_ = 0; y_ < width; y_++) {
+                for (int x_ = 0; x_ < height; x_++) {
+                    colors[y_ * width + x_] = c_transparent;
+                }
+            }
+
+            // get amount of lines
+            int lines = 0;
+            foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) { lines += ti.lineCount; }
+
+            // render text/code patterns
+            float lineHeight = 3;
+            float maxHeight = lineHeight * lines;
+
+            if (maxHeight > height) {
+                
+                // try using a single pixel instead
+                lineHeight = 1;
+                maxHeight = lines;
+
+                if (maxHeight > height) { lineHeight = height / maxHeight; }
+            }
+            if (lineHeight < 1) {
+                Debug.LogWarning("Overview problem! Line height is less than one pixel!", this);
+                Debug.LogWarning("Lines: " + lines);
+            }
+
+            float curPos_y = 0;
+            int x_increment = lineHeight < 3 ? 1 : 3;
+            int previous_pp_y = -1; // previous pixel position
+
+            foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) {
+                for (int n = 0; n < ti.lineCount; n++) {
+                    
+                    TMP_LineInfo li = ti.lineInfo[n];
+
+                    int pixelPos_x = 0;
+                    int pixelPos_y = Mathf.RoundToInt(curPos_y);
+                    if (pixelPos_y >= height) { pixelPos_y = height-1; }
+                    curPos_y += lineHeight;
+
+                    // avoid overlapping and just skip the lines
+                    if (pixelPos_y == previous_pp_y) { continue; }
+                    previous_pp_y = pixelPos_y;
+
+                    // iterate over all characters
+                    for (int i = li.firstCharacterIndex; i < li.lastCharacterIndex; i++) {
+
+                        TMP_CharacterInfo ci = ti.characterInfo[i];
+
+                        // for now, only distinguish between visible, capital or small
+                        int pattern = GetCharacterPattern(ci);
+
+                        // draw as many pixels as possible
+                        // (e.g. if available size (height) is less than 3, use single pixels)
+                        if (lineHeight < 3) {
+
+                            // check if any pixel is visible (uses inverted texture generation)
+                            if (pattern > 0) { tex.SetPixel(pixelPos_x, height - pixelPos_y, ci.color); }
+                        }
+                        else {
+
+                            // create the block representing a character on the texture
+                            // (uses inverted texture generation)
+                            int y_s = height - pixelPos_y - 3;
+                            for (int y = y_s; y < y_s + 3; y++) {
+                                for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
+                                    int pos = y * width + x;
+                                    if ((pattern & 1) == 1) { colors[pos] = ci.color; }
+                                    else { colors[pos] = invisibleColor; }
+                                    pattern = pattern >> 1;
+                                }
+                            }
+                        }
+
+                        pixelPos_x += x_increment;
+                        if (pixelPos_x >= width) { break; }
+                    }
+                }
+            }
+
+            // how many pixels on the y-axis are occupied at the end
+            // (this value is then used to calculate the overview scrollbar height)
+            pixelsOccupiedPercentage = (previous_pp_y + lineHeight - 1) / height;
+            if (pixelsOccupiedPercentage > 1) { pixelsOccupiedPercentage = 1; }
+            else if (pixelsOccupiedPercentage < 0) { pixelsOccupiedPercentage = 0; }
+
+            // apply all pixel colors at once instead of single calls & apply
+            tex.SetPixels(colors);
+            tex.Apply();
+            return tex;
+        }
+
 
 
         /// <summary>
