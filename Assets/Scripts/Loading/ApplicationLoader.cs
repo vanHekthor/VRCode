@@ -62,8 +62,8 @@ namespace VRVis.IO {
         // 3. feature definitions / variability model loading
         // 4. file regions
         // 5. edge loading
-        // 6. visual properties (depends on regions and edges being loaded previously!)
-        // 7. mappings (replaces visual properties if ready)
+        // --6. visual properties (depends on regions and edges being loaded previously!)-- no longer used (replaced by mappings)
+        // 7. mappings (replaces visual properties)
         private AppConfigLoader configLoader;
         private StructureLoader structureLoader;
         private StructureLoaderUpdater structureLoaderUpdater;

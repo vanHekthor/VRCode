@@ -32,6 +32,7 @@
   - [ ] Loading frameworks/settings from within application
   - [ ] Support of different controller types
   - [ ] Configuration of button layout through user
+  - [ ] Use Unity's [Script Execution Order](https://docs.unity3d.com/Manual/class-MonoManager.html) feature
 - [ ] Support of different HMDs
 - [ ] Multi-user VR experience
 - [ ] **#2** Minimal cone tree layout 
