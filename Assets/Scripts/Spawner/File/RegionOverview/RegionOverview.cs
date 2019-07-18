@@ -48,6 +48,7 @@ namespace VRVis.Spawner.File.Overview {
 
         // line height used to generate code texture
         private float ct_lineHeight = 0;
+        private int ct_xIncrement = 0;
 
         // in percentage how many pixels are occupied on the y-axis
         private float pixelsOccupiedPercentage = 0;
@@ -94,7 +95,7 @@ namespace VRVis.Spawner.File.Overview {
                 ASpawner s2 = fs.GetSpawner((uint) FileSpawner.SpawnerList.RegionSpawner);
                 if (s2 != null && s2 is RegionSpawner) {
                     RegionSpawner rs = (RegionSpawner) s2;
-                    rs.onNFPRegionsSpawned.AddListener(RegionsSpawnedEvent);
+                    rs.onRegionsValuesChanged.AddListener(RegionsChangedEvent);
                     what += " and RegionSpawner";
                 }
                 else { Debug.LogError("RegionSpawner not found!", this); }
@@ -121,6 +122,7 @@ namespace VRVis.Spawner.File.Overview {
 
             if (file == null || file != fileRefs.GetCodeFile()) { return; }
             if (codeTexture == null) { GenerateCodeTexture(); }
+            RegionsChangedEvent(file); // regions need to be updated as well!
         }
 
 
@@ -128,26 +130,25 @@ namespace VRVis.Spawner.File.Overview {
         /// Called as a callback method when regions where spawned.
         /// </summary>
         /// <param name="file">The affected code file</param>
-        private void RegionsSpawnedEvent(CodeFile file, int amount) {
+        private void RegionsChangedEvent(CodeFile file) {
 
             if (file == null || file != fileRefs.GetCodeFile()) { return; }
             if (codeTexture == null) { GenerateCodeTexture(); }
 
-            if (amount > 0) {
-                
-                // generate the region texture, overlay on code texture and apply result
-                regionTexture = GenerateRegionTexture(codeTexture.width, codeTexture.height);
+            // generate the region texture, overlay on code texture and apply result
+            bool hasRegions = false;
+            regionTexture = GenerateRegionTexture(codeTexture.width, codeTexture.height, out hasRegions);
+
+            if (hasRegions) {
                 ApplyTextureToUIImage(OverlayTextures(codeTexture, regionTexture, Overlay1));
                 regionsApplied = true;
-
-                // ToDo: is it posible & faster to assign 2 textures and overlay them in the shader?
             }
             else if (regionsApplied) {
-                
-                // replace the currently shown texture if the last included regions
                 ApplyTextureToUIImage(codeTexture);
                 regionsApplied = false;
             }
+
+            // ToDo: is it posible & faster to assign 2 textures and overlay them in the shader?
         }
 
 
@@ -369,6 +370,7 @@ namespace VRVis.Spawner.File.Overview {
 
             // store to re-use in region texture generation
             ct_lineHeight = lineHeight;
+            ct_xIncrement = x_increment;
 
             foreach (List<int> linePattern in linePatterns) {
 
@@ -490,6 +492,7 @@ namespace VRVis.Spawner.File.Overview {
 
             // store to re-use in region texture generation
             ct_lineHeight = lineHeight;
+            ct_xIncrement = x_increment;
 
             foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) {
                 for (int n = 0; n < ti.lineCount; n++) {
@@ -556,10 +559,26 @@ namespace VRVis.Spawner.File.Overview {
 
 
         /// <summary>
-        /// Generates the overview texture for the NFP regions and returns it.
+        /// Generates the overview texture for the NFP regions and returns it.<para/>
+        /// Returns a blank black texture if the value of hasRegions is false.
         /// </summary>
-        private Texture2D GenerateRegionTexture(int width, int height) {
+        /// <param name="hasRegions">Tells if the respective CodeFile event has regions currently shown</param>
+        private Texture2D GenerateRegionTexture(int width, int height, out bool hasRegions) {
 
+            hasRegions = false;
+            bool regionVisuActive = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(Settings.ApplicationSettings.NFP_VIS.CODE_MARKING);
+            if (!regionVisuActive) { return Texture2D.blackTexture; }
+
+            // get region spawner to retrieve spawned regions
+            ASpawner sp = ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            if (sp == null || !(sp is FileSpawner)) { Debug.LogError("FileSpawner not found!"); return Texture2D.blackTexture; }
+            RegionSpawner rsp = (RegionSpawner) ((FileSpawner) sp).GetSpawner((int) FileSpawner.SpawnerList.RegionSpawner);
+            
+            // check if regions should be shown
+            if (!rsp.HasSpawnedRegions(fileRefs.GetCodeFile())) { return Texture2D.blackTexture; }
+            hasRegions = true;
+
+            // start generating texture if there are regions
             Debug.LogWarning("Generating region texture...");
 
             Texture2D tex = new Texture2D(width, height) {
@@ -577,21 +596,16 @@ namespace VRVis.Spawner.File.Overview {
                 }
             }
 
-            // get region spawner to retrieve spawned regions
-            ASpawner sp = ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-            if (sp == null || !(sp is FileSpawner)) { Debug.LogError("FileSpawner not found!"); return tex; }
-            RegionSpawner rsp = (RegionSpawner) ((FileSpawner) sp).GetSpawner((int) FileSpawner.SpawnerList.RegionSpawner);
-            
             foreach (Region r in rsp.GetSpawnedRegions(fileRefs.GetCodeFile())) {
                 foreach (Region.Section s in r.GetSections()) {
 
                     int y_start = Mathf.RoundToInt((s.start-1) * ct_lineHeight);
-                    int y_end = Mathf.RoundToInt(s.end * ct_lineHeight);
+                    int y_end = Mathf.RoundToInt((s.end-1) * ct_lineHeight + (ct_xIncrement-1));
 
                     // fill up the whole space (whole width and height of section)
                     for (int y = y_start; y <= y_end; y++) {
                         for (int x = 0; x < width; x++) {
-                            colors[y * width + x] = r.GetCurrentNFPColor();
+                            colors[(tex.height - y - 1) * width + x] = r.GetCurrentNFPColor();
                         }
                     }
                 }
@@ -625,7 +639,6 @@ namespace VRVis.Spawner.File.Overview {
             
             Color[] colors = tex1.GetPixels();
 
-            // ToDo: fix positions!
             for (int y = 0; y < tex.height; y++) {
                 for (int x = 0; x < tex.width; x++) {
                     Color c2 = tex2.GetPixel(x, y);
@@ -646,6 +659,10 @@ namespace VRVis.Spawner.File.Overview {
         /// The value of a controls how much of c2 is added to the result.
         /// </summary>
         private Color Overlay1(Color c1, Color c2) {
+
+            if (c1.a == 0) { return c2; }
+            else if (c2.a == 0) { return c1; }
+
             // ToDo: make configurable!
             float a = 0.5f;
             return new Color(

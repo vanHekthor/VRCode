@@ -43,10 +43,10 @@ namespace VRVis.Spawner {
         [Tooltip("Error correction value for multiple text instances")]
         public float ERROR_PER_ELEMENT = 0.2f; // 0.2 seems to be a good value for font-size 8-14
 
-        // callbacks for when the regions were spawned (e.g. used by overview)
+        // callbacks for when the regions were modified (e.g. used by overview)
         [HideInInspector]
-        public CodeFileIntEvent onNFPRegionsSpawned = new CodeFileIntEvent();
-        public class CodeFileIntEvent : UnityEvent<CodeFile, int> {}
+        public CodeFileEvent onRegionsValuesChanged = new CodeFileEvent();
+        public class CodeFileEvent : UnityEvent<CodeFile> {}
 
         private string activeNFP; // stores active property temporarily
         private CodeFile currentFile; // regions currently spawned for this file
@@ -289,8 +289,6 @@ namespace VRVis.Spawner {
             AddSpawnedRegions(file, regionsSpawned);
             if (LOGGING) { Debug.Log("NFP regions spawned: " + regionsSpawned.Count); }
 
-            // invoke event to notify scripts that use it
-            onNFPRegionsSpawned.Invoke(file, regionsSpawned.Count);
             return true;
         }
 
@@ -538,7 +536,6 @@ namespace VRVis.Spawner {
         // ----------------------------------------------------------------------------------------------------------
         // Region Management
 
-
         public List<Region> GetSpawnedRegions(CodeFile file) {
             if (!spawnedRegions.ContainsKey(file)) { return new List<Region>(); }
             return new List<Region>(spawnedRegions[file].Values);
@@ -557,6 +554,11 @@ namespace VRVis.Spawner {
             }
 
             return list;
+        }
+
+        public bool HasSpawnedRegions(CodeFile file) {
+            if (!spawnedRegions.ContainsKey(file)) { return false; }
+            return spawnedRegions[file].Count > 0;
         }
 
         public bool HasSpawnedRegion(CodeFile file, string regionID) {
@@ -630,7 +632,11 @@ namespace VRVis.Spawner {
 
         /// <summary>Refresh the represented region value (to re-apply the visual properties).</summary>
         public void RefreshRegionValues(CodeFile file, ARProperty.TYPE propType) {
+            
             new RegionModifier(file, this).ApplyRegionValues(new ARProperty.TYPE[]{ propType });
+
+            // invoke event to notify scripts that use it
+            onRegionsValuesChanged.Invoke(file);
         }
 
         /// <summary>Refresh the shown regions for this property type.</summary>
