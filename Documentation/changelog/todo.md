@@ -15,7 +15,7 @@
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
   - [X] **#1** Overview of code window content *(12.07.2019)*
-  - [ ] **#1** Overview of code regions
+  - [X] **#1** Overview of code regions *(18.07.2019)*
 - [ ] **#1** Overview of feature regions
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
