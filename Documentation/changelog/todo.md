@@ -17,18 +17,17 @@
   - [X] **#1** Overview of code window content *(12.07.2019)*
   - [X] **#1** Overview of code regions *(18.07.2019)*
   - [ ] Where and how to show the content overview window?
-  - [ ] Optimize overview window to have less performance impact
 - [ ] **#1** Overview of feature regions
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
 - [ ] **#2** New UI (more generic and not all windows opened at once)
   - [ ] Radial Menu (at users hand)
 - [ ] **#1** Advanced accessibility and registration of loaders (like done with spawners)
-- [ ] Text Input (VR keyboard)
+- [ ] Text input (VR keyboard)
   - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application
 - [ ] Storing configured frameworks from within application
-- [ ] Entry Room on app startup (similar to SteamVR Home)
+- [ ] Entry room on app startup (similar to SteamVR Home)
   - [ ] Advanced loading screen on startup
   - [ ] Loading frameworks/settings from within application
   - [ ] Support of different controller types
@@ -39,14 +38,14 @@
 
 ## Minor
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
-- [ ] Put oerview texture generation in a curoutine to avoid performance issues
-- [ ] Improve overview texture generation by NOT pre-calculating line patterns
+- [X] Improve overview texture generation by NOT pre-calculating line patterns *(17.07.2019)*
+- [ ] Put overview texture generation in a curoutine to avoid performance issues
+- [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
-- [ ] Add possibility to show/hide code or regions or both in overview window
+- [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Better font for code in code window (e.g. Consolas)
-- [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
-- [ ] Tilt hover window to user
+- [ ] Tilt hover window of directory graph to user
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
   - [ ] Automated check/validation of alternate group selection
@@ -73,3 +72,4 @@
 - [X] Last line number not shown in code file *(12.07.2019)*
 - [ ] State of nodes of the variability model not always updating properly
 - [ ] Laser pointer sometimes not working right after startup (rare)
+- [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
