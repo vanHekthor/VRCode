@@ -16,6 +16,8 @@
 - [ ] Code Window Content Overview
   - [X] **#1** Overview of code window content *(12.07.2019)*
   - [X] **#1** Overview of code regions *(18.07.2019)*
+  - [ ] Where and how to show the content overview window?
+  - [ ] Optimize overview window to have less performance impact
 - [ ] **#1** Overview of feature regions
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
