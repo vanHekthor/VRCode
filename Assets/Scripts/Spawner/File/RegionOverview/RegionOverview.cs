@@ -65,7 +65,7 @@ namespace VRVis.Spawner.File.Overview {
 
 
         // !!!
-        // TODO: Put generation of line patterns and code texture in one procedure for less memory consumption.
+        // DONE: Put generation of line patterns and code texture in one procedure for less memory consumption.
         // TODO: Use a curoutine to generate the texture for minimum performance impact!
 
 

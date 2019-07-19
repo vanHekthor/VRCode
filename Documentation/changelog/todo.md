@@ -12,21 +12,25 @@
     - [ ] Selecting elements
     - [X] Info on hover *(04.07.2019)*
     - [ ] "Be the data" approach (maybe?)
+    - [ ] Open code window by clicking at the elements
+      - [ ] Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
   - [X] **#1** Overview of code window content *(12.07.2019)*
   - [X] **#1** Overview of code regions *(18.07.2019)*
   - [ ] Where and how to show the content overview window?
-- [ ] **#1** Overview of feature regions
+- [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction
-- [ ] **#2** New UI (more generic and not all windows opened at once)
+- [ ] **#3** New UI (more generic and not all windows opened at once)
   - [ ] Radial Menu (at users hand)
 - [ ] **#1** Advanced accessibility and registration of loaders (like done with spawners)
 - [ ] Text input (VR keyboard)
   - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application
-- [ ] Storing configured frameworks from within application
+- [ ] **#1** Storing configured frameworks from within application
+  - [ ] Store opened file positions
+  - [ ] Store configuration of visualizations...
 - [ ] Entry room on app startup (similar to SteamVR Home)
   - [ ] Advanced loading screen on startup
   - [ ] Loading frameworks/settings from within application
@@ -35,7 +39,7 @@
   - [ ] Use Unity's [Script Execution Order](https://docs.unity3d.com/Manual/class-MonoManager.html) feature
 - [ ] Support of different HMDs
 - [ ] Multi-user VR experience
-- [ ] **#2** Minimal cone tree layout 
+- [ ] **#2** Minimal cone tree layout
 
 ## Minor
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
@@ -74,3 +78,4 @@
 - [ ] State of nodes of the variability model not always updating properly
 - [ ] Laser pointer sometimes not working right after startup (rare)
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
+- [ ] Overview region sometimes shown black
