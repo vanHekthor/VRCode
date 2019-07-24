@@ -44,6 +44,9 @@ namespace VRVis.IO.Structure {
         /// <summary>Amount of child nodes.</summary>
         public int GetNodesCount() { return nodes.Count; }
 
+        /// <summary>Tells if this node is a leaf node by checking the amount of child nodes.</summary>
+        public bool IsLeaf() { return nodes.Count < 1; }
+
         /// <summary>Add a child node.</summary>
         public void AddNode(SNode node) { nodes.Add(node); }
 
