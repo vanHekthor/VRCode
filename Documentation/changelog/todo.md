@@ -39,11 +39,12 @@
   - [ ] Use Unity's [Script Execution Order](https://docs.unity3d.com/Manual/class-MonoManager.html) feature
 - [ ] Support of different HMDs
 - [ ] Multi-user VR experience
-- [ ] **#2** Minimal cone tree layout
+- [X] **#2** Minimal cone tree layout *(05.08.2019)*
 
 ## Minor
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
 - [X] Improve overview texture generation by NOT pre-calculating line patterns *(17.07.2019)*
+- [ ] Apply minimal cone tree layout algorithm to variability model as well
 - [ ] Put overview texture generation in a curoutine to avoid performance issues
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Add raycast to check that code city hover window is not inside building
