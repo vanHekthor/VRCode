@@ -196,5 +196,78 @@ namespace VRVis.Utilities {
             return Convert.ToString(f, new CultureInfo("en"));
         }
 
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // I/O Related
+
+        /// <summary>
+        /// Returns the lines of code or 0 if the file does not exist.<para/>
+        /// Implemented with respect to the optimization approach of:<para/>
+        /// https://nima-ara-blog.azurewebsites.net/counting-lines-of-a-text-file/
+        /// </summary>
+        public static long GetLOC(string file) {
+
+            if (!File.Exists(file)) { return 0; }
+
+            char LF = '\n'; // line feed
+            char CR = '\r'; // carriage return
+
+            FileStream stream = null;
+            try { stream = new FileStream(file, FileMode.Open); }
+            catch (Exception ex) {
+                Debug.LogError("Failed to open file: " + file);
+                Debug.LogError(ex.StackTrace);
+                return 0;
+            }
+
+            byte[] buff = new byte[1024 * 1024];
+            int bytesRead = 0;
+            char prev = (char) 0;
+            bool pending = false;
+            long cnt = 0;
+
+            while ((bytesRead = stream.Read(buff, 0, buff.Length)) > 0) {
+
+                for (int i = 0; i < bytesRead; i++) {
+
+                    char cur = (char) buff[i];
+                    
+                    // MAC: \r
+                    // UNIX: \n
+                    if (cur == CR || cur == LF) {
+
+                        // WIN case: \r\n
+                        // (we already detected \r and cnt+1 so skip this char)
+                        if (prev == CR && cur == LF) { continue; }
+
+                        pending = false;
+                        cnt++;
+                    }
+                    else if (!pending) { pending = true; }
+
+                    prev = cur;
+                }
+            }
+
+            if (pending) { cnt++; }
+            return cnt;
+        }
+
+        /// <summary>Get the size of a file in bytes.</summary>
+        public static long GetFileSizeBytes(string file) {
+
+            if (!File.Exists(file)) { return 0; }
+            
+            FileInfo fi = null;
+            try { fi = new FileInfo(file); }
+            catch (Exception e) {
+                Debug.LogWarning("Failed to get size of file: " + file + "!");
+                Debug.LogWarning(e.StackTrace);
+                return 0;
+            }
+
+            return fi.Length;
+        }
+
     }
 }

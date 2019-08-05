@@ -6,6 +6,7 @@ using UnityEngine;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner.CodeCity;
+using VRVis.Utilities;
 
 namespace VRVis.Spawner {
 
@@ -443,7 +444,7 @@ namespace VRVis.Spawner {
                 
                 // version 1 using lines of code
                 case 1:
-                    long locs = GetLOC(node.GetFullPath());
+                    long locs = Utility.GetLOC(node.GetFullPath());
                     return new Vector2(locs, locs);
 
                 // version 2 using amount of regions
@@ -453,7 +454,7 @@ namespace VRVis.Spawner {
 
                 // version 3 using file size in bytes
                 case 3:
-                    long bytes = GetFileSizeBytes(node.GetFullPath());
+                    long bytes = Utility.GetFileSizeBytes(node.GetFullPath());
                     return new Vector2(bytes, bytes);
                 
                 // fixed size
@@ -474,69 +475,16 @@ namespace VRVis.Spawner {
             switch (v) {
 
                 // version 1 using lines of code
-                case 1: return GetLOC(node.GetFullPath());
+                case 1: return Utility.GetLOC(node.GetFullPath());
                 
                 // version 2 using number of regions
                 case 2: return GetNumOfRegions(node);
 
                 // version 3 using file size in bytes
-                case 3: return GetFileSizeBytes(node.GetFullPath());
+                case 3: return Utility.GetFileSizeBytes(node.GetFullPath());
             }
             
             return 0;
-        }
-
-        /// <summary>
-        /// Returns the lines of code or 0 if the file does not exist.<para/>
-        /// Implemented with respect to the optimization approach of:<para/>
-        /// https://nima-ara-blog.azurewebsites.net/counting-lines-of-a-text-file/
-        /// </summary>
-        private long GetLOC(string file) {
-
-            if (!System.IO.File.Exists(file)) { return 0; }
-
-            char LF = '\n'; // line feed
-            char CR = '\r'; // carriage return
-
-            FileStream stream = null;
-            try { stream = new FileStream(file, FileMode.Open); }
-            catch (Exception ex) {
-                Debug.LogError("Failed to open file: " + file);
-                Debug.LogError(ex.StackTrace);
-                return 0;
-            }
-
-            byte[] buff = new byte[1024 * 1024];
-            int bytesRead = 0;
-            char prev = (char) 0;
-            bool pending = false;
-            long cnt = 0;
-
-            while ((bytesRead = stream.Read(buff, 0, buff.Length)) > 0) {
-
-                for (int i = 0; i < bytesRead; i++) {
-
-                    char cur = (char) buff[i];
-                    
-                    // MAC: \r
-                    // UNIX: \n
-                    if (cur == CR || cur == LF) {
-
-                        // WIN case: \r\n
-                        // (we already detected \r and cnt+1 so skip this char)
-                        if (prev == CR && cur == LF) { continue; }
-
-                        pending = false;
-                        cnt++;
-                    }
-                    else if (!pending) { pending = true; }
-
-                    prev = cur;
-                }
-            }
-
-            if (pending) { cnt++; }
-            return cnt;
         }
 
         /// <summary>Get number of regions for this node.</summary>
@@ -546,22 +494,6 @@ namespace VRVis.Spawner {
             if (!rl.LoadedSuccessful()) { return 0; }
 
             return rl.GetFileRegions(node.GetPath()).Count;
-        }
-        
-        /// <summary>Get the size of a file in bytes.</summary>
-        private long GetFileSizeBytes(string file) {
-
-            if (!System.IO.File.Exists(file)) { return 0; }
-            
-            FileInfo fi = null;
-            try { fi = new FileInfo(file); }
-            catch (Exception e) {
-                Debug.LogWarning("Failed to get size of file: " + file + "!");
-                Debug.LogWarning(e.StackTrace);
-                return 0;
-            }
-
-            return fi.Length;
         }
 
 
