@@ -45,6 +45,9 @@ namespace VRVis.Spawner {
         [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
         public bool useRadiusOfPreviousLevel = true;
 
+        [Tooltip("Rotate the nodes towards position of their parent on y-axis")]
+        public bool rotateNodeToParent = true;
+
         [Tooltip("Rotation applied after the structure is created")]
         public Vector3 structureRootRotation = new Vector3(0, -90, 0);
 
@@ -357,6 +360,7 @@ namespace VRVis.Spawner {
             Vector3 nodeMove = new Vector3(info.relPos.x, 0, info.relPos.y);
             Vector3 nodePos = (info.level > 0 ? 1 : 0) * levelSpacing * Vector3.down + nodeMove;
             GameObject nodeInstance = Instantiate(prefab, nodePos, Quaternion.identity);
+            if (rotateNodeToParent) { nodeInstance.transform.LookAt(nodePos + nodeMove); }
             nodeInstance.transform.SetParent(parent, false);
 
 

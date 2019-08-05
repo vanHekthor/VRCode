@@ -40,6 +40,9 @@ namespace VRVis.Spawner {
         [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
         public bool useRadiusOfPreviousLevel = true;
 
+        [Tooltip("Rotate the nodes towards position of their parent on y-axis")]
+        public bool rotateNodeToParent = true;
+
         [Tooltip("Rotation applied after the structure is created")]
         public Vector3 structureRootRotation = new Vector3(0, -90, 0);
 
@@ -432,8 +435,41 @@ namespace VRVis.Spawner {
 
             // get according prefab
             GameObject prefab = null;
+            Color c = Color.black;
+            bool assignColor = false;
 
-            if (info.node.GetNodeType() == SNode.DNodeTYPE.FILE) { prefab = filePrefab; }
+            if (info.node.GetNodeType() == SNode.DNodeTYPE.FILE) {
+
+                prefab = filePrefab;
+
+                // TESTING: colors connections according to file extension
+                string name = info.node.GetName().ToLower();
+                if (name.EndsWith(".c") || name.EndsWith(".cc") || name.EndsWith(".h")) {
+                    c = Color.cyan;
+                    assignColor = true;
+                }
+                else if (name.EndsWith(".cpp") || name.EndsWith(".hpp")) {
+                    c = Color.blue;
+                    assignColor = true;
+                }
+                else if (name.EndsWith(".java")) {
+                    c = Color.red;
+                    assignColor = true;
+                }
+                else if (name.EndsWith(".json")) {
+                    c = Color.green;
+                    assignColor = true;
+                }
+                else if (name.EndsWith(".html")) {
+                    c = new Color(1.0f, 0.8f, 0.5f);
+                    assignColor = true;
+                }
+                else if (name.EndsWith(".jpg") || name.EndsWith(".png") || name.EndsWith(".gif") || name.EndsWith(".ico")) {
+                    c = Color.magenta;
+                    assignColor = true;
+                }
+
+            }
             else if (info.node.GetNodeType() == SNode.DNodeTYPE.FOLDER) { prefab = folderPrefab; }
             else {
                 Debug.LogWarning(err_msg + " - type not supported: " + info.node.GetNodeType());
@@ -445,7 +481,14 @@ namespace VRVis.Spawner {
             Vector3 nodeMove = new Vector3(info.relPos.x, 0, info.relPos.y);
             Vector3 nodePos = (info.level > 0 ? 1 : 0) * levelSpacing * Vector3.down + nodeMove;
             GameObject nodeInstance = Instantiate(prefab, nodePos, Quaternion.identity);
+            if (rotateNodeToParent) { nodeInstance.transform.LookAt(nodePos + nodeMove); }
             nodeInstance.transform.SetParent(parent, false);
+            
+
+            // TESTING: color connections according to file extension
+            if (assignColor) {
+                nodeInstance.GetComponent<Renderer>().material.color = c;
+            }
 
 
             // check for reference information object

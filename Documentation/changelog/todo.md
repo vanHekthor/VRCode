@@ -44,6 +44,7 @@
 ## Minor
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
 - [X] Improve overview texture generation by NOT pre-calculating line patterns *(17.07.2019)*
+- [X] Nodes rotating towards parent node in cone tree layout *(05.08.2019)*
 - [ ] Apply minimal cone tree layout algorithm to variability model as well
 - [ ] Put overview texture generation in a curoutine to avoid performance issues
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture

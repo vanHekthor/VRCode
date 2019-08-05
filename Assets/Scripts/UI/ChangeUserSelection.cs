@@ -12,6 +12,7 @@ namespace VRVis.Testing.Interaction {
     /// <summary>
     /// To easily test user selection changing
     /// using basic UI components (onClick and so on).<para/>
+    /// This component is attached to the terminal.<para/>
     /// ToDo: Improve in future versions and for new GUI
     /// </summary>
     public class ChangeUserSelection : MonoBehaviour {
@@ -98,7 +99,7 @@ namespace VRVis.Testing.Interaction {
             s.ShowVisualization(active);
         }
 
-        public void ToggleSoftwareGraphVisualization(bool show) { SetSpawnerVis("StructureSpawnerV2", show); }
+        public void ToggleSoftwareGraphVisualization(bool show) { SetSpawnerVis("StructureSpawnerV3", show); }
         public void ToggleFeatureGraphVisualization(bool show) { SetSpawnerVis("VariabilityModelSpawner", show); }
         public void ToggleCodeCityVisualization(bool show) { SetSpawnerVis("CodeCityV1", show); }
 
