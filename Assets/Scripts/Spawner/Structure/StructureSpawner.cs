@@ -55,7 +55,7 @@ namespace VRVis.Spawner {
 
         // FUNCTIONALITY
 
-        /** Show the spawn position of the directory structure in editor */
+        ///<summary>Show the spawn position of the directory structure in editor</summary>
         void OnDrawGizmos() {
 
             if (!Application.isPlaying) {
@@ -90,7 +90,7 @@ namespace VRVis.Spawner {
         }
 
 
-        /** Spawn the software system structure */
+        /// <summary>Spawn the software system structure.</summary>
         public bool SpawnStructure() {
 
             if (done) {
@@ -135,7 +135,7 @@ namespace VRVis.Spawner {
         }
 
 
-        /** Check the structure spawner settings. */
+        /// <summary>Check the structure spawner settings.</summary>
         bool CheckSettings() {
 
             if (!folderPrefab || !filePrefab) {
@@ -164,10 +164,10 @@ namespace VRVis.Spawner {
         }
 
 
-        /**
-         * Spawn the whole structure at once using recursion.
-         * Returns information about the last spawned node.
-         */
+        /// <summary>
+        /// Spawn the whole structure at once using recursion.<para/>
+        /// Returns information about the last spawned node.
+        /// </summary>
         NodeInfoHelper SpawnWholeStructure(SNode node, NodeInfoHelper prevNode) {
 
             NodeInfoHelper lastChildInfo = new NodeInfoHelper {
@@ -181,7 +181,7 @@ namespace VRVis.Spawner {
             List<NodeInfoHelper> childNodes = new List<NodeInfoHelper>();
 
             // go down to leaf nodes
-            if (node.GetNodes().Count > 0) {
+            if (node.GetNodesCount() > 0) {
                 lastChildInfo.pos += Vector3.down * 0.3f;
                 foreach (SNode subNode in node.GetNodes()) {
                     lastChildInfo = SpawnWholeStructure(subNode, lastChildInfo);
@@ -214,9 +214,7 @@ namespace VRVis.Spawner {
         }
 
 
-        /**
-         * Returns spawn position and width.
-         */
+        /// <summary>Returns spawn position and width.</summary>
         NodeInfoHelper SpawnNode(SNode node, NodeInfoHelper lastNode) {
     
             GameObject prefab = null;
@@ -269,9 +267,7 @@ namespace VRVis.Spawner {
         }
 
 
-        /**
-         * Set the min and max positions accordingly for each new node.
-         */
+        /// <summary>Set the min and max positions accordingly for each new node.</summary>
         void UpdateStructureParentBounds(Vector3 p) {
 
             if (layoutDirection == LayoutDirection.RIGHT) {

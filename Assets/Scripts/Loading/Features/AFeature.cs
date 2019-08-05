@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Xml;
 using UnityEngine;
+using VRVis.Spawner.Layouts;
 
 namespace VRVis.IO.Features {
 
@@ -14,7 +15,7 @@ namespace VRVis.IO.Features {
     /// For instance, a boolean feature is a range of 0 to 1,
     /// defined with a step size of 1 (on or off).
     /// </summary>
-    public abstract class AFeature {
+    public abstract class AFeature : GenericNode {
 
         private readonly VariabilityModel model;
 
@@ -381,6 +382,14 @@ namespace VRVis.IO.Features {
             
             return false;
         }
+
+
+        // --------------------------------------------------------------------
+        // GenericNode Extension
+
+        public override bool IsLeaf() { return HasChildren(); }
+        public override IEnumerable GetNodes() { return GetChildren(); }
+        public override int GetNodesCount() { return GetChildrenCount(); }
 
     }
 }

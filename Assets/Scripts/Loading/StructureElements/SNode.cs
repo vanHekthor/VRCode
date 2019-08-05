@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using VRVis.Spawner.Layouts;
 using VRVis.Utilities;
 
 
@@ -10,7 +11,7 @@ namespace VRVis.IO.Structure {
     /// Holds information about a folder or a file.<para/>
     /// Such information is the path, fullPath, name, type (folder or file) and possible sub-nodes.
     /// </summary>
-    public class SNode {
+    public class SNode : GenericNode {
 
         public enum DNodeTYPE {UNKNOWN, FILE, FOLDER};
 
@@ -39,13 +40,13 @@ namespace VRVis.IO.Structure {
         public DNodeTYPE GetNodeType() { return nodeType; }
 
         /// <summary>Get child nodes.</summary>
-        public List<SNode> GetNodes() { return nodes; }
+        public override IEnumerable GetNodes() { return nodes; }
 
         /// <summary>Amount of child nodes.</summary>
-        public int GetNodesCount() { return nodes.Count; }
+        public override int GetNodesCount() { return nodes.Count; }
 
         /// <summary>Tells if this node is a leaf node by checking the amount of child nodes.</summary>
-        public bool IsLeaf() { return nodes.Count < 1; }
+        public override bool IsLeaf() { return nodes.Count < 1; }
 
         /// <summary>Add a child node.</summary>
         public void AddNode(SNode node) { nodes.Add(node); }

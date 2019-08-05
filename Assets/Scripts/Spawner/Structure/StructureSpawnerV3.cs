@@ -189,7 +189,7 @@ namespace VRVis.Spawner {
         /// <summary>
         /// Recursively calculate the position of nodes for each level so that they do not intersect.<para/>
         /// This requires traversing the whole hierarchy once!<para/>
-        /// Returns an array of Pairs representing the positions at the index level (starting at level 0 with the root node only).
+        /// Returns the according PosInfo of the recently processed level/node.
         /// </summary>
         private PosInfo CalculateLevelPositioningRecursively(SNode node, int level) {
 
