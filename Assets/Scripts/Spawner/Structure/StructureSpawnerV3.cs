@@ -28,20 +28,14 @@ namespace VRVis.Spawner {
         [Tooltip("Minimum radius of a single option node")]
         public float minimumRadius = 0.5f;
 
-        [Tooltip("Maximum radius of a signle option node (set 0 for unlimited)")]
-        public float maximumRadius = 200f;
-
-        [Tooltip("Scale the node distance from center by this factor (everything <= 0 behaves like 1)")]
-        public float scaleNodeDistance = 0;
-
-        [Tooltip("Restrict the maximum node distance from center at this value (set 0 for umlimited)")]
-        public float maxNodeDistance = 0;
+        [Tooltip("Maximum radius of a single option node (set 0 for unlimited)")]
+        public float maximumRadius = 0;
 
         [Tooltip("Spacing between hierarchy levels")]
         public float levelSpacing = 0.5f;
 
         [Tooltip("Gap between nodes on the same level")]
-        public float nodeSpacing = 0.20f;
+        public float nodeSpacing = 0.05f;
 
         [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
         public bool useRadiusOfPreviousLevel = true;
@@ -219,7 +213,7 @@ namespace VRVis.Spawner {
             foreach (SNode child in node.GetNodes()) {
                 PosInfo childInfo = CalculateLevelPositioningRecursively(child, level + 1);
                 info.childNodes.Add(childInfo);
-                radius_sum += childInfo.radius;
+                radius_sum += childInfo.radius + nodeSpacing * 0.5f;
             }
 
 
@@ -230,11 +224,7 @@ namespace VRVis.Spawner {
             float nodeRadius = info.radius;
             int childNodesCount = node.GetNodesCount();
 
-            if (childNodesCount == 1) {
-                
-                // a single node needs no position adjustment but radius is important
-                nodeRadius = info.childNodes[0].radius;
-            }
+            if (childNodesCount == 1) { nodeRadius = info.childNodes[0].radius; }
             else {
 
                 // use angular sector calculation for multiple nodes
@@ -244,9 +234,9 @@ namespace VRVis.Spawner {
 
                 // calculate positioning on angular sector around n
                 foreach (PosInfo childInfo in info.childNodes) {
-
-                    float angle = (childInfo.radius / radius_sum) * fullCircle;
-                    float d_i = Mathf.Max(size_n + childInfo.radius, childInfo.radius / Mathf.Sin(angle * 0.5f));
+                    float r = childInfo.radius + nodeSpacing * 0.5f;
+                    float angle = r / radius_sum * fullCircle;
+                    float d_i = Mathf.Max(size_n + r, r / Mathf.Sin(angle * 0.5f));
                     float pos_x = d_i * Mathf.Cos(angleTotal + angle * 0.5f);
                     float pos_y = d_i * Mathf.Sin(angleTotal + angle * 0.5f);
                     childInfo.relPos = new Vector2(pos_x, pos_y);
@@ -258,14 +248,24 @@ namespace VRVis.Spawner {
                 List<Disk> R = new List<Disk>(3);
                 Disk SED = Welzl(P, R, P.Count);
 
-                // ToDo: continue implementation
+                // readjust the centroid / position of parent node accordingly by
+                // moving the relative positions from (0,0) to the center of the disk
+                foreach (PosInfo childInfo in info.childNodes) {
+                    childInfo.relPos -= SED.pos;
+                }
 
-                // ToDo: readjust the centroid accordingly
-                // ToDo: readjust the final radius accordingly
+                // readjust the final radius accordingly
+                nodeRadius = SED.radius;
             }
 
             // apply the calculated radius based on previous levels
             if (useRadiusOfPreviousLevel) { info.radius = nodeRadius; }
+
+            // limit radius to maximum value
+            if (maximumRadius > 0 && nodeRadius > maximumRadius) {
+                nodeRadius = maximumRadius;
+                Debug.LogError("Maximum graph radius reached (" + maximumRadius + ")!");
+            }
 
             //Debug.LogWarning("Radius = " + nodeRadius);
             return info;
@@ -298,7 +298,7 @@ namespace VRVis.Spawner {
             nodes.ForEach(n => result.Add(new Disk(n.relPos, n.radius)));
 
             // Note: we start at i = |nodes| bc. the upper bound in Random.Range is exclusive
-            for (int i = nodes.Count; i > 0; i++) {
+            for (int i = nodes.Count; i > 0; i--) {
                 int n = Random.Range(0, i);
                 Disk tmp = result[i-1];
                 result[i-1] = result[n];
@@ -316,10 +316,10 @@ namespace VRVis.Spawner {
         /// <param name="max">Size of P to avoid modifying the list</param>
         private Disk Welzl(List<Disk> P, List<Disk> R, int max) {
 
-            if (P.Count == 0 || R.Count == 3) { return Trivial(R); }
+            if (max == 0 || R.Count == 3) { return Trivial(R); }
             Disk p = P[max-1]; // list is already shuffled, so just select
             Disk D = Welzl(P, R, max-1); // call without p in P
-            if (D.Contains(p)) { return D; }
+            if (D != null && D.Contains(p)) { return D; }
             List<Disk> R_ = new List<Disk>(R){p}; // add p to R
             return Welzl(P, R_, max-1); // call without p in P but p in R
         }
@@ -419,25 +419,6 @@ namespace VRVis.Spawner {
                 rotMat[0] * mp.x + rotMat[1] * mp.y,
                 rotMat[2] * mp.x + rotMat[3] * mp.y
             );
-        }
-
-
-        /// <summary>
-        /// Restricts e.g. the distance of the node from its center
-        /// according to the user settings "scaleNodeDistance" and "maxNodeDistance".<para/>
-        /// Applied after the nodes have been positioned.
-        /// </summary>
-        private void RestrictChildPosition(PosInfo childInfo) {
-
-            // scale node distance by this factor
-            if (scaleNodeDistance > 0 && scaleNodeDistance != 1) {
-                childInfo.relPos = childInfo.relPos.magnitude * scaleNodeDistance * childInfo.relPos.normalized;
-            }
-                    
-            // limit maximum distance from center
-            if (maxNodeDistance > 0 && childInfo.relPos.magnitude > maxNodeDistance) {
-                childInfo.relPos = maxNodeDistance * childInfo.relPos.normalized;
-            }
         }
 
 

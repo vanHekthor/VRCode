@@ -27,8 +27,8 @@ namespace VRVis.Spawner {
         [Tooltip("Minimum radius of a single option node")]
         public float minimumRadius = 0.5f;
 
-        [Tooltip("Maximum radius of a signle option node (set 0 for unlimited)")]
-        public float maximumRadius = 200f;
+        [Tooltip("Maximum radius of a single option node (set 0 for unlimited)")]
+        public float maximumRadius = 0;
 
         [Tooltip("Scale the node distance from center by this factor (everything <= 0 behaves like 1)")]
         public float scaleNodeDistance = 0;

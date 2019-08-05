@@ -79,3 +79,4 @@
 - [ ] Laser pointer sometimes not working right after startup (rare)
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Overview region sometimes shown black
+- [ ] Change controller while pointing at folders/files does not hide hover info window
