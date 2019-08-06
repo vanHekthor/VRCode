@@ -387,7 +387,7 @@ namespace VRVis.IO.Features {
         // --------------------------------------------------------------------
         // GenericNode Extension
 
-        public override bool IsLeaf() { return HasChildren(); }
+        public override bool IsLeaf() { return !HasChildren(); }
         public override IEnumerable GetNodes() { return GetChildren(); }
         public override int GetNodesCount() { return GetChildrenCount(); }
 

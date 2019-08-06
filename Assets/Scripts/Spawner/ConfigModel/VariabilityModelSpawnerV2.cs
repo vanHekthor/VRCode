@@ -4,14 +4,22 @@ using UnityEngine;
 using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.Spawner.ConfigModel;
+using VRVis.Spawner.Layouts.ConeTree;
 
 namespace VRVis.Spawner {
 
     /// <summary>
     /// Spawns the variability model in 3D space.<para/>
-    /// To be more precise, it spawns the option hierarchy tree in space.
+    /// To be more precise, it spawns the option hierarchy tree in space.<para/>
+    /// This is the second version using the same cone tree layout as the structure loader (bubble-tree layout).<para/>
+    /// 
+    /// ToDo:<para/>
+    /// - [ ] Improve the option index retrieval (see accordingly commented sections)<para/>
+    /// 
+    /// Created: 01.02.2019 (by Leon H.)<para/>
+    /// Updated: 06.08.2019
     /// </summary>
-    public class VariabilityModelSpawner : ASpawner {
+    public class VariabilityModelSpawnerV2 : ASpawner {
 
         public GameObject binaryOptionPrefab;
         public GameObject numericOptionPrefab;
@@ -29,41 +37,22 @@ namespace VRVis.Spawner {
         [Tooltip("Transform that tells where to start building the tree and where to attach nodes to")]
         public Transform hierarchyParent;
 
-        [Tooltip("Minimum radius of a single option node")]
-        public float minimumRadius = 0.5f;
-
-        [Tooltip("Maximum radius of a single option node (set 0 for unlimited)")]
-        public float maximumRadius = 200f;
-
-        [Tooltip("Scale the node distance from center by this factor (everything <= 0 behaves like 1)")]
-        public float scaleNodeDistance = 0;
-
-        [Tooltip("Restrict the maximum node distance from center at this value (set 0 for umlimited)")]
-        public float maxNodeDistance = 0;
-
         [Tooltip("Spacing between hierarchy levels")]
         public float levelSpacing = 1;
 
-        [Tooltip("Gap between nodes on the same level")]
-        public float nodeSpacing = 0.20f;
+        [Tooltip("Rotate the nodes towards position of their parent on y-axis")]
+        public bool rotateNodeToParent = true;
 
-        [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
-        public bool useRadiusOfPreviousLevel = true;
+        [Header("Generic Layout Settings")]
+        [Tooltip("Cone Tree Layout Settings")]
+        public LayoutSettings settings;
+
 
         private bool isSpawned = false;
         private VariabilityModel curModel = null;
 
         /// <summary>Stores all the nodes that are at the same level in one list</summary>
         private List<List<VariabilityModelNodeInfo>> nodes;
-
-        /// <summary>Used while position information gathering</summary>
-        private class PosInfo {
-            public int level = 0;
-            public float radius = 0;
-            public int optionIndex = 0;
-            public Vector2 optionPos = Vector2.zero;
-            public List<PosInfo> childNodes = new List<PosInfo>();
-        }
 
         /// <summary>Stores the positioning information of all nodes</summary>
         private PosInfo rootPosInfo = null;
@@ -78,7 +67,7 @@ namespace VRVis.Spawner {
             if (hierarchyParent) {
                 Vector3 origin = hierarchyParent.position;
                 Gizmos.color = Color.green;
-                Gizmos.DrawWireSphere(origin, minimumRadius <= 0 ? 1 : minimumRadius);
+                Gizmos.DrawWireSphere(origin, settings.minRadius <= 0 ? 1 : settings.minRadius);
                 Gizmos.DrawLine(origin, origin + hierarchyParent.rotation * Vector3.left);
             }
         }
@@ -98,7 +87,7 @@ namespace VRVis.Spawner {
             bool success = Spawn(vml.GetModel());
 
             if (!success) { Debug.LogWarning("Failed to spawn variability model."); }
-            else { Debug.Log("Variability model successfully spawned."); }
+            else { Debug.Log("Variability model v2 successfully spawned."); }
 
             return success;
         }
@@ -138,7 +127,7 @@ namespace VRVis.Spawner {
             // calculate node and position information recursively
             treeLevels = 0;
             if (nodes != null) { nodes.Clear(); }
-            rootPosInfo = CalculateLevelPositioningRecursively(model.GetRoot(), 0);
+            rootPosInfo = CalculateLayout(model.GetRoot(), 0);
             Debug.Log("Tree levels to spawn: " + treeLevels);
             nodes = new List<List<VariabilityModelNodeInfo>>(treeLevels);
 
@@ -160,7 +149,7 @@ namespace VRVis.Spawner {
             if (!binaryOptionPrefab) { return false; }
             if (!numericOptionPrefab) { return false; }
             if (!hierarchyParent) { return false; }
-            if (minimumRadius < 0) { return false; }
+            if (settings.minRadius < 0) { return false; }
             if (levelSpacing <= 0) { return false; }
             return true;
         }
@@ -171,136 +160,12 @@ namespace VRVis.Spawner {
         /// This requires traversing the whole hierarchy once!<para/>
         /// Returns the according PosInfo of the recently processed level/node.
         /// </summary>
-        private PosInfo CalculateLevelPositioningRecursively(AFeature node, int level) {
+        private PosInfo CalculateLayout(AFeature node, int level) {
 
-            if (level > treeLevels) { treeLevels = level; }
-
-            // initial information about a node
-            PosInfo info = new PosInfo {
-                level = level,
-                radius = minimumRadius,
-                optionIndex = curModel.GetOptionIndex(node.GetName(), false)
-            };
-
-            // we are at a leaf node if this statement is true
-            if (!node.HasChildren()) { return info; }
-
-
-            // get recursively info of child nodes
-            float maxRadius = minimumRadius;
-            foreach (AFeature child in node.GetChildren()) {
-                PosInfo childInfo = CalculateLevelPositioningRecursively(child, level + 1);
-                info.childNodes.Add(childInfo);
-                if (childInfo.radius > maxRadius) { maxRadius = childInfo.radius; }
-            }
-
-
-            // calculate position for each child node
-            float nodeRadius = info.radius; // the final calculated radius of this node
-
-            int childNodesCount = node.GetChildrenCount();
-            if (childNodesCount == 1) {
-                
-                // a single node needs no position adjustment but radius is important
-                info.radius = info.childNodes[0].radius;
-            }
-            else if (childNodesCount == 2) {
-
-                // use easy calculation for two nodes
-                Vector2 curPos = Vector2.zero;
-                float rad0 = info.childNodes[0].radius;
-                float rad1 = info.childNodes[1].radius;
-                float dist = (rad0 + rad1) * 2 + nodeSpacing;
-                info.childNodes[0].optionPos = curPos + (dist * 0.5f - rad0) * Vector2.left;
-                info.childNodes[1].optionPos = curPos + (dist * 0.5f - rad1) * Vector2.right;
-                nodeRadius = dist * 0.5f + nodeSpacing;
-
-                // restrict position of the nodes
-                RestrictChildPosition(info.childNodes[0]);
-                RestrictChildPosition(info.childNodes[1]);
-            }
-            else {
-
-                // use polygon calculation for more nodes
-                Vector2 curPos = Vector2.zero;
-                float dist = maxRadius * 2 + nodeSpacing;
-
-                // move in a circle starting at (0,0) but do not "close" it
-                float fullCircle = 2 * Mathf.PI;
-                float angleStep = fullCircle / info.childNodes.Count;
-                float angle = 0;
-
-                foreach (PosInfo childInfo in info.childNodes) {
-
-                    // calculate where to go next
-                    childInfo.optionPos = curPos;
-                    Vector2 curDir = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
-                    curPos += curDir * dist;
-                    angle += angleStep;
-                }
-
-
-                // calculate radius using an isosceles triangle equation
-                float gamma = angleStep;
-                float c = dist;
-                float a = 0.5f * (c / Mathf.Sin(gamma * 0.5f));
-                nodeRadius = a + maxRadius;
-
-
-                // calculate the centroid using position of each child node
-                Vector2 centroid = Vector2.zero;
-                
-                if (childNodesCount == 3) {
-
-                    // use barycentric coordinates to calculate centroid
-                    Vector2 l = info.childNodes[0].optionPos;
-                    Vector2 m = info.childNodes[1].optionPos;
-                    Vector2 n = info.childNodes[2].optionPos;
-                    centroid = 1f / 3f * (l + m + n);
-                }
-                else {
-
-                    // use right-angled triangle and the pythagorean theorem to calculate centroid
-                    float up = Mathf.Sqrt(a*a - Mathf.Pow(c * 0.5f, 2));
-                    centroid = info.childNodes[0].optionPos + c * 0.5f * Vector2.right + up * Vector2.up;
-                }
-
-                // adjust positions of child nodes so that centroid is at (0,0)
-                foreach (PosInfo childInfo in info.childNodes) {
-                    childInfo.optionPos -= centroid;
-                    RestrictChildPosition(childInfo);
-                }
-            }
-            
-            // limit radius to maximum value
-            if (maximumRadius > 0 && nodeRadius > maximumRadius) {
-                nodeRadius = maximumRadius;
-                Debug.LogError("Maximum graph radius reached (" + maximumRadius + ")!");
-            }
-
-            // apply the calculated radius based on previous levels
-            if (useRadiusOfPreviousLevel) { info.radius = nodeRadius; }
-
-            return info;
-        }
-
-
-        /// <summary>
-        /// Restricts e.g. the distance of the node from its center
-        /// according to the user settings "scaleNodeDistance" and "maxNodeDistance".<para/>
-        /// Applied after the nodes have been positioned.
-        /// </summary>
-        private void RestrictChildPosition(PosInfo childInfo) {
-
-            // scale node distance by this factor
-            if (scaleNodeDistance > 0 && scaleNodeDistance != 1) {
-                childInfo.optionPos = childInfo.optionPos.magnitude * scaleNodeDistance * childInfo.optionPos.normalized;
-            }
-                    
-            // limit maximum distance from center
-            if (maxNodeDistance > 0 && childInfo.optionPos.magnitude > maxNodeDistance) {
-                childInfo.optionPos = maxNodeDistance * childInfo.optionPos.normalized;
-            }
+            ConeTreeLayout layout = new ConeTreeLayout(node, settings);
+            PosInfo result = layout.Create();
+            treeLevels = layout.GetTreeLevels();
+            return result;
         }
 
 
@@ -311,7 +176,12 @@ namespace VRVis.Spawner {
         private void SpawnTreeRecursively(PosInfo info, VariabilityModelNodeInfo parentNodeInf, Transform parent) {
             
             string err_msg = "Failed to spawn an option of feature hierarchy";
-            AFeature option = curModel.GetOption(info.optionIndex);
+
+            AFeature option = info.node as AFeature;
+            if (option == null) {
+                Debug.LogError("Can not deal with node not of type AFeature!");
+                return;
+            }
 
 
             // get prefab and option type
@@ -332,9 +202,10 @@ namespace VRVis.Spawner {
 
 
             // calculate position in space
-            Vector3 nodeMove = new Vector3(info.optionPos.x, 0, info.optionPos.y);
+            Vector3 nodeMove = new Vector3(info.relPos.x, 0, info.relPos.y);
             Vector3 nodePos = (info.level > 0 ? 1 : 0) * levelSpacing * Vector3.down + nodeMove;
             GameObject nodeInstance = Instantiate(prefab, nodePos, Quaternion.identity);
+            if (rotateNodeToParent) { nodeInstance.transform.LookAt(nodePos + nodeMove); }
             nodeInstance.transform.SetParent(parent, false);
 
 
@@ -347,7 +218,8 @@ namespace VRVis.Spawner {
             }
 
             // set node info accordingly
-            nodeInf.SetInformation(curModel, info.optionIndex, info.level, info.radius);
+            int optionIndex = curModel.GetOptionIndex(option.GetName(), false);
+            nodeInf.SetInformation(curModel, optionIndex, info.level, info.radius);
             nodeInf.UpdateColor();
 
             // add reference to all nodes on the specific level
@@ -364,10 +236,6 @@ namespace VRVis.Spawner {
 
             // check if this is not the root node
             if (parentNodeInf != null && nodeInf.GetLevel() > 0) {
-
-                // check if children form an "or" and "alt"(xor) group
-                //bool hasOrGroup = AreChildrenOrGroup(info);
-                //bool hasAltGroup = AreChildrenAltGroup(info);
 
                 // spawn type of notation below this node
                 GameObject notationPrefabBelow = null;
@@ -467,24 +335,11 @@ namespace VRVis.Spawner {
         /// </summary>
         private bool AreChildrenOrGroup(PosInfo commonParentInfo) {
 
-            // OLD VERSION
-            /*
-            // gather all the child nodes and check if they are binary
-            int mandatoryFeatures = 0;
-            foreach (PosInfo child in commonParentInfo.childNodes) {
-                
-                AFeature feature = curModel.GetOption(child.optionIndex);
-                if (!(feature is Feature_Boolean)) { return false; }
-                Feature_Boolean binFeature = (Feature_Boolean) feature;
+            // ToDo: security check if required ("what if node is no AFeature") or add the index to the feature in model!
+            int parentOptionIndex = curModel.GetOptionIndex((commonParentInfo.node as AFeature).GetName(), false);
 
-                if (!binFeature.IsOptional()) { mandatoryFeatures++; }
-            }
-
-            return mandatoryFeatures > 0;
-            */
-
-            // NEW: or-groups are defined by "implied option groups"
-            AFeature curOption = curModel.GetOption(commonParentInfo.optionIndex);
+            // or-groups are defined by "implied option groups"
+            AFeature curOption = curModel.GetOption(parentOptionIndex);
             if (!(curOption is Feature_Boolean)) { return false; }
 
             Feature_Boolean oBoolean = (Feature_Boolean) curOption;
@@ -522,7 +377,10 @@ namespace VRVis.Spawner {
             List<Feature_Boolean> children = new List<Feature_Boolean>();
             foreach (PosInfo child in commonParentInfo.childNodes) {
                 
-                AFeature feature = curModel.GetOption(child.optionIndex);
+                // ToDo: security check if required ("what if node is no AFeature") or add the index to the feature in model!
+                int optionIndex = curModel.GetOptionIndex((child.node as AFeature).GetName(), false);
+
+                AFeature feature = curModel.GetOption(optionIndex);
                 if (!(feature is Feature_Boolean)) { return false; }
                 children.Add((Feature_Boolean) feature);
             }

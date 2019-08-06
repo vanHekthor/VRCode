@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace VRVis.Spawner.Layouts {
+namespace VRVis.Spawner.Layouts.ConeTree {
 
     /// <summary>
     /// Class that helps to create a cone tree layout uniformly.<para/>
@@ -11,45 +11,17 @@ namespace VRVis.Spawner.Layouts {
     /// </summary>
     public class ConeTreeLayout {
 
-        /// <summary> Class for layout settings. Can be used in editor. </summary>
-        public class ConeTreeLayoutSettings : MonoBehaviour {
-
-            [Tooltip("Minimum radius of a single option node")]
-            public float minRadius = 0.5f;
-
-            [Tooltip("Maximum radius of a single option node (set 0 for unlimited)")]
-            public float maxRadius = 200f;
-
-            [Tooltip("Spacing between hierarchy levels")]
-            public float levelSpacing = 1;
-
-            [Tooltip("Gap between nodes on the same level")]
-            public float nodeSpacing = 0.20f;
-
-            [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
-            public bool useRadiusOfPreviousLevel = true;
-
-            [Tooltip("Rotate the nodes towards position of their parent on y-axis")]
-            public bool rotateNodeToParent = true;
-        }
-
-        /// <summary> Used while position information gathering </summary>
-        public class PosInfo {
-            public GenericNode node;
-            public int level = 0;
-            public float radius = 0;
-            public Vector2 relPos = Vector2.zero;
-            public List<PosInfo> childNodes = new List<PosInfo>();
-        }
-
+        private LayoutSettings settings;
         private readonly GenericNode rootNode;
         private int treeLevels = 0;
-        private ConeTreeLayoutSettings settings;
+
+        public delegate float GetLeafRadius(GenericNode node);
+        private GetLeafRadius leafRadiusOverride = null;
 
 
         // CONSTRUCTOR
 
-	    public ConeTreeLayout(GenericNode rootNode, ConeTreeLayoutSettings settings) {
+	    public ConeTreeLayout(GenericNode rootNode, LayoutSettings settings) {
             this.rootNode = rootNode;
             this.settings = settings;
         }
@@ -57,10 +29,19 @@ namespace VRVis.Spawner.Layouts {
 
         // GETTER / SETTER
 
+        /// <summary>Get the generic node assigned as layout entry.</summary>
         public GenericNode GetRootNode() { return rootNode; }
         public int GetTreeLevels() { return treeLevels; }
-        public ConeTreeLayoutSettings GetSettings() { return settings; }
-        public void SetConeTreeLayoutSettings(ConeTreeLayoutSettings settings) { this.settings = settings; }
+        public LayoutSettings GetSettings() { return settings; }
+        public void SetConeTreeLayoutSettings(LayoutSettings settings) { this.settings = settings; }
+
+        /// <summary>
+        /// Assign a delegate method to override retrieval of a leaf's radius.<para/>
+        /// Returning a negative number will be treated as invalid and not applied.
+        /// </summary>
+        public void SetLeafRadiusOverride(GetLeafRadius overrideMethod) {
+            leafRadiusOverride = overrideMethod;
+        }
 
 
         // FUNCTIONALITY
@@ -70,6 +51,7 @@ namespace VRVis.Spawner.Layouts {
         /// Returns the same tree of information using the PosInfo class.
         /// </summary>
         public PosInfo Create() {
+            Debug.Log("Creating generic cone tree layout...");
             return CalculateLevelPositioningRecursively(rootNode, 0);
         }
 
@@ -92,7 +74,11 @@ namespace VRVis.Spawner.Layouts {
 
             // assign radius depending on type of leaf node and return
             if (node.IsLeaf()) {
-                if (node.IsLeafRadiusSet()) { info.radius = node.GetLeafRadius(); }
+                //if (node.IsLeafRadiusSet()) { info.radius = node.GetLeafRadius(); }
+                if (leafRadiusOverride != null) {
+                    float r = leafRadiusOverride(node);
+                    if (r > 0 && r > settings.minRadius) { info.radius = r; }
+                }
                 return info;
             }
 

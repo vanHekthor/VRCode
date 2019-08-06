@@ -110,7 +110,7 @@ namespace VRVis.Spawner {
             bool success = SpawnStructure();
 
             if (!success) { Debug.LogWarning("Failed to spawn software structure v2."); }
-            else { Debug.Log("Software structure v2 successfully spawned."); }
+            else { Debug.Log("Software structure v3 successfully spawned."); }
 
             return success;
         }

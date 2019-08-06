@@ -45,8 +45,9 @@
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
 - [X] Improve overview texture generation by NOT pre-calculating line patterns *(17.07.2019)*
 - [X] Nodes rotating towards parent node in cone tree layout *(05.08.2019)*
-- [ ] Generic code for cone tree layout used by software hierarchy visualization and variability model
-- [ ] Apply minimal cone tree layout algorithm to variability model as well
+- [X] Generic code for cone tree layout used by software hierarchy visualization and variability model *(05.08.2019)*
+  - [ ] Cleanup scenes accordingly after this modification!
+- [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [ ] Put overview texture generation in a curoutine to avoid performance issues
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Add raycast to check that code city hover window is not inside building
