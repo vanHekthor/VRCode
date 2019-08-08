@@ -50,6 +50,7 @@
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [ ] Put overview texture generation in a curoutine to avoid performance issues
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
+- [ ] Improve option index retrieval in last VariabilityModelSpawner (see comments in code)
 - [ ] Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?

@@ -34,11 +34,14 @@ namespace VRVis.Spawner {
 
         public NotationPrefabs notationPrefabs;
 
+        [Tooltip("Spacing between hierarchy levels")]
+        public float levelSpacing = 1;
+
         [Tooltip("Transform that tells where to start building the tree and where to attach nodes to")]
         public Transform hierarchyParent;
 
-        [Tooltip("Spacing between hierarchy levels")]
-        public float levelSpacing = 1;
+        [Tooltip("Rotation applied after the structure is created")]
+        public Vector3 structureRootRotation = new Vector3(0, -90, 0);
 
         [Tooltip("Rotate the nodes towards position of their parent on y-axis")]
         public bool rotateNodeToParent = true;
@@ -139,6 +142,9 @@ namespace VRVis.Spawner {
             float treeHeight = treeLevels * levelSpacing * parentLocalScale;
             Debug.Log("Tree height: " + treeHeight);
             hierarchyParent.position += Vector3.up * treeHeight;
+
+            // rotate structure root accordingly
+            hierarchyParent.Rotate(structureRootRotation, Space.Self);
 
             isSpawned = true;
             return true;
@@ -293,35 +299,6 @@ namespace VRVis.Spawner {
             }
         }
 
-
-        /// <summary>
-        /// Tells if the child nodes are all part of an alternative group.<para/>
-        /// This means, that all have the same parent, exclude each other and are not optional!<para/>
-        /// Furthermore, all nodes have to be binary options because numeric options are not optional.
-        /// </summary>
-        /*
-        private bool AreChildrenAlternative(PosInfo commonParentInfo) {
-
-            // gather all the child nodes and check if they are binary
-            List<Feature_Boolean> children = new List<Feature_Boolean>();
-            foreach (PosInfo child in commonParentInfo.childNodes) {
-                
-                AFeature feature = curModel.GetIndexOption(child.optionIndex);
-                if (!(feature is Feature_Boolean)) { return false; }
-                children.Add((Feature_Boolean) feature);
-            }
-
-            foreach (Feature_Boolean child in children) {
-                
-                if (child.IsOptional()) { return false; }
-                foreach (List<AFeature> excludedOptions in child.GetExcludedOptions()) {
-                    
-                }
-            }
-
-            // Wikipedia: Alternative when: or-group and all exclude each other (so we currently use this instead) 
-        }
-        */
 
         /// <summary>
         /// Tells if the child nodes form an "or" group together ("where at least one feature must be selected").<para/>
