@@ -304,8 +304,8 @@ namespace VRVis.IO {
         [System.Serializable]
         public class SpawnerEntry {
 
-            public ASpawner spawner;
             public string name;
+            public ASpawner spawner;
             public string info;
 
             [Tooltip("Execute spawner with application startup")]
