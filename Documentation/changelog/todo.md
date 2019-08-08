@@ -54,7 +54,7 @@
 - [ ] Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
-- [ ] Better font for code in code window (e.g. Consolas)
+- [ ] Better font for code in code window (e.g. Consolas - type "monospace" font)
 - [ ] Tilt hover window of directory graph to user
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
