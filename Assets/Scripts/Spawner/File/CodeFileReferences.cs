@@ -182,6 +182,8 @@ namespace VRVis.Spawner.File {
             
             if (!showLineNumbers || lineNumbers == null) { return; }
 
+            // ToDo: handle possible overflow (currently 9999 lines possible)
+
             System.Text.StringBuilder strb = new System.Text.StringBuilder();
             for (uint i = 0; i < numbers; i++) {
                 strb.AppendLine((i+1).ToString());
