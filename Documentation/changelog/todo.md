@@ -28,12 +28,12 @@
 - [ ] Text input (VR keyboard)
   - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application
-- [ ] **#1** Storing configured frameworks from within application
+- [ ] **#1** Storing configured workspace from within application
   - [ ] Store opened file positions
   - [ ] Store configuration of visualizations...
 - [ ] Entry room on app startup (similar to SteamVR Home)
   - [ ] Advanced loading screen on startup
-  - [ ] Loading frameworks/settings from within application
+  - [ ] Loading workspace/settings from within application
   - [ ] Support of different controller types
   - [ ] Configuration of button layout through user
   - [ ] Use Unity's [Script Execution Order](https://docs.unity3d.com/Manual/class-MonoManager.html) feature
