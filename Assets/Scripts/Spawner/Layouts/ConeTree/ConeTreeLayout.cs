@@ -187,9 +187,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
             return result;
         }
 
-        /// <summary>
-        /// Use Welzl's algorithm for smallest enclosing disk calculation.
-        /// </summary>
+        /// <summary>Use Welzl's algorithm for smallest enclosing disk calculation.</summary>
         /// <param name="P">Set of points</param>
         /// <param name="R">Set of points on boundary</param>
         /// <param name="max">Size of P to avoid modifying the list</param>
@@ -285,7 +283,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
 
         /// <summary>
         /// Calculates and returns the perpendicular bisector direction.<para/>
-        /// Uses a rotation-matrix to turn vector mp around point m.<para/>
+        /// Uses a rotation-matrix to turn vector mp around point m.
         /// </summary>
         /// <param name="rotMat">2x2 rotation-matrix with total of 4 values (first 2 = first row)</param>
         /// <param name="m">Midpoint between p1 and p2</param>
