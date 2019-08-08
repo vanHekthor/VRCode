@@ -48,7 +48,7 @@
 - [X] Generic code for cone tree layout used by software hierarchy visualization and variability model *(05.08.2019)*
   - [ ] Cleanup scenes accordingly after this modification!
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
-- [ ] Put overview texture generation in a curoutine to avoid performance issues
+- [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Improve option index retrieval in last VariabilityModelSpawner (see comments in code)
 - [ ] Add raycast to check that code city hover window is not inside building

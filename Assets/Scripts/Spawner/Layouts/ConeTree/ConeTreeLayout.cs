@@ -265,6 +265,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
             // "Koordinatenform aus Parameterform" (parameter form -> general form)
             // https://de.wikipedia.org/wiki/Koordinatenform#Aus_der_Parameterform
             // genf_xx = [a, b, c] , so that g = ax + by + c = 0
+            // NOTE: In contrast to wikipedia (bug), calculate c = pos * (-norm) instead of c = pos * norm!
             Vector2 norm_12 = new Vector2(-pb_dir_12.y, pb_dir_12.x); // normal vector of direction vector
             Vector3 genf_12 = new Vector3(norm_12.x, norm_12.y, Vector2.Dot(pb_pos_12, -norm_12));
 
