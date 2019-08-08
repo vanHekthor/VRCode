@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.Utilities;
 
 namespace VRVis.Spawner.Layouts.ConeTree {
 
@@ -17,6 +18,9 @@ namespace VRVis.Spawner.Layouts.ConeTree {
 
         public delegate float GetLeafRadius(GenericNode node);
         private GetLeafRadius leafRadiusOverride = null;
+
+        private readonly float fullCircle = 2 * Mathf.PI;
+        private float nodeRotationRad = 0;
 
 
         // CONSTRUCTOR
@@ -52,6 +56,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
         /// </summary>
         public PosInfo Create() {
             Debug.Log("Creating generic cone tree layout...");
+            nodeRotationRad = Utility.DegreeToRadians(settings.nodeRotation);
             return CalculateLevelPositioningRecursively(rootNode, 0);
         }
 
@@ -103,7 +108,6 @@ namespace VRVis.Spawner.Layouts.ConeTree {
             else {
 
                 // use angular sector calculation for multiple nodes
-                float fullCircle = 2 * Mathf.PI;
                 float angleTotal = 0;
                 float size_n = settings.minRadius; // size of center "node" n
 
@@ -112,8 +116,8 @@ namespace VRVis.Spawner.Layouts.ConeTree {
                     float r = childInfo.radius + settings.nodeSpacing * 0.5f;
                     float angle = r / radius_sum * fullCircle;
                     float d_i = Mathf.Max(size_n + r, r / Mathf.Sin(angle * 0.5f));
-                    float pos_x = d_i * Mathf.Cos(angleTotal + angle * 0.5f);
-                    float pos_y = d_i * Mathf.Sin(angleTotal + angle * 0.5f);
+                    float pos_x = d_i * Mathf.Cos(angleTotal + angle * 0.5f + nodeRotationRad);
+                    float pos_y = d_i * Mathf.Sin(angleTotal + angle * 0.5f + nodeRotationRad);
                     childInfo.relPos = new Vector2(pos_x, pos_y);
                     angleTotal += angle;
                 }
@@ -125,9 +129,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
 
                 // readjust the centroid / position of parent node accordingly by
                 // moving the relative positions from (0,0) to the center of the disk
-                foreach (PosInfo childInfo in info.childNodes) {
-                    childInfo.relPos -= SED.pos;
-                }
+                foreach (PosInfo childInfo in info.childNodes) { childInfo.relPos -= SED.pos; }
 
                 // readjust the final radius accordingly
                 nodeRadius = SED.radius;
@@ -194,7 +196,7 @@ namespace VRVis.Spawner.Layouts.ConeTree {
         private Disk Welzl(List<Disk> P, List<Disk> R, int max) {
 
             if (max == 0 || R.Count == 3) { return Trivial(R); }
-            Disk p = P[max-1]; // list is already shuffled, so just select
+            Disk p = P[max-1]; // list is already shuffled, so just select node
             Disk D = Welzl(P, R, max-1); // call without p in P
             if (D != null && D.Contains(p)) { return D; }
             List<Disk> R_ = new List<Disk>(R){p}; // add p to R

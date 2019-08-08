@@ -17,6 +17,9 @@ namespace VRVis.Spawner.Layouts.ConeTree {
         [Tooltip("Gap between nodes on the same level")]
         public float nodeSpacing = 0.05f;
 
+        [Tooltip("Child node rotation in degree")]
+        [Range(0, 360)] public float nodeRotation = 90;
+
         [Tooltip("If previous radius is used, higher level nodes are positioned according to it. Turning this off can lead to overlapping!")]
         public bool useRadiusOfPreviousLevel = true;
 

@@ -306,6 +306,7 @@ namespace VRVis.IO {
 
             public ASpawner spawner;
             public string name;
+            public string info;
 
             [Tooltip("Execute spawner with application startup")]
             public bool executeOnStartup = false;
