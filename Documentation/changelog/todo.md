@@ -7,12 +7,12 @@
 - [X] Advanced spawner system (register new in editor, use others, ...) *(12.06.2019)*
 - [X] Basic **code city** visualization *(28.06.2019)*
 - [ ] **#1** Improve code city visualization
-  - [ ] Textures to show regions and their performance
+  - [ ] **#1** Textures to show regions and their performance
   - [ ] Interaction
-    - [ ] Selecting elements
+    - [ ] **#1** Selecting elements to open files
     - [X] Info on hover *(04.07.2019)*
     - [ ] "Be the data" approach (maybe?)
-    - [ ] Open code window by clicking at the elements
+    - [ ] **#2** Open code window by clicking at the elements
       - [ ] Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
@@ -24,11 +24,11 @@
 - [ ] 2-Controller interaction
 - [ ] **#3** New UI (more generic and not all windows opened at once)
   - [ ] Radial Menu (at users hand)
-- [ ] **#1** Advanced accessibility and registration of loaders (like done with spawners)
+- [ ] **#3** Advanced accessibility and registration of loaders (like done with spawners)
 - [ ] Text input (VR keyboard)
   - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application
-- [ ] **#1** Storing configured workspace from within application
+- [ ] **#3** Storing configured workspace from within application
   - [ ] Store opened file positions
   - [ ] Store configuration of visualizations...
 - [ ] Entry room on app startup (similar to SteamVR Home)
@@ -49,23 +49,25 @@
   - [ ] Cleanup scenes accordingly after this modification!
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
+- [ ] **#1** Same color coding for cone tree edges and code city
+- [ ] Sorting files in cone tree layout by their type to get kinda like pie chart
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Improve option index retrieval in last VariabilityModelSpawner (see comments in code)
-- [ ] Add raycast to check that code city hover window is not inside building
+- [ ] **#1** Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Tilt hover window of directory graph to user
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
   - [ ] Automated check/validation of alternate group selection
-  - [ ] Selecting and configuring numerical options (requires UI concerns)
+  - [ ] **#1** Selecting and configuring numerical options (requires UI concerns)
 - [ ] Possibility to zoom on text for better readability
 - [ ] Feature regions counter to show amount
 - [ ] Instant snap to start/end of file instead of "endless" scrolling
 - [ ] Improve edge rendering to avoid thin edges
 - [ ] Edges with lighting for better depth clues
-- [ ] Improved scrolling using a gesture
+- [ ] **#3** Improved scrolling using a gesture
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
 - [ ] Allow teleport when laser pointer is disabled
 - [ ] Notation hints on feature graph (e.g. on hover)
@@ -80,8 +82,8 @@
 ## Bugs
 - [X] NullPointerException when calling "WindowSpawnedCallback" function with no CodeFile *(12.07.2019)*
 - [X] Last line number not shown in code file *(12.07.2019)*
-- [ ] State of nodes of the variability model not always updating properly
-- [ ] Laser pointer sometimes not working right after startup (rare)
+- [ ] **#1** State of nodes of the variability model not always updating properly
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
-- [ ] Overview region sometimes shown black
 - [ ] Change controller while pointing at folders/files does not hide hover info window
+- [ ] Laser pointer sometimes not working right after startup (rare)
+- [ ] **#1** Overview region sometimes shown black
