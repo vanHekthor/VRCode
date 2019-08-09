@@ -16,8 +16,8 @@
       - [ ] Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
-  - [X] **#1** Overview of code window content *(12.07.2019)*
-  - [X] **#1** Overview of code regions *(18.07.2019)*
+  - [X] Overview of code window content *(12.07.2019)*
+  - [X] Overview of code regions *(18.07.2019)*
   - [ ] Where and how to show the content overview window?
 - [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
