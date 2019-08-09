@@ -21,7 +21,7 @@ namespace VRVis.Interaction.LaserPointer {
         public LayerMask layerMask;
 
         // storage class for controller specific data
-        private class ControllerData {
+        public class ControllerData {
             public LaserPointerEventData pointerEvent;
             public GameObject currentPoint;
             public GameObject currentPressed;

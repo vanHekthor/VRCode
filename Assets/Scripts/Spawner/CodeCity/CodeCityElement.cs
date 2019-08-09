@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using VRVis.Fallback;
+using VRVis.Interaction.LaserPointer;
 using VRVis.IO.Structure;
 using VRVis.Utilities;
 
@@ -82,14 +83,22 @@ namespace VRVis.Spawner.CodeCity {
         public void OnPointerClick(PointerEventData eventData) {
             
             Debug.Log("City element pointer click: " + GetSNode().GetName());
-
             eventData.Use();
+
+            // called from fallback camera (mouse click)
             MouseNodePickup.MousePickupEventData e = eventData as MouseNodePickup.MousePickupEventData;
             if (e != null) {
                 MouseNodePickup mnp = e.GetMNP();
                 if (e.button.Equals(PointerEventData.InputButton.Left)) {
                     mnp.AttachFileToSpawn(GetSNode(), e.pointerCurrentRaycast.worldPosition);
                 }
+            }
+
+            // called from laser pointer controller
+            LaserPointerEventData d = eventData as LaserPointerEventData;
+            if (d != null) {
+                ViveUILaserPointerPickup p = d.controller.GetComponent<ViveUILaserPointerPickup>();
+                if (p) { p.StructureNodeClicked(GetSNode(), transform); }
             }
             
         }

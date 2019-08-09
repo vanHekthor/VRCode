@@ -99,6 +99,7 @@ namespace VRVis.Interaction.Controller {
         private bool pressed = false;
         private bool switchToPreviousControllerWhenDone = false;
         private bool rotationModified = false; // tells if the user modified the rotation
+        private bool teleportButtonLocked = false;
 
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
@@ -277,6 +278,10 @@ namespace VRVis.Interaction.Controller {
         private void CheckForCustomRotationAndDistanceChange() {
 
             if (!IsSomethingSelected()) { return; }
+
+            // handle locked teleport button (unlock if user releases the button)
+            if (TeleportButtonPressed() && teleportButtonLocked) { return; }
+            else if (!TeleportButtonPressed() && teleportButtonLocked) { teleportButtonLocked = false; }
 
             if (TeleportButtonClicked()) {
 
@@ -549,7 +554,8 @@ namespace VRVis.Interaction.Controller {
 
         /// <summary>Set selected node that is currently moved.</summary>
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, bool userMustReleaseButtonFirst=false) {
+        /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
+        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null) {
 
             if (IsSomethingSelected()) { return false; }
             if (node == null) { return false; }
@@ -561,10 +567,15 @@ namespace VRVis.Interaction.Controller {
             Debug.Log("Node to spawn selected: " + node.GetFullPath());
 
             // set laser distance to last hit
-            if (hit) { SetLaserDistance(rcHit.distance); }
+            float hitDist = clickedAt == null ? -1 : Vector3.Distance(transform.position, clickedAt.position);
+            if (hitDist > 0) { SetLaserDistance(hitDist); }
+            else if (hit) { SetLaserDistance(rcHit.distance); }
 
-            // set pressed true so that user first has to release the button
-            pressed = userMustReleaseButtonFirst;
+            // user must release the teleport button first before he can use it again
+            teleportButtonLocked = TeleportButtonPressed();
+
+            // set pressed true so that user first has to release the trigger button
+            pressed = TriggerButtonDown();
             return true;
         }
 

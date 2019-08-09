@@ -449,6 +449,7 @@ namespace VRVis.Spawner.File.Overview {
         private Texture2D GenerateCodeTextureV2(int width, int height) {
 
             Debug.LogWarning("Code texture generation...");
+            float start = Time.realtimeSinceStartup;
 
             Texture2D tex = new Texture2D(width, height) {
                 filterMode = FilterMode.Point,
@@ -553,6 +554,7 @@ namespace VRVis.Spawner.File.Overview {
             // apply all pixel colors at once instead of single calls & apply
             tex.SetPixels(colors);
             tex.Apply();
+            Debug.Log("Texture generation finished after " + (Time.realtimeSinceStartup - start) + " seconds");
             return tex;
         }
 

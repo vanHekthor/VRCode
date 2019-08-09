@@ -15,10 +15,10 @@ using VRVis.Spawner.Structure;
 namespace VRVis.Interaction.LaserPointer {
 
     /// <summary>
-    /// Written by github.com/S1r0hub<para/>
+    /// Written by github.com/S1r0hub (Leon H.)<para/>
     /// 
-    /// Created: 2018/11/22<para/>
-    /// Updated: 2019/02/28<para/>
+    /// Created: 22.11.2018<para/>
+    /// Updated: 09.08.2019<para/>
     /// 
     /// Some methods are from Wacki as mentioned in the default ViveUILaserPointer script.<para/>
     /// This script is modified to work only in the VRVis system.
@@ -261,7 +261,8 @@ namespace VRVis.Interaction.LaserPointer {
         }
 
         /// <summary>Called when clicked on a structure node.</summary>
-        private void StructureNodeClicked(SNode node) {
+        /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
+        public void StructureNodeClicked(SNode node, Transform clickedAt = null) {
 
             if (node == null) { return; }
 
@@ -284,7 +285,7 @@ namespace VRVis.Interaction.LaserPointer {
                     // attach CWMoverController
                     ControllerSelection.SelectableController cwMoverCtrl = selectionScript.GetController(cwMoverIndex);
                     if (cwMoverCtrl == null) {
-                        Debug.LogError("Could not find controller definition for \"cwmover\"! Ensure it exists!");
+                        Debug.LogError("Could not find controller definition for CodeWindowMover! Ensure it exists.");
                         return;
                     }
 
@@ -294,7 +295,7 @@ namespace VRVis.Interaction.LaserPointer {
 
                     GameObject attachedObject = controller.currentAttachedObject;
                     CodeWindowMover cwm = attachedObject.GetComponent<CodeWindowMover>();
-                    if (cwm) { cwm.SelectNode(node, true); }
+                    if (cwm) { cwm.SelectNode(node, true, clickedAt); }
                 }
                 else {
 
