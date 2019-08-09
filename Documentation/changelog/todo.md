@@ -9,7 +9,7 @@
 - [ ] **#1** Improve code city visualization
   - [ ] **#1** Textures to show regions and their performance
   - [ ] Interaction
-    - [ ] **#1** Selecting elements to open files
+    - [X] **#1** Selecting elements to open files *(09.08.2019)*
     - [X] Info on hover *(04.07.2019)*
     - [ ] "Be the data" approach (maybe?)
     - [ ] **#2** Open code window by clicking at the elements
@@ -58,6 +58,7 @@
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Tilt hover window of directory graph to user
+- [ ] Hints on interaction when user selects a tool for the first time
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
   - [ ] Automated check/validation of alternate group selection

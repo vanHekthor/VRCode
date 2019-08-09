@@ -249,11 +249,11 @@ namespace VRVis.Interaction.LaserPointer {
 
             // check if click reached a structure node
             StructureNodeInfo nodeInf = go.GetComponent<StructureNodeInfo>();
-            if (nodeInf != null) { StructureNodeClicked(nodeInf.GetSNode()); }
+            if (nodeInf != null) { StructureNodeClicked(nodeInf.GetSNode(), go.transform); }
 
             // check if click reached a structure node of structure version 2
             StructureNodeInfoV2 nodeInfV2 = go.GetComponent<StructureNodeInfoV2>();
-            if (nodeInfV2 != null) { StructureNodeClicked(nodeInfV2.GetSNode()); }
+            if (nodeInfV2 != null) { StructureNodeClicked(nodeInfV2.GetSNode(), go.transform); }
 
             // check if click reached a feature model node
             VariabilityModelNodeInfo vmNodeInf = go.GetComponent<VariabilityModelNodeInfo>();
