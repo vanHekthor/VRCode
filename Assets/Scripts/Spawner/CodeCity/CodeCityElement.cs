@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.IO.Structure;
 using VRVis.Utilities;
 
 namespace VRVis.Spawner.CodeCity {
@@ -22,14 +23,13 @@ namespace VRVis.Spawner.CodeCity {
 
         // GETTER/SETTER
 
-        /// <summary>Assign the partitioning tree node.</summary>
-        public void SetNode(CodeCityV1.PNode pNode) {
-            this.pNode = pNode;
-        }
+        /// <summary>Get according node of the structure tree representing a file or folder.</summary>
+        public SNode GetSNode() { return pNode.corNode; }
 
-        /// <summary>
-        /// Returns useful information about the element as a dictionary.
-        /// </summary>
+        /// <summary>Assign the partitioning tree node. (Should only be used by the CodeCity itself!)</summary>
+        public void SetNode(CodeCityV1.PNode pNode) { this.pNode = pNode; }
+
+        /// <summary>Returns useful information about the element as a dictionary.</summary>
         public Dictionary<string, string> GetInfo() {
 
             if (pNode == null) { infoBuilt = true; }

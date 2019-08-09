@@ -50,7 +50,7 @@
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
 - [ ] **#1** Same color coding for cone tree edges and code city
-- [ ] Sorting files in cone tree layout by their type to get kinda like pie chart
+- [ ] Sorting files in cone tree layout by their type to get kinda like a pie chart
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] Improve option index retrieval in last VariabilityModelSpawner (see comments in code)

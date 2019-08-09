@@ -482,7 +482,7 @@ namespace VRVis.Spawner.File.Overview {
                 if (maxHeight > height) { lineHeight = height / maxHeight; }
             }
             if (lineHeight < 1) {
-                Debug.LogWarning("Overview problem! Line height is less than one pixel!", this);
+                Debug.LogWarning("Overview problem! Line height is less than one pixel (" + lineHeight + ")!", this);
                 Debug.LogWarning("Lines: " + lines);
             }
 

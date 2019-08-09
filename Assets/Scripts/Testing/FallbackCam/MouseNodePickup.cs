@@ -5,6 +5,7 @@ using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
+using VRVis.Spawner.CodeCity;
 using VRVis.Spawner.ConfigModel;
 using VRVis.Spawner.File;
 using VRVis.Spawner.Structure;
@@ -69,6 +70,7 @@ namespace VRVis.Fallback {
                 buttonWasDown = true;
 
                 if (attachedNode == null) {
+
                     // https://docs.unity3d.com/ScriptReference/Input-mousePosition.html
                     mousePos = Input.mousePosition;
             
@@ -82,7 +84,7 @@ namespace VRVis.Fallback {
                         if (hit.collider.gameObject != null) {
 
                             hitObj = hit.collider.gameObject;
-                            Debug.Log("Mouse click object selection!", hitObj);
+                            Debug.Log("Mouse click on game object", hitObj);
 
                             // check if object has required component
                             if (lmb) { LeftMouseButtonClick(hit); }
@@ -147,17 +149,22 @@ namespace VRVis.Fallback {
 
             StructureNodeInfo nodeInfo = hitObj.GetComponent<StructureNodeInfo>();
             StructureNodeInfoV2 nodeInfoV2 = hitObj.GetComponent<StructureNodeInfoV2>();
-            bool valid = true;
+            
+             // check if a code city element was selected
+            CodeCityElement cce = hitObj.GetComponent<CodeCityElement>();
+            bool cityClick = false;
 
+            bool valid = true;
             if (nodeInfo != null) { attachedNode = nodeInfo.GetSNode(); }
             else if (nodeInfoV2 != null) { attachedNode = nodeInfoV2.GetSNode(); }
+            else if (cce != null) { attachedNode = cce.GetSNode(); cityClick = true; }
             else { valid = false; }
 
             if (valid) {
 
                 // remember hit object so that next click can not be on same object
                 hitObj = hit.collider.gameObject;
-                Debug.Log("Mouse click at node: " + attachedNode.GetName());
+                Debug.Log("Mouse click" + (cityClick ? " code city" : "") + " at node: " + attachedNode.GetName());
 
                 // destroy old placeholder
                 if (placeHolderInstance != null) {

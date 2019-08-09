@@ -62,11 +62,6 @@ namespace VRVis.Spawner {
         private GameObject spawn_window;
 
 
-        // will be notified about code window related events if attached to the same object
-        //private CodeWindowEdgeSpawner cwEdgeSpawner;
-        // ToDo: cleanup
-
-
         // "Constructor"
         void Awake() {
 
@@ -80,15 +75,6 @@ namespace VRVis.Spawner {
             if (!codeWindowPrefab) {
                 Debug.LogError("Missing code window prefab!");
             }
-
-            // ToDo: cleanup?
-            /*
-            cwEdgeSpawner = GetComponent<CodeWindowEdgeSpawner>();
-            if (!cwEdgeSpawner) { cwEdgeSpawner = ApplicationLoader.GetInstance().GetEdgeSpawner(); }
-            if (cwEdgeSpawner) {
-                Debug.Log("CodeWindowEdgeSpawner script found!\nNotification about code window related events enabled.");
-            }
-            */
 
             if (!edgeSpawner) { Debug.LogError("Missing edge spawner!"); }
             if (!regionSpawner) { Debug.LogError("Missing region spawner!"); }
