@@ -260,6 +260,7 @@ namespace VRVis.Interaction.LaserPointer {
             if (vmNodeInf != null) { VariabilityModelNodeClicked(vmNodeInf); }
         }
 
+        /// <summary>Called when clicked on a structure node.</summary>
         private void StructureNodeClicked(SNode node) {
 
             if (node == null) { return; }

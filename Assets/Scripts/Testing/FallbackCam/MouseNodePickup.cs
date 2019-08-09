@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.IO.Structure;
@@ -32,6 +33,19 @@ namespace VRVis.Fallback {
 	    private GameObject placeHolderInstance;
         private float curRayDist = 0;
         private float placeHolderDist = 0;
+
+
+        public class MousePickupEventData : PointerEventData {
+        
+            private readonly MouseNodePickup mnp = null;
+
+            public MousePickupEventData(EventSystem eventSystem, MouseNodePickup mnp) : base(eventSystem) {
+                this.mnp = mnp;
+            }
+
+            public MouseNodePickup GetMNP() { return mnp; }
+
+        }
 
 
 	    void Update () {
@@ -86,6 +100,12 @@ namespace VRVis.Fallback {
                             hitObj = hit.collider.gameObject;
                             Debug.Log("Mouse click on game object", hitObj);
 
+                            // notify event handlers
+                            MousePickupEventData data = new MousePickupEventData(EventSystem.current, this) {
+                                pointerCurrentRaycast = new RaycastResult() { distance = hit.distance, gameObject = hitObj, worldPosition = hit.point }
+                            };
+                            ExecuteEvents.Execute(hitObj, data, ExecuteEvents.pointerClickHandler);
+
                             // check if object has required component
                             if (lmb) { LeftMouseButtonClick(hit); }
                             else if (mmb) { MiddleMouseButtonClick(hit); }
@@ -98,6 +118,14 @@ namespace VRVis.Fallback {
                 }
                 else {
                     
+                    // wrong button so abort
+                    if (!lmb) {
+                        Debug.Log("Placing code window aborted by user.");
+                        Destroy(placeHolderInstance);
+                        attachedNode = null;
+                        return;
+                    }
+
                     // code window spawn position
                     Vector3 spawnPos = placeHolderInstance.transform.position;
 
@@ -150,37 +178,17 @@ namespace VRVis.Fallback {
             StructureNodeInfo nodeInfo = hitObj.GetComponent<StructureNodeInfo>();
             StructureNodeInfoV2 nodeInfoV2 = hitObj.GetComponent<StructureNodeInfoV2>();
             
-             // check if a code city element was selected
-            CodeCityElement cce = hitObj.GetComponent<CodeCityElement>();
-            bool cityClick = false;
-
             bool valid = true;
             if (nodeInfo != null) { attachedNode = nodeInfo.GetSNode(); }
             else if (nodeInfoV2 != null) { attachedNode = nodeInfoV2.GetSNode(); }
-            else if (cce != null) { attachedNode = cce.GetSNode(); cityClick = true; }
             else { valid = false; }
 
             if (valid) {
 
                 // remember hit object so that next click can not be on same object
                 hitObj = hit.collider.gameObject;
-                Debug.Log("Mouse click" + (cityClick ? " code city" : "") + " at node: " + attachedNode.GetName());
-
-                // destroy old placeholder
-                if (placeHolderInstance != null) {
-                    Destroy(placeHolderInstance);
-                    placeHolderInstance = null;
-                }
-
-                // only files can be selected to be spawned
-                if (attachedNode.GetNodeType() == SNode.DNodeTYPE.FILE) {
-
-                    // create placeholder
-                    placeHolderInstance = Instantiate(nodePrefab, hit.point, Quaternion.identity);
-                    curRayDist = hit.distance;
-                }
-                else { attachedNode = null; }
-
+                Debug.Log("Mouse click at node: " + attachedNode.GetName());
+                AttachFileToSpawn(attachedNode, hit.point);
                 return;
             }
 
@@ -218,6 +226,37 @@ namespace VRVis.Fallback {
 
                 return;
             }
+        }
+
+
+        /// <summary>
+        /// Attach the previous so that user can select position to spawn file at.
+        /// </summary>
+        /// <param name="initPos">Position to initialize place holder instance at</param>
+        public bool AttachFileToSpawn(SNode node, Vector3 initPos) {
+
+            if (node == null) { return false; }
+            attachedNode = node;
+
+            // destroy possible old placeholder
+            if (placeHolderInstance != null) {
+                Destroy(placeHolderInstance);
+                placeHolderInstance = null;
+            }
+
+            // only files can be selected to be spawned
+            if (attachedNode.GetNodeType() == SNode.DNodeTYPE.FILE) {
+
+                // create placeholder
+                placeHolderInstance = Instantiate(nodePrefab, initPos, Quaternion.identity);
+                curRayDist = Vector3.Distance(transform.position, initPos);
+            }
+            else {
+                attachedNode = null;
+                return false;
+            }
+
+            return true;
         }
 
 

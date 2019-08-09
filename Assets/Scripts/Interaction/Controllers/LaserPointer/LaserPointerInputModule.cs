@@ -1,16 +1,16 @@
 ﻿using UnityEngine;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
-using TMPro;
 
-/**
- * Hint:
- * If this is not working at all (e.g. the Process function is not called)
- * ensure that you have only one "EventSystem" component in the scene!
- * 
- * Code by Wacki
- * Modified by S1r0hub (11.2018)
- */
+/// <summary>
+/// Hint:<para/>
+/// If this is not working at all (e.g. the Process function is not called)<para/>
+/// ensure that you have only one "EventSystem" component in the scene!<para/>
+/// 
+/// Code by Wacki<para/>
+/// Modified by S1r0hub (11.2018)<para/>
+/// Updated: 09.08.2019
+/// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
     public class LaserPointerInputModule : BaseInputModule {

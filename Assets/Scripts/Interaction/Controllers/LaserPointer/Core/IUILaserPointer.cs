@@ -2,12 +2,12 @@
 using UnityEngine.EventSystems;
 
 
-/**
- * Initial code by github.com/wacki.
- * 
- * Modified and extended by github.com/S1r0hub.
- * Updated: 2018/11/22
- */
+/// <summary>
+/// Initial code by github.com/wacki.<para/>
+/// 
+/// Modified and extended by github.com/S1r0hub.<para/>
+/// Updated: 09.08.2019
+/// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
     abstract public class IUILaserPointer : MonoBehaviour {

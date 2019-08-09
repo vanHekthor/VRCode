@@ -2,6 +2,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using VRVis.Fallback;
 using VRVis.IO.Structure;
 using VRVis.Utilities;
 
@@ -11,7 +13,7 @@ namespace VRVis.Spawner.CodeCity {
     /// Holds information about a single element of the code city.<para/>
     /// An instance of this script is attached to the spawned elements.
     /// </summary>
-    public class CodeCityElement : MonoBehaviour {
+    public class CodeCityElement : MonoBehaviour, IPointerClickHandler {
 
         /// <summary>Node of the partitioning tree</summary>
 	    private CodeCityV1.PNode pNode;
@@ -72,6 +74,24 @@ namespace VRVis.Spawner.CodeCity {
             if (node == null) { return 0; }
             if (node.isLeaf || node.isPackage) { return 1; }
             return GetSubElementCountRecursive(node.left) + GetSubElementCountRecursive(node.right);
+        }
+
+
+        // EVENT HANDLING
+
+        public void OnPointerClick(PointerEventData eventData) {
+            
+            Debug.Log("City element pointer click: " + GetSNode().GetName());
+
+            eventData.Use();
+            MouseNodePickup.MousePickupEventData e = eventData as MouseNodePickup.MousePickupEventData;
+            if (e != null) {
+                MouseNodePickup mnp = e.GetMNP();
+                if (e.button.Equals(PointerEventData.InputButton.Left)) {
+                    mnp.AttachFileToSpawn(GetSNode(), e.pointerCurrentRaycast.worldPosition);
+                }
+            }
+            
         }
 
     }
