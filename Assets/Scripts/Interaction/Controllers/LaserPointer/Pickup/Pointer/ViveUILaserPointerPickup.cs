@@ -18,7 +18,7 @@ namespace VRVis.Interaction.LaserPointer {
     /// Written by github.com/S1r0hub (Leon H.)<para/>
     /// 
     /// Created: 22.11.2018<para/>
-    /// Updated: 09.08.2019<para/>
+    /// Updated: 15.08.2019<para/>
     /// 
     /// Some methods are from Wacki as mentioned in the default ViveUILaserPointer script.<para/>
     /// This script is modified to work only in the VRVis system.
@@ -31,7 +31,6 @@ namespace VRVis.Interaction.LaserPointer {
 
         [Tooltip("Simply select the touchpad as input for smooth scroll")]
         public SteamVR_Action_Vector2 scrollWheel;
-        //public Color selectedColor = new Color(0.85f, 0.45f, 0.11f);
         
         [Tooltip("Minimum input of touchpad to have an effect")]
         public Vector2 minScrollThreshold = new Vector2(0.1f, 0.1f);
@@ -58,11 +57,6 @@ namespace VRVis.Interaction.LaserPointer {
 
         // to prevent haptic pulse spam
         private float lastPulseTime = 0;
-
-        // currently selected file to be spawned
-        // OLD CODE: attempt 1 of node selection (remove if attempt 2 works)
-        //private NodeInformation selectedFile = null;
-
         private GameObject lastHovered;
 
 
@@ -82,19 +76,13 @@ namespace VRVis.Interaction.LaserPointer {
 
 
         public override bool ButtonDown() {
-
             if (!IsAvailable()) { return false; }
-            bool state = triggerButton.GetStateDown(controller.handType);
-            //Debug.Log("ButtonDown event (" + state + ")");
-            return state;
+            return triggerButton.GetStateDown(controller.handType);
         }
 
         public override bool ButtonUp() {
-
             if (!IsAvailable()) { return false; }
-            bool state = triggerButton.GetStateUp(controller.handType);
-            //Debug.Log("ButtonUp event (" + state + ")");
-            return state;
+            return triggerButton.GetStateUp(controller.handType);
         }
         
 
@@ -122,7 +110,6 @@ namespace VRVis.Interaction.LaserPointer {
         public override void OnExitControl(GameObject control) {
 
             if (!IsAvailable()) { return; }
-
             control.SendMessage("PointerExit", controller, SendMessageOptions.DontRequireReceiver);
         }
 
@@ -226,16 +213,17 @@ namespace VRVis.Interaction.LaserPointer {
 
 
 	    //-------------------------------------------------
-	    void OnDestroy() {
-		    ShutDown();
-	    }
+	    void OnDestroy() { ShutDown(); }
 
-	    //-------------------------------------------------
 	    private void ShutDown() {
         
             // remove the controller from the input module
             LaserPointerInputModule.instance.RemoveController(this);
         }
+
+
+        // ---------------------------------------------------------------------------------------------------
+        // EVENTS
 
         public void OnPointerClick(PointerEventData eventData) {
 
@@ -245,7 +233,7 @@ namespace VRVis.Interaction.LaserPointer {
             GameObject go = eventData.pointerCurrentRaycast.gameObject;
             if (!go) { return; }
             
-            Debug.Log("Controller click on object!", go);
+            //Debug.Log("Controller click on object!", go);
 
             // check if click reached a structure node
             StructureNodeInfo nodeInf = go.GetComponent<StructureNodeInfo>();
@@ -258,6 +246,9 @@ namespace VRVis.Interaction.LaserPointer {
             // check if click reached a feature model node
             VariabilityModelNodeInfo vmNodeInf = go.GetComponent<VariabilityModelNodeInfo>();
             if (vmNodeInf != null) { VariabilityModelNodeClicked(vmNodeInf); }
+
+            // code city uses the EventSystem and catches OnPointerClick()
+            // - use this approach for future additions!
         }
 
         /// <summary>Called when clicked on a structure node.</summary>
