@@ -370,7 +370,8 @@ namespace VRVis.Spawner {
             return instance;
         }
 
-        // ===== CODE FOR CHECKBOXES (currently not in use but is working!) ===== //
+
+        // ===== OLD CODE FOR CHECKBOXES (currently not in use but is working!) ===== //
 
         /*
         /// <summary>
@@ -469,7 +470,9 @@ namespace VRVis.Spawner {
 
         // ======================================================= //
 
-
+        
+        
+        // ----------------------------------------------------------------------------------------------------------------------------------
         // UI FEEDBACK SECTION
 
         /// <summary>
@@ -540,7 +543,21 @@ namespace VRVis.Spawner {
         /// <summary>Called by the VariabilityModel after it was validated.</summary>
         public void VariabilityModelValidated(bool validity_previous, bool validity_now) {
 
-            // ToDo!
+            Color statusColor = validity_now ? VariabilityModel.COLOR_VALID : VariabilityModel.COLOR_INVALID;
+            if (statusTextValidate) { statusTextValidate.text = validity_now ? "Valid" : "Invalid!"; }
+            statusBarValidate.SendMessage("ChangeImageColor", statusColor, SendMessageOptions.DontRequireReceiver);
+
+            if (validity_now) {
+                if (statusTextApply) { statusTextApply.text = "Update required"; }
+                statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
+            }
+        }
+
+        /// <summary>Called by VariabilityModel after model configuration has changed.</summary>
+        public void VariabilityModelConfigChanged() {
+
+            if (statusTextValidate) { statusTextValidate.text = "Update required"; }
+            statusBarValidate.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
         }
 
     }

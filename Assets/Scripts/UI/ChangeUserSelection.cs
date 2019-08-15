@@ -146,8 +146,14 @@ namespace VRVis.Testing.Interaction {
                     validateUI.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
                 }
 
+                /* (commented 15.08.2019 - moved to UISpawner "VariabilityModelValidated" method)
                 checkingVariabilityModel = true;
                 StartCoroutine(ValidationCoroutine(validateUI));
+                */
+
+                checkingVariabilityModel = true;
+                ApplicationLoader.GetApplicationSettings().IsFeatureModelValid();
+                checkingVariabilityModel = false;
             }
             else {
 
@@ -159,6 +165,7 @@ namespace VRVis.Testing.Interaction {
             }
         }
 
+        /* (commented 15.08.2019 - moved to UISpawner "VariabilityModelValidated" method)
         /// <summary>Coroutine to validate model in next frame.</summary>
         private IEnumerator ValidationCoroutine(GameObject statusMain) {
 
@@ -181,6 +188,7 @@ namespace VRVis.Testing.Interaction {
 
             checkingVariabilityModel = false;
         }
+        */
 
 
         /// <summary>Simply update NFP values without previous validation check (can lead to wrong results).</summary>

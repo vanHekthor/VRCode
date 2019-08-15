@@ -514,7 +514,13 @@ namespace VRVis.IO.Features {
 
         /// <summary>Called by an option if its value recently changed.</summary>
         public void ValueChangeNotification(AFeature option, float prevValue, float newValue) {
+
             changedSinceLastValidation = true;
+
+            // notify the UISpawners about this event
+            foreach (Spawner.UISpawner s in ApplicationLoader.GetInstance().GetAttachedUISpawners()) {
+                s.VariabilityModelConfigChanged();
+            }
         }
 
         /// <summary>Called by the VariabilityModelValidator right after validation finished.</summary>
