@@ -11,8 +11,7 @@ using VRVis.Mappings.Methods.Base;
 namespace VRVis.Spawner {
 
     /// <summary>
-    /// Takes care of spawning UI elements
-    /// once the application finished loading.<para/>
+    /// Takes care of spawning UI elements once the application finished loading.<para/>
     /// Used and called by the ApplicationLoader class so attach it to the same GameObject.
     /// </summary>
     public class UISpawner : ASpawner {
@@ -76,6 +75,7 @@ namespace VRVis.Spawner {
 
         void Update() {
 
+            // executed after below method "InitialSpawn" was called
             if (performInitialSpawn) {
                 performInitialSpawn = false;
                 initialSpawnSuccessful = PerformInitialSpawn();
@@ -521,9 +521,7 @@ namespace VRVis.Spawner {
         public void NFPUpdateFailed(string reason) {
 
             // change status text accordingly
-            if (statusTextApply) {
-                statusTextApply.text = reason;
-            }
+            if (statusTextApply) { statusTextApply.text = reason; }
 
             // update progress bar
             if (statusBarApply) {
@@ -537,6 +535,12 @@ namespace VRVis.Spawner {
 
                 statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_INVALID);
             }
+        }
+
+        /// <summary>Called by the VariabilityModel after it was validated.</summary>
+        public void VariabilityModelValidated(bool validity_previous, bool validity_now) {
+
+            // ToDo!
         }
 
     }

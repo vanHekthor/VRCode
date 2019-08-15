@@ -25,6 +25,7 @@
 - [ ] **#3** New UI (more generic and not all windows opened at once)
   - [ ] Radial Menu (at users hand)
 - [ ] **#3** Advanced accessibility and registration of loaders (like done with spawners)
+- [ ] Variability Model improvements (non-boolean & mixed constraints)
 - [ ] Text input (VR keyboard)
   - [ ] Search for files and highlighting in e.g. graph or code city
 - [ ] Configuration of "mappings" while in application

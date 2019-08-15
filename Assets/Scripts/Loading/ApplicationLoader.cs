@@ -10,10 +10,10 @@ using VRVis.Utilities;
 namespace VRVis.IO {
 
     /// <summary>
-    /// This is the framework's startup script.
-    /// It provides possibilities to configure and load resources.
+    /// This is the framework's startup script.<para/>
+    /// It provides possibilities to configure and load resources.<para/>
     /// 
-    /// This is version 2, created at June 11, 2019.
+    /// This is version 2, created at June 11, 2019.<para/>
     /// Last Update: June 11, 2019
     /// </summary>
     [RequireComponent(typeof(StructureLoaderUpdater))]

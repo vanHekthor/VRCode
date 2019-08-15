@@ -13,10 +13,10 @@ namespace VRVis.Spawner {
     /// <summary>
     /// Code City Visualization.<para/>
     /// 
-    /// Created: 06/25/2019
-    /// Updated: 06/28/2019
+    /// Created: 06/25/2019<para/>
+    /// Updated: 06/28/2019<para/>
     /// 
-    /// Created by Leon Hutans, according to
+    /// Created by Leon Hutans, according to<para/>
     /// "Software Systems as Cities" by Richard Wettel.
     /// </summary>
     public class CodeCityV1 : ASpawner {

@@ -98,7 +98,6 @@ namespace VRVis.IO.Features {
         /// <summary>Check if the option exists.</summary>
         /// <param name="name">The name of the option</param>
         /// <param name="validateName">Removes invalid characters from the name</param>
-        /// <returns></returns>
         public bool HasOption(string name, bool validateName) {
 
             // remove invalid characters (not letter and not number or "_")
@@ -107,8 +106,8 @@ namespace VRVis.IO.Features {
         } 
 
         /// <summary>
-        /// Get the binary feature/option for the given name after validating it
-        /// or null if it could not be found.
+        /// Get the binary feature/option for the given name after
+        /// validating it or null if it could not be found.
         /// </summary>
         /// <returns>The feature/option instance or null</returns>
         public Feature_Boolean GetBinaryOption(string name, bool validateName) {
@@ -186,6 +185,7 @@ namespace VRVis.IO.Features {
         public bool GetLastValidationStatus() { return lastValidationStatus; }
 
 
+        /// <summary>Tells if values were applied at least once after app startup.</summary>
         public bool GetValuesAppliedOnce() { return valuesAppliedOnce; }
 
         public void SetValuesAppliedOnce(bool state) { valuesAppliedOnce = state; }
@@ -469,33 +469,6 @@ namespace VRVis.IO.Features {
             */
 
 
-            // ====> CODE USING EXPLICIT ARRAY INDEX MAPPING WITH XML-ELEMENT "pimIndex" IF GIVEN
-
-            /*
-            // check for valid array size
-            if (regionValueArray.Length != greatestPIMIndex + 1) {
-                Debug.LogError(err_msg + " - wrong array size: " +
-                    regionValueArray.Length + ", should be: " + (greatestPIMIndex + 1));
-                return false;
-            }
-
-            // calculate new value
-            float pimValue = regionValueArray[0]; // get base value
-            if (onlyPositiveValues && pimValue < 0) { pimValue = 0; }
-            foreach (KeyValuePair<uint, List<int>> entry in pimIndices) {
-                foreach (int optionIndex in entry.Value) {
-                    AFeature option = GetOption(optionIndex);
-                    float val = regionValueArray[entry.Key];
-                    if (onlyPositiveValues && val < 0) { val = 0; }
-                    pimValue += val * option.GetInfluenceValue();
-                }
-            }
-
-            // ToDo: what if there are no "pimIndices" given?!
-
-            */
-
-
             // ====> CODE USING GLOBAL APP CONFIG "features" ARRAY
 
             // do nothing if missing
@@ -520,7 +493,6 @@ namespace VRVis.IO.Features {
                 pimValue += val * option.GetInfluenceValue();
             }
 
-
             // set value and mark it as valid
             property.SetValue(pimValue);
             return true;
@@ -542,19 +514,19 @@ namespace VRVis.IO.Features {
 
         /// <summary>Called by an option if its value recently changed.</summary>
         public void ValueChangeNotification(AFeature option, float prevValue, float newValue) {
-
             changedSinceLastValidation = true;
         }
 
         /// <summary>Called by the VariabilityModelValidator right after validation finished.</summary>
         public void JustValidatedNotification(bool valid) {
 
+            bool prev_valid = lastValidationStatus;
             lastValidationStatus = valid;
             changedSinceLastValidation = false;
 
             // notify the UISpawners about this event
             foreach (Spawner.UISpawner s in ApplicationLoader.GetInstance().GetAttachedUISpawners()) {
-
+                s.VariabilityModelValidated(prev_valid, valid);
             }
         }
 
