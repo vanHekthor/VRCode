@@ -31,6 +31,9 @@ namespace VRVis.Interaction.LaserPointer {
 
         [Tooltip("Simply select the touchpad as input for smooth scroll")]
         public SteamVR_Action_Vector2 scrollWheel;
+
+        [Tooltip("If available, assign the scroll wheel here")]
+        public Transform scrollWheelObject;
         
         [Tooltip("Minimum input of touchpad to have an effect")]
         public Vector2 minScrollThreshold = new Vector2(0.1f, 0.1f);
@@ -39,7 +42,7 @@ namespace VRVis.Interaction.LaserPointer {
         public Vector2 scrollMapping = new Vector2(1, 1);
 
         [Tooltip("If this is used in VRVis")]
-        public bool VRVIS = false;
+        public bool VRVIS = true;
 
         [Tooltip("Index of the code window mover controller in radial menu entries")]
         public int cwMoverIndex = 0;
@@ -58,6 +61,9 @@ namespace VRVis.Interaction.LaserPointer {
         // to prevent haptic pulse spam
         private float lastPulseTime = 0;
         private GameObject lastHovered;
+        private Coroutine hideScrollWheelCoroutine;
+        private bool hideWheel = false;
+        private bool scrollStarted = false;
 
 
         /// <summary>Get the last hovered game object.</summary>
@@ -162,6 +168,78 @@ namespace VRVis.Interaction.LaserPointer {
         }
 
 
+        /// <summary>
+        /// Checks if the user is scrolling on the trackpad.<para/>
+        /// Takes care of showing the scroll wheel objects and so on.
+        /// </summary>
+        private void CheckScrolling() {
+
+            bool scrolling = ScrollingGesture();
+
+            // set value of scrollStarted variable accordingly (will be disabled by coroutine)
+            if (!scrollStarted && scrolling) { scrollStarted = true; }
+
+            // show wheel object on controller if it exists and hide if no longer in use
+            if (scrollWheelObject) {
+
+                if (scrolling) {
+
+                    hideWheel = false;
+                    if (hideScrollWheelCoroutine != null) {
+                        StopCoroutine(hideScrollWheelCoroutine);
+                        hideScrollWheelCoroutine = null;
+                    }
+
+                    scrollWheelObject.gameObject.SetActive(true);
+                }
+                else if (scrollWheelObject.gameObject.activeSelf && hideScrollWheelCoroutine == null) {
+                    hideWheel = true;
+                    hideScrollWheelCoroutine = StartCoroutine(HideScrollWheelAfter(2));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks if the user performed a scrolling gesture on the trackpad.<para/>
+        /// It also stores the initial speed of the "virtual" scroll wheel.
+        /// </summary>
+        private bool ScrollingGesture() {
+            
+            float wheel_width = 0.6f * 0.5f;
+            float wheel_height = 0.8f * 0.5f;
+            
+            // check if finger is somewhere on the trackpad
+            // by assuming that if not, the vector will be zero
+            if (scrollWheel.GetAxis(controller.handType).magnitude < 0.0001f) { return false; }
+
+            // check if the change was strong enough
+            float scrollDeltaMag = scrollWheel.GetAxisDelta(controller.handType).magnitude;
+            if (scrollDeltaMag < 0.02f) { return false; }
+            if (!scrollStarted && scrollDeltaMag < 0.06f) { return false; }
+
+            // user did just put finger on touchpad for the first time, which caused high delta magnitude
+            if (scrollWheel.GetLastAxis(controller.handType) == Vector2.zero) { return false; }
+
+            // check if the finger touches the virtual "wheel"
+            Vector2 fingerpos = scrollWheel.GetAxis(controller.handType);
+            if (fingerpos.x < -wheel_width || fingerpos.x > wheel_width) { return false; }
+            else if (fingerpos.y > wheel_height || fingerpos.y < -wheel_height) { return false; }
+            
+            // haptic feedback
+            if (scrollStarted) { controller.hapticAction.Execute(0, 0.01f, 1, 0.4f, controller.handType); }
+            return true;
+        }
+
+        /// <summary>Takes care of hiding the scroll wheel after a while.</summary>
+        private IEnumerator HideScrollWheelAfter(float hideAfterSeconds) {
+            yield return new WaitForSecondsRealtime(hideAfterSeconds);
+            if (hideWheel) {
+                if (scrollWheelObject) { scrollWheelObject.gameObject.SetActive(false); }
+                scrollStarted = false;
+            }
+        }
+
+
 
         // ########### STEAMVR_SECTION ########### //
 
@@ -186,7 +264,9 @@ namespace VRVis.Interaction.LaserPointer {
 
             // perform a laser update call
             UpdateCall();
+            CheckScrolling();
         }
+
 
 	    //-------------------------------------------------
 	    private void OnHandFocusLost(Hand hand) {
