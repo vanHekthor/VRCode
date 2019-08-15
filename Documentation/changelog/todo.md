@@ -65,9 +65,9 @@
   - [ ] Automated check/validation of alternate group selection
   - [ ] **#1** Selecting and configuring numerical options (requires UI concerns)
 - [ ] Possibility to zoom on text for better readability
-- [ ] Feature regions counter to show amount
+- [ ] Feature regions counter to show amount of "affected" lines
 - [ ] Instant snap to start/end of file instead of "endless" scrolling
-- [ ] Improve edge rendering to avoid thin edges
+- [ ] Improve edge rendering to avoid thin edges when they curve
 - [ ] Edges with lighting for better depth clues
 - [ ] **#3** Improved scrolling using a gesture
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
