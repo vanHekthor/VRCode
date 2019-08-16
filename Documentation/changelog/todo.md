@@ -12,8 +12,7 @@
     - [X] **#1** Selecting elements to open files *(09.08.2019)*
     - [X] Info on hover *(04.07.2019)*
     - [ ] "Be the data" approach (maybe?)
-    - [ ] **#2** Open code window by clicking at the elements
-      - [ ] Jump to according position in code when clicked on NFP texture
+    - [ ] **#2** Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
   - [X] Overview of code window content *(12.07.2019)*
@@ -69,7 +68,8 @@
 - [ ] Instant snap to start/end of file instead of "endless" scrolling
 - [ ] Improve edge rendering to avoid thin edges when they curve
 - [ ] Edges with lighting for better depth clues
-- [ ] **#3** Improved scrolling using a gesture
+- [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
+- [ ] **#3** Scroll wheel texture and rotation
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
 - [ ] Allow teleport when laser pointer is disabled
 - [ ] Notation hints on feature graph (e.g. on hover)

@@ -35,14 +35,22 @@ namespace VRVis.Interaction.LaserPointer {
         [Tooltip("If available, assign the scroll wheel here")]
         public Transform scrollWheelObject;
         
+        /*
         [Tooltip("Minimum input of touchpad to have an effect")]
-        public Vector2 minScrollThreshold = new Vector2(0.1f, 0.1f);
+        public Vector2 minScrollThreshold = new Vector2(0.4f, 0.4f);
 
         [Tooltip("Map the values from min scroll to 1 on this vector (for x: 0...scrollMapping.x, for y: 0-scrollMapping.y)")]
         public Vector2 scrollMapping = new Vector2(1, 1);
+        */
 
-        [Tooltip("If this is used in VRVis")]
-        public bool VRVIS = true;
+        [Tooltip("Multiply the scroll input value with this factor")]
+        [Range(0, 100)] public float scrollMult = 16;
+
+        [Tooltip("Minimum input of touchpad to have an effect")]
+        public Vector2 minScrollThreshold = new Vector2(0.008f, 0.008f);
+
+        [Tooltip("Threshold to activate scroll wheel (default 0.05)")]
+        public float scrollActivationThreshold = 0.05f;
 
         [Tooltip("Index of the code window mover controller in radial menu entries")]
         public int cwMoverIndex = 0;
@@ -50,8 +58,8 @@ namespace VRVis.Interaction.LaserPointer {
         [Tooltip("How long to wait (seconds) after exiting something before another pulse occurs")]
         public float pulseWait = 0.05f;
 
-        [Tooltip("Layers to use pulse on")]
-        public LayerMask pulseLayer;
+        [Tooltip("If this is used in VRVis")]
+        public bool VRVIS = true;
 
 
         // now assigned by pickup event
@@ -61,9 +69,15 @@ namespace VRVis.Interaction.LaserPointer {
         // to prevent haptic pulse spam
         private float lastPulseTime = 0;
         private GameObject lastHovered;
-        private Coroutine hideScrollWheelCoroutine;
-        private bool hideWheel = false;
+        
+        private bool scrolling = false;
         private bool scrollStarted = false;
+        private bool hideWheel = false;
+        private Coroutine hideScrollWheelCoroutine;
+        private Vector2 lastScrollAxis;
+        private Vector2 scrollChange;
+        private Vector2 lastScrollChange;
+        private float lastFeedback = 0;
 
 
         /// <summary>Get the last hovered game object.</summary>
@@ -133,13 +147,14 @@ namespace VRVis.Interaction.LaserPointer {
         }
 
 
+        /*
         public override bool IsScrolling() {
             
             if (scrollWheel == null || !controller) { return false; }
             Vector2 curAxis = scrollWheel.GetAxis(controller.handType);
             return Mathf.Abs(curAxis.x) >= minScrollThreshold.x || Mathf.Abs(curAxis.y) >= minScrollThreshold.y;
         }
-
+        
         public override Vector2 GetScrollDelta() {
             
             if (scrollWheel == null || !controller) { return Vector2.zero; }
@@ -166,6 +181,14 @@ namespace VRVis.Interaction.LaserPointer {
             float yVal = (yCur / rangeY) * scrollMapping.y * yNeg;
             return new Vector2(xVal * -1, yVal); // invert scroll dir on horizontal axis
         }
+        */
+
+        public override bool IsScrolling() { return scrolling && scrollStarted && scrollChange != Vector2.zero; }
+
+        public override Vector2 GetScrollDelta() {
+            if (scrollWheel == null || !controller) { return Vector2.zero; }
+            return new Vector2(scrollChange.x * -1, scrollChange.y); // invert scroll dir on horizontal axis
+        }
 
 
         /// <summary>
@@ -174,7 +197,9 @@ namespace VRVis.Interaction.LaserPointer {
         /// </summary>
         private void CheckScrolling() {
 
-            bool scrolling = ScrollingGesture();
+            if (scrollWheel == null || !controller) { scrolling = false; return; }
+
+            scrolling = ScrollingGesture();
 
             // set value of scrollStarted variable accordingly (will be disabled by coroutine)
             if (!scrollStarted && scrolling) { scrollStarted = true; }
@@ -196,6 +221,23 @@ namespace VRVis.Interaction.LaserPointer {
                     hideWheel = true;
                     hideScrollWheelCoroutine = StartCoroutine(HideScrollWheelAfter(2));
                 }
+
+                // store last scroll axis for change calculation
+                Vector2 cur = scrollWheel.GetAxis(controller.handType);
+                if (lastScrollAxis != Vector2.zero && cur != Vector2.zero) { scrollChange = cur - lastScrollAxis; }
+                else { scrollChange = Vector2.zero; }
+                lastScrollAxis = cur;
+
+                scrollChange *= Time.deltaTime * 100;
+                scrollChange.x = Mathf.Round(scrollChange.x * 10000.0f) / 10000.0f;
+                scrollChange.y = Mathf.Round(scrollChange.y * 10000.0f) / 10000.0f;
+                if (Mathf.Abs(scrollChange.x) < minScrollThreshold.x) { scrollChange.x = 0; }
+                if (Mathf.Abs(scrollChange.y) < minScrollThreshold.y) { scrollChange.y = 0; }
+                scrollChange *= scrollMult;
+
+                // smooth
+                scrollChange = (scrollChange + lastScrollChange) * 0.5f;
+                lastScrollChange = scrollChange;
             }
         }
 
@@ -205,17 +247,17 @@ namespace VRVis.Interaction.LaserPointer {
         /// </summary>
         private bool ScrollingGesture() {
             
-            float wheel_width = 0.6f * 0.5f;
-            float wheel_height = 0.8f * 0.5f;
+            float wheel_width = 0.2f;
+            float wheel_height = 1;
             
             // check if finger is somewhere on the trackpad
             // by assuming that if not, the vector will be zero
             if (scrollWheel.GetAxis(controller.handType).magnitude < 0.0001f) { return false; }
 
             // check if the change was strong enough
-            float scrollDeltaMag = scrollWheel.GetAxisDelta(controller.handType).magnitude;
-            if (scrollDeltaMag < 0.02f) { return false; }
-            if (!scrollStarted && scrollDeltaMag < 0.06f) { return false; }
+            float scrollDeltaMag = Mathf.Abs(scrollWheel.GetAxisDelta(controller.handType).y);
+            if (scrollDeltaMag < 0.01f) { return false; }
+            if (!scrollStarted && scrollDeltaMag < scrollActivationThreshold) { return false; }
 
             // user did just put finger on touchpad for the first time, which caused high delta magnitude
             if (scrollWheel.GetLastAxis(controller.handType) == Vector2.zero) { return false; }
@@ -226,7 +268,10 @@ namespace VRVis.Interaction.LaserPointer {
             else if (fingerpos.y > wheel_height || fingerpos.y < -wheel_height) { return false; }
             
             // haptic feedback
-            if (scrollStarted) { controller.hapticAction.Execute(0, 0.01f, 1, 0.4f, controller.handType); }
+            if (scrollStarted && Time.time > lastFeedback + 0.1f) {
+                controller.hapticAction.Execute(0, 0.1f, 1, 0.1f, controller.handType);
+                lastFeedback = Time.time;
+            }
             return true;
         }
 
