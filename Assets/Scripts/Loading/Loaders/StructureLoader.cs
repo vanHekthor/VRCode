@@ -206,14 +206,6 @@ namespace VRVis.IO {
                 return false;
             }
 
-
-            // ToDo: debug code - remove if no longer required
-            //Debug.Log("################ Relative files loaded:");
-            //foreach (string relpath in filesFullPath.Keys) {
-            //    Debug.Log("RELPATH: " + relpath);
-            //}
-
-
             // print some debug info about the load process
             Debug.Log("Loading software system structure finished successfully.\n" +
                 "(Folders: " + subFoldersTotal +

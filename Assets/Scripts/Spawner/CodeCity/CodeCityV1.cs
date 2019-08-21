@@ -15,7 +15,7 @@ namespace VRVis.Spawner {
     /// Code City Visualization.<para/>
     /// 
     /// Created: 06/25/2019<para/>
-    /// Updated: 06/28/2019<para/>
+    /// Updated: 08/21/2019<para/>
     /// 
     /// Created by Leon Hutans, according to<para/>
     /// "Software Systems as Cities" by Richard Wettel.
@@ -50,20 +50,8 @@ namespace VRVis.Spawner {
         public Color packageColorFrom = new Color(0.3f, 0.3f, 0.3f);
         public Color packageColorTo = new Color(0.9f, 0.9f, 0.9f);
 
-        //public ClassMapping[] classMappings;
-
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
-
-
-        // ToDo: cleanup - now done by ValueMapping system
-        //[Serializable]
-        //public class ClassMapping {
-        //    public string name;
-        //    public bool apply = true;
-        //    public string[] fileEndings;
-        //    public Color color = Color.white;
-        //}
 
 
         /// <summary>
@@ -575,38 +563,17 @@ namespace VRVis.Spawner {
                 CodeCityElement cce = cube.AddComponent<CodeCityElement>();
                 cce.SetNode(node);
                 
-                // ToDo: improved color mapping and texturing of buildings
+                // ToDo: texturing of buildings
                 // add color and more according to type of node
                 if (node.isLeaf) {
 
                     i_spawned_elements++;
 
-                    // ToDo: testing - improve!
+                    // apply color based on filename
                     if (cube.GetComponent<Renderer>()) {
 
                         string name = node.corNode.GetName();
                         Color c = Color.gray;
-
-                        
-                        // ToDo: cleanup
-                        //foreach (ClassMapping cm in classMappings) {
-
-                        //    if (!cm.apply) { continue; }
-                        //    bool applies = false;
-
-                        //    foreach (string e in cm.fileEndings) {
-                        //        if (name.EndsWith(e)) {
-                        //            applies = true;
-                        //            break;
-                        //        }
-                        //    }
-
-                        //    if (applies) {
-                        //        c = cm.color;
-                        //        break;
-                        //    }
-                        //}
-
 
                         ValueMappingsLoader vml = ApplicationLoader.GetInstance().GetMappingsLoader();
                         if (vml.HasFilenameSettings()) {

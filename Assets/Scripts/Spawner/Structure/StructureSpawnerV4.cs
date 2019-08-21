@@ -197,7 +197,7 @@ namespace VRVis.Spawner {
             
             string err_msg = "Failed to spawn a node of the file structure";
 
-            // get according prefab
+            // get according prefab based on the type of the node
             GameObject prefab = null;
             Color c = Color.black;
             bool assignColor = false;
@@ -213,32 +213,7 @@ namespace VRVis.Spawner {
                 prefab = filePrefab;
                 string name = node.GetName().ToLower();
 
-                // ToDo: cleanup
-                //if (name.EndsWith(".c") || name.EndsWith(".cc") || name.EndsWith(".h")) {
-                //    c = Color.cyan;
-                //    assignColor = true;
-                //}
-                //else if (name.EndsWith(".cpp") || name.EndsWith(".hpp")) {
-                //    c = Color.blue;
-                //    assignColor = true;
-                //}
-                //else if (name.EndsWith(".java")) {
-                //    c = Color.red;
-                //    assignColor = true;
-                //}
-                //else if (name.EndsWith(".json")) {
-                //    c = Color.green;
-                //    assignColor = true;
-                //}
-                //else if (name.EndsWith(".html")) {
-                //    c = new Color(1.0f, 0.8f, 0.5f);
-                //    assignColor = true;
-                //}
-                //else if (name.EndsWith(".jpg") || name.EndsWith(".png") || name.EndsWith(".gif") || name.EndsWith(".ico")) {
-                //    c = Color.magenta;
-                //    assignColor = true;
-                //}
-
+                // get color coding according to filename
                 ValueMappingsLoader vml = ApplicationLoader.GetInstance().GetMappingsLoader();
                 if (vml.HasFilenameSettings()) {
                     foreach (FilenameSetting s in vml.GetFilenameSettings()) {
