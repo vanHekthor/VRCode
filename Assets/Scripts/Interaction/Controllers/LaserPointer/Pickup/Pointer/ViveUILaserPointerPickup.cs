@@ -229,9 +229,10 @@ namespace VRVis.Interaction.LaserPointer {
                 lastScrollAxis = cur;
 
                 scrollChange *= Time.deltaTime * 100;
-                scrollChange.x = Mathf.Round(scrollChange.x * 10000.0f) / 10000.0f;
+                scrollChange.x = 0;
+                //scrollChange.x = Mathf.Round(scrollChange.x * 10000.0f) / 10000.0f;
                 scrollChange.y = Mathf.Round(scrollChange.y * 10000.0f) / 10000.0f;
-                if (Mathf.Abs(scrollChange.x) < minScrollThreshold.x) { scrollChange.x = 0; }
+                //if (Mathf.Abs(scrollChange.x) < minScrollThreshold.x) { scrollChange.x = 0; }
                 if (Mathf.Abs(scrollChange.y) < minScrollThreshold.y) { scrollChange.y = 0; }
                 scrollChange *= scrollMult;
 
@@ -247,7 +248,7 @@ namespace VRVis.Interaction.LaserPointer {
         /// </summary>
         private bool ScrollingGesture() {
             
-            float wheel_width = 0.2f;
+            float wheel_width = 0.5f;
             float wheel_height = 1;
             
             // check if finger is somewhere on the trackpad
@@ -266,6 +267,8 @@ namespace VRVis.Interaction.LaserPointer {
             Vector2 fingerpos = scrollWheel.GetAxis(controller.handType);
             if (fingerpos.x < -wheel_width || fingerpos.x > wheel_width) { return false; }
             else if (fingerpos.y > wheel_height || fingerpos.y < -wheel_height) { return false; }
+
+            Debug.Log("FingerposY: " + fingerpos.y);
             
             // haptic feedback
             if (scrollStarted && Time.time > lastFeedback + 0.1f) {

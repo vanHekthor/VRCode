@@ -19,10 +19,10 @@ namespace VRVis.Spawner {
     
         // prefabs for folders and files
         public GameObject folderPrefab;
-        public float folderPrefabRadius = 0.5f;
+        public float folderPrefabRadius = 0.1f;
 
         public GameObject filePrefab;
-        public float filePrefabRadius = 0.5f;
+        public float filePrefabRadius = 0.06f;
 
         [Tooltip("Spacing between hierarchy levels")]
         public float levelSpacing = 0.5f;

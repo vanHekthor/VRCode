@@ -77,14 +77,17 @@ namespace VRVis.Spawner.Layouts.ConeTree {
             };
 
 
-            // assign radius depending on type of leaf node and return
-            if (node.IsLeaf()) {
-                //if (node.IsLeafRadiusSet()) { info.radius = node.GetLeafRadius(); }
+            // assign radius depending on type of leaf node and return if leaf
+            bool isLeaf = node.IsLeaf();
+            if (isLeaf || node.GetNodesCount() == 1) {
+
+                // use delegate function to calculate leaf radius
                 if (leafRadiusOverride != null) {
                     float r = leafRadiusOverride(node);
                     if (r > 0 && r > settings.minRadius) { info.radius = r; }
                 }
-                return info;
+
+                if (isLeaf) { return info; }
             }
 
 
@@ -102,9 +105,11 @@ namespace VRVis.Spawner.Layouts.ConeTree {
 
             // the final calculated radius of this node
             float nodeRadius = info.radius;
-            int childNodesCount = node.GetNodesCount();
 
-            if (childNodesCount == 1) { nodeRadius = info.childNodes[0].radius; }
+            if (node.GetNodesCount() == 1) {
+                float childRad = info.childNodes[0].radius;
+                if (childRad > nodeRadius) { nodeRadius = childRad; }
+            }
             else {
 
                 // use angular sector calculation for multiple nodes

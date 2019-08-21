@@ -52,6 +52,7 @@
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
 - [X] **#1** Same color coding for cone tree edges and code city *(21.08.2019)*
+- [ ] Horizontal scrolling with new scroll-wheel implementation
 - [ ] ValueMappings: provide some default color methods for usage in mappings
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
 - [ ] \(Sorting files in cone tree layout by their type to get kinda like a pie chart when color is applied\)?
@@ -88,6 +89,7 @@
 ## Bugs
 - [X] NullPointerException when calling "WindowSpawnedCallback" function with no CodeFile *(12.07.2019)*
 - [X] Last line number not shown in code file *(12.07.2019)*
+- [X] Cone tree leafs sometimes overlapping a bit in software structure *(21.08.2019)*
 - [ ] **#1** State of nodes of the variability model not always updating properly
 - [ ] **#1** Overview region sometimes shown black
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
