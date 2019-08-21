@@ -49,12 +49,13 @@
   - [ ] Cleanup scenes accordingly after this modification!
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
-- [ ] **#1** Same color coding for cone tree edges and code city
+- [X] **#1** Same color coding for cone tree edges and code city *(21.08.2019)*
 - [ ] ValueMappings: provide some default color methods for usage in mappings
-- [ ] Sorting files in cone tree layout by their type to get kinda like a pie chart
+- [ ] ValueMappingsLoader: refactoring and generalization of setting types
+- [ ] \(Sorting files in cone tree layout by their type to get kinda like a pie chart when color is applied\)?
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
-- [ ] Improve option index retrieval in last VariabilityModelSpawner (see comments in code)
+- [ ] VariabilityModelSpawner: improve option index retrieval in last version (see comments in code)
 - [ ] **#1** Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?

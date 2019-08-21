@@ -5,6 +5,7 @@ using System.IO;
 using UnityEngine;
 using VRVis.IO;
 using VRVis.IO.Structure;
+using VRVis.Mappings;
 using VRVis.Spawner.CodeCity;
 using VRVis.Utilities;
 
@@ -49,20 +50,20 @@ namespace VRVis.Spawner {
         public Color packageColorFrom = new Color(0.3f, 0.3f, 0.3f);
         public Color packageColorTo = new Color(0.9f, 0.9f, 0.9f);
 
-        public ClassMapping[] classMappings;
+        //public ClassMapping[] classMappings;
 
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
 
 
-        // ToDo: for testing purposes - put in value mappings format later
-        [Serializable]
-        public class ClassMapping {
-            public string name;
-            public bool apply = true;
-            public string[] fileEndings;
-            public Color color = Color.white;
-        }
+        // ToDo: cleanup - now done by ValueMapping system
+        //[Serializable]
+        //public class ClassMapping {
+        //    public string name;
+        //    public bool apply = true;
+        //    public string[] fileEndings;
+        //    public Color color = Color.white;
+        //}
 
 
         /// <summary>
@@ -586,21 +587,34 @@ namespace VRVis.Spawner {
                         string name = node.corNode.GetName();
                         Color c = Color.gray;
 
-                        foreach (ClassMapping cm in classMappings) {
+                        
+                        // ToDo: cleanup
+                        //foreach (ClassMapping cm in classMappings) {
 
-                            if (!cm.apply) { continue; }
-                            bool applies = false;
+                        //    if (!cm.apply) { continue; }
+                        //    bool applies = false;
 
-                            foreach (string e in cm.fileEndings) {
-                                if (name.EndsWith(e)) {
-                                    applies = true;
+                        //    foreach (string e in cm.fileEndings) {
+                        //        if (name.EndsWith(e)) {
+                        //            applies = true;
+                        //            break;
+                        //        }
+                        //    }
+
+                        //    if (applies) {
+                        //        c = cm.color;
+                        //        break;
+                        //    }
+                        //}
+
+
+                        ValueMappingsLoader vml = ApplicationLoader.GetInstance().GetMappingsLoader();
+                        if (vml.HasFilenameSettings()) {
+                            foreach (FilenameSetting s in vml.GetFilenameSettings()) {
+                                if (s.Applies(name)) {
+                                    c = s.GetColor();
                                     break;
                                 }
-                            }
-
-                            if (applies) {
-                                c = cm.color;
-                                break;
                             }
                         }
 

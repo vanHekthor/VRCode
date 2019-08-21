@@ -5,6 +5,7 @@ using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner.Structure;
 using VRVis.Spawner.Layouts.ConeTree;
+using VRVis.Mappings;
 
 namespace VRVis.Spawner {
 
@@ -210,34 +211,44 @@ namespace VRVis.Spawner {
             if (node.GetNodeType() == SNode.DNodeTYPE.FILE) {
 
                 prefab = filePrefab;
-
-                // TESTING: colors connections according to file extension
                 string name = node.GetName().ToLower();
-                if (name.EndsWith(".c") || name.EndsWith(".cc") || name.EndsWith(".h")) {
-                    c = Color.cyan;
-                    assignColor = true;
-                }
-                else if (name.EndsWith(".cpp") || name.EndsWith(".hpp")) {
-                    c = Color.blue;
-                    assignColor = true;
-                }
-                else if (name.EndsWith(".java")) {
-                    c = Color.red;
-                    assignColor = true;
-                }
-                else if (name.EndsWith(".json")) {
-                    c = Color.green;
-                    assignColor = true;
-                }
-                else if (name.EndsWith(".html")) {
-                    c = new Color(1.0f, 0.8f, 0.5f);
-                    assignColor = true;
-                }
-                else if (name.EndsWith(".jpg") || name.EndsWith(".png") || name.EndsWith(".gif") || name.EndsWith(".ico")) {
-                    c = Color.magenta;
-                    assignColor = true;
-                }
 
+                // ToDo: cleanup
+                //if (name.EndsWith(".c") || name.EndsWith(".cc") || name.EndsWith(".h")) {
+                //    c = Color.cyan;
+                //    assignColor = true;
+                //}
+                //else if (name.EndsWith(".cpp") || name.EndsWith(".hpp")) {
+                //    c = Color.blue;
+                //    assignColor = true;
+                //}
+                //else if (name.EndsWith(".java")) {
+                //    c = Color.red;
+                //    assignColor = true;
+                //}
+                //else if (name.EndsWith(".json")) {
+                //    c = Color.green;
+                //    assignColor = true;
+                //}
+                //else if (name.EndsWith(".html")) {
+                //    c = new Color(1.0f, 0.8f, 0.5f);
+                //    assignColor = true;
+                //}
+                //else if (name.EndsWith(".jpg") || name.EndsWith(".png") || name.EndsWith(".gif") || name.EndsWith(".ico")) {
+                //    c = Color.magenta;
+                //    assignColor = true;
+                //}
+
+                ValueMappingsLoader vml = ApplicationLoader.GetInstance().GetMappingsLoader();
+                if (vml.HasFilenameSettings()) {
+                    foreach (FilenameSetting s in vml.GetFilenameSettings()) {
+                        if (s.Applies(name)) {
+                            c = s.GetColor();
+                            assignColor = true;
+                            break;
+                        }
+                    }
+                }
             }
             else if (node.GetNodeType() == SNode.DNodeTYPE.FOLDER) { prefab = folderPrefab; }
             else {
@@ -254,10 +265,8 @@ namespace VRVis.Spawner {
             nodeInstance.transform.SetParent(parent, false);
             
 
-            // TESTING: color connections according to file extension
-            if (assignColor) {
-                nodeInstance.GetComponent<Renderer>().material.color = c;
-            }
+            // color edges according to the color mapping
+            if (assignColor) { nodeInstance.GetComponent<Renderer>().material.color = c; }
 
 
             // check for reference information object

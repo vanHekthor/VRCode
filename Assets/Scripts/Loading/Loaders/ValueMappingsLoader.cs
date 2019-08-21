@@ -109,6 +109,7 @@ namespace VRVis.IO {
 
         /// <summary>Returns true if there is such a mapping defined.</summary>
         public bool HasFilenameSetting(string name) { return settings_filenames.ContainsKey(name.ToLower()); }
+        public bool HasFilenameSettings() { return settings_filenames.Count > 0; }
 
         /// <summary>
         /// Get a mapping method with the specific name for this setting type.<para/>

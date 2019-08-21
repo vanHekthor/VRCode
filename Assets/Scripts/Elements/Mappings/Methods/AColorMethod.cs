@@ -10,7 +10,7 @@ namespace VRVis.Mappings.Methods {
     /// Evaluates a color value at a specific time "t".<para/>
     /// Between the "from-color" and "to-color" will be interpolated.<para/>
     /// 
-    /// Recently added:
+    /// Recently added:<para/>
     /// - continuous or stepwise interpolation
     /// </summary>
     public abstract class AColorMethod : IMappingMethod {
@@ -24,7 +24,7 @@ namespace VRVis.Mappings.Methods {
         private uint steps = 0;
 
         // store the generated texture so that we do not create a new one each time
-        private Texture2D texture2D = null;
+        private readonly Texture2D texture2D = null;
 
 
         // CONSTRUCTOR
@@ -36,9 +36,7 @@ namespace VRVis.Mappings.Methods {
         }
 
         protected AColorMethod(string methodName)
-        : this(methodName, Color.green, Color.red) {
-            // ...
-        }
+        : this(methodName, Color.green, Color.red) {}
 
 
         // GETTER AND SETTER
@@ -50,8 +48,6 @@ namespace VRVis.Mappings.Methods {
 
         public Color GetToColor() { return toColor; }
         public void SetToColor(Color color) { toColor = color; }
-
-        //public MinMaxValue GetRange() { return range; } // ToDo: cleanup
 
         public uint GetSteps() { return steps; }
 

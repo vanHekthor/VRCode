@@ -61,18 +61,6 @@ namespace VRVis.Mappings.Methods {
             // create instance
             Color_Scale color_scale = new Color_Scale(methodName, fromColor, toColor);
 
-            // ToDo: cleanup
-            // min/max no longer supported for mapping methods -> moved to mapping settings of NFPs
-            /*
-            // add additional information (min & max or min or max)
-            float minVal = 0, maxVal = 0;
-            bool minGiven = false, maxGiven = false;
-            if (o["min"] != null) { minGiven = Utility.StrToFloat((string) o["min"], out minVal, true); }
-            if (o["max"] != null) { maxGiven = Utility.StrToFloat((string) o["max"], out maxVal, true); }
-            if (minGiven) { color_scale.SetRangeMin(minVal); }
-            if (maxGiven) { color_scale.SetRangeMax(maxVal); }
-            */
-
             // gradient steps
             uint steps = 0;
             if (o["steps"] != null) { if (uint.TryParse((string) o["steps"], out steps)) { color_scale.SetSteps(steps); } }
@@ -87,7 +75,7 @@ namespace VRVis.Mappings.Methods {
             Color color = Color.black;
 
             // create the color using the input string (values separated by comma)
-            if (o["color"] != null) { color = Utility.ColorFromString((string) o["color"], ',', 0.5f); }
+            if (o["color"] != null) { color = Utility.ColorFromString((string) o["color"], ',', 1); }
 
             // create instance
             Color_Fixed fixed_color = new Color_Fixed(methodName, color);
@@ -113,18 +101,6 @@ namespace VRVis.Mappings.Methods {
             fromValue = fromValue < 0 ? 0 : fromValue > 100 ? 100 : fromValue;
             toValue = toValue < 0 ? 0 : toValue > 100 ? 100 : toValue < fromValue ? fromValue : toValue;
             Width_Scale size_scale = new Width_Scale(methodName, fromValue, toValue);
-
-            // ToDo: cleanup
-            // min/max no longer supported for mapping methods -> moved to mapping settings of NFPs
-            /*
-            // add additional information (min & max or min or max)
-            float minVal = 0, maxVal = 0;
-            bool minGiven = false, maxGiven = false;
-            if (o["min"] != null) { if (Utility.StrToFloat((string) o["min"], out minVal, true)) { minGiven = true; }; }
-            if (o["max"] != null) { if (Utility.StrToFloat((string) o["max"], out maxVal, true)) { maxGiven = true; }; }
-            if (minGiven) { size_scale.SetRangeMin(minVal); }
-            if (maxGiven) { size_scale.SetRangeMax(maxVal); }
-            */
 
             return size_scale;
         }
