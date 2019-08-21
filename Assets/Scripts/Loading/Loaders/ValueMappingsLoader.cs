@@ -18,7 +18,7 @@ namespace VRVis.IO {
     /// </summary>
     public class ValueMappingsLoader : FileLoader {
 
-        public enum SettingType { UNKNOWN, NFP, FEATURE, EDGE };
+        public enum SettingType { UNKNOWN, NFP, FEATURE, EDGE, FILENAME };
 
         /// <summary>Name of the key for default mappings (must be lower case!)</summary>
         public readonly string KEY_DEFAULT = "default";
@@ -46,6 +46,10 @@ namespace VRVis.IO {
         private Dictionary<string, EdgeSetting> settings_edges = new Dictionary<string, EdgeSetting>();
         private bool firstEdgeSetting = true;
 
+        private Dictionary<string, IMappingMethod> methods_filenames = new Dictionary<string, IMappingMethod>();
+        private Dictionary<string, FilenameSetting> settings_filenames = new Dictionary<string, FilenameSetting>();
+        private bool firstFilenameSetting = true;
+
         /// <summary>Path of the currently loaded file</summary>
         private string curFile = "";
 
@@ -71,9 +75,7 @@ namespace VRVis.IO {
         }
 
         /// <summary>Returns true if there is a mapping defined for this non functional property.</summary>
-        public bool HasNFPSetting(string nfpName) {
-            return settings_nfps.ContainsKey(nfpName.ToLower());
-        }
+        public bool HasNFPSetting(string nfpName) { return settings_nfps.ContainsKey(nfpName.ToLower()); }
 
         /// <summary>Returns the setting if found, or default setting otherwise!</summary>
         public FeatureSetting GetFeatureSetting(string featureName) {
@@ -81,6 +83,9 @@ namespace VRVis.IO {
             if (!settings_features.ContainsKey(featureName)) { return settings_features[KEY_DEFAULT]; }
             return settings_features[featureName];
         }
+ 
+        /// <summary>Returns true if there is such a mapping defined.</summary>
+        public bool HasFeatureSetting(string featureName) { return settings_features.ContainsKey(featureName.ToLower()); }
 
         /// <summary>Returns the setting if found, or default setting otherwise!</summary>
         public EdgeSetting GetEdgeSetting(string edgeType) {
@@ -90,9 +95,20 @@ namespace VRVis.IO {
         }
 
         /// <summary>Returns true if there is a mapping defined for this edge type.</summary>
-        public bool HasEdgeSetting(string edgeType) {
-            return settings_edges.ContainsKey(edgeType.ToLower());
+        public bool HasEdgeSetting(string edgeType) { return settings_edges.ContainsKey(edgeType.ToLower()); }
+
+        /// <summary>Returns the setting if found, or default setting otherwise!</summary>
+        public FilenameSetting GetFilenameSetting(string name) {
+            name = name.ToLower();
+            if (!settings_filenames.ContainsKey(name)) { return settings_filenames[KEY_DEFAULT]; }
+            return settings_filenames[name];
         }
+
+        /// <summary>Returns the whole collection of filename mappings.</summary>
+        public IEnumerable<FilenameSetting> GetFilenameSettings() { return settings_filenames.Values; }
+
+        /// <summary>Returns true if there is such a mapping defined.</summary>
+        public bool HasFilenameSetting(string name) { return settings_filenames.ContainsKey(name.ToLower()); }
 
         /// <summary>
         /// Get a mapping method with the specific name for this setting type.<para/>
@@ -114,6 +130,9 @@ namespace VRVis.IO {
 
                 case SettingType.EDGE:
                     return methods_edges.ContainsKey(name) ? methods_edges[name] : null;
+
+                case SettingType.FILENAME:
+                    return methods_filenames.ContainsKey(name) ? methods_filenames[name] : null;
             }
             
             return null;
@@ -144,6 +163,7 @@ namespace VRVis.IO {
             if (type.Equals("nfp")) { return SettingType.NFP; }
             if (type.Equals("feature")) { return SettingType.FEATURE; }
             if (type.Equals("edge")) { return SettingType.EDGE; }
+            if (type.Equals("filename")) { return SettingType.FILENAME; }
             
             return SettingType.UNKNOWN;
         }
@@ -263,14 +283,17 @@ namespace VRVis.IO {
             firstNFPSetting = true;
             firstFeatureSetting = true;
             firstEdgeSetting = true;
+            firstFilenameSetting = true;
             if (settings_nfps != null) { settings_nfps.Clear(); }
             if (settings_features != null) { settings_features.Clear(); }
             if (settings_edges != null) { settings_edges.Clear(); }
+            if (settings_filenames != null) { settings_filenames.Clear(); }
 
             // add default settings
             settings_nfps[KEY_DEFAULT] = NFPSetting.Default();
             settings_features[KEY_DEFAULT] = FeatureSetting.Default();
             settings_edges[KEY_DEFAULT] = EdgeSetting.Default();
+            settings_filenames[KEY_DEFAULT] = FilenameSetting.Default();
         }
 
 
@@ -312,6 +335,7 @@ namespace VRVis.IO {
                     case SettingType.NFP: methods_nfps[methodName] = method; break;
                     case SettingType.FEATURE: methods_features[methodName] = method; break;
                     case SettingType.EDGE: methods_edges[methodName] = method; break;
+                    case SettingType.FILENAME: methods_filenames[methodName] = method; break;
                 }
             }
 
@@ -350,7 +374,7 @@ namespace VRVis.IO {
                 // ToDo: maybe add an option to still enable/switch between multiple entries in application?
                 // currently just ignore this entry so that it wont even show up
                 if (!entry.IsActive()) {
-                    Debug.LogWarning("Ignoring mapping entry " + i + " of file: " + curFile);
+                    Debug.LogWarning("Ignoring mapping entry " + i + " (disabled) of file: " + curFile);
                     continue;
                 }
 
@@ -363,6 +387,7 @@ namespace VRVis.IO {
                     case SettingType.NFP: settings_nfps[name] = (NFPSetting) entry; break;
                     case SettingType.FEATURE: settings_features[name] = (FeatureSetting) entry; break;
                     case SettingType.EDGE: settings_edges[name] = (EdgeSetting) entry; break;
+                    case SettingType.FILENAME: settings_filenames[name] = (FilenameSetting) entry; break;
                 }
             }
 
@@ -389,58 +414,51 @@ namespace VRVis.IO {
             // convert to lower case
             name = name.ToLower();
 
+            // check if overwriting default is allowed
+            if (name.Equals(KEY_DEFAULT)) {
+
+                bool ow = true;
+                string t = "";
+
+                switch (settingType) {
+                    case SettingType.NFP: if (!firstNFPSetting) { ow = false; }; t = "nfps"; break;
+                    case SettingType.FEATURE: if (!firstFeatureSetting) { ow = false; }; t = "features"; break;
+                    case SettingType.EDGE: if (!firstEdgeSetting) { ow = false; }; t = "edges"; break;
+                    case SettingType.FILENAME: if (!firstFilenameSetting) { ow = false; }; t = "filenames"; break;
+                }
+
+                if (!ow) {
+                    err_msg = "Default mapping must always be the first one!";
+                    return null;
+                }
+                else if (t.Length > 0) { Debug.LogWarning("Overwriting default mapping of " + t); }
+            }
+
             // entry instance to be returned
             AMappingEntry entry = null;
             err_msg = "Failed to parse entry from JSON!"; // in case parsing fails
 
+            // parse JSON to according type
             switch (settingType) {
 
                 case SettingType.NFP:
-
-                    // user is overwriting default but it is not the first entry
-                    if (name.Equals(KEY_DEFAULT)) {
-
-                        if (!firstNFPSetting) {
-                            err_msg = "Default mapping must always be the first one!";
-                            return null;
-                        }
-                        else { Debug.LogWarning("Overwriting default mapping of nfps."); }
-                    }
-
                     entry = NFPSetting.FromJSON(o, this, settings_nfps[KEY_DEFAULT], name);
                     firstNFPSetting = false;
                     break;
 
                 case SettingType.FEATURE:
-
-                    // user is overwriting default but it is not the first entry
-                    if (name.Equals(KEY_DEFAULT)) {
-
-                        if (!firstFeatureSetting) {
-                            err_msg = "Default mapping must always be the first one!";
-                            return null;
-                        }
-                        else { Debug.LogWarning("Overwriting default mapping of features."); }
-                    }
-
                     entry = FeatureSetting.FromJSON(o, this, settings_features[KEY_DEFAULT], name);
                     firstFeatureSetting = false;
                     break;
 
                 case SettingType.EDGE:
-
-                    // user is overwriting default but it is not the first entry
-                    if (name.Equals(KEY_DEFAULT)) {
-
-                        if (!firstEdgeSetting) {
-                            err_msg = "Default mapping must always be the first one!";
-                            return null;
-                        }
-                        else { Debug.LogWarning("Overwriting default mapping of edges."); }
-                    }
-
                     entry = EdgeSetting.FromJSON(o, this, settings_edges[KEY_DEFAULT], name);
                     firstEdgeSetting = false;
+                    break;
+
+                case SettingType.FILENAME:
+                    entry = FilenameSetting.FromJSON(o, this, settings_filenames[KEY_DEFAULT], name);
+                    firstFilenameSetting = false;
                     break;
             }
 

@@ -24,7 +24,6 @@ namespace VRVis.Mappings {
 
         /// <summary>Create this instance from another instance.</summary>
         public FeatureSetting(FeatureSetting other) {
-            
             color = other.color;
         }
 
@@ -44,7 +43,6 @@ namespace VRVis.Mappings {
         /// Should only be used for the default setting instance!
         /// </summary>
         private void LoadDefaults() {
-
             color = new Color(0.5f, 0.5f, 0.5f, 0.5f);
         }
 

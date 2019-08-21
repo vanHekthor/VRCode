@@ -369,7 +369,7 @@ namespace VRVis.IO {
         private bool IsExcluded(string path) {
             bool excluded = false;
             foreach (string pattern in GetExcludeFiles()) {
-                if (Regex.IsMatch(path, pattern)) {
+                if (Regex.IsMatch(path, pattern, RegexOptions.CultureInvariant)) {
                     //Debug.Log("Matching pattern (" + pattern + "): " + path); // DEBUG
                     excluded = true;
                     break;

@@ -387,4 +387,65 @@ To change the width of the edge, there are the following `base` methods availabl
 - [Width_Fixed](#width_fixed)
 
 </details>
+
+<br/>
+
+<details><summary>FILENAME MAPPING</summary>
+
+## FILENAME Mapping
+
+Filename mappings can be used to color specific files based on their name.  
+This color can then show, for instance, the distribution of a specific type
+or allow to mark some important/relevant files for quick finding in the
+directory hierarchy and *Code City* visualizations.
+
+#### General FILENAME Mapping
+
+The general mapping looks like shown below.  
+
+```json
+{
+    "filename": {
+        "methods": [],
+        "mapping": [
+            {
+                "name": "C++",
+                "query": {
+                    "method": "endswith",
+                    "values": [".cc", ".cpp", ".h", ".c"]
+                },
+                "color": "Light_Blue"
+            },
+            {
+                "name": "Special Files",
+                "query": {
+                    "method": "regex",
+                    "values": [".*special.*"]
+                },
+                "color": "Red"
+            }
+        ]
+    }
+}
+```
+  
+The `name` of the mapping should be unique.  
+Using the `query` object, it is possible to define how according files are found.  
+You could either use `endswith` or `regex` for the method. According to your choose,
+the values you provide are treated differently.
+
+**Attributes:**
+- `name`: Unique name of the mapping - `string`
+- `query -> method`: Method used to use together with values - `string` , either "startswith", endswith" or "regex"
+- `query -> values`: The values/patterns to use the according method on - `list of strings`
+- `color`: the color method to use
+
+#### FILENAME Base Methods
+
+To apply a specific color to a file, there are the following `base` methods available for use.  
+
+- [Color_Fixed](#color_fixed)
+
+</details>
+
 </details>
