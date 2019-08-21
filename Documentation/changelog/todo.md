@@ -6,6 +6,7 @@
 
 - [X] Advanced spawner system (register new in editor, use others, ...) *(12.06.2019)*
 - [X] Basic **code city** visualization *(28.06.2019)*
+- [X] **#2** Minimal cone tree layout *(05.08.2019)*
 - [ ] **#1** Improve code city visualization
   - [ ] **#1** Textures to show regions and their performance
   - [ ] Interaction
@@ -20,9 +21,9 @@
   - [ ] Where and how to show the content overview window?
 - [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
-- [ ] 2-Controller interaction
+- [ ] 2-Controller interaction (make use of second controller in meaningful way)
 - [ ] **#3** New UI (more generic and not all windows opened at once)
-  - [ ] Radial Menu (at users hand)
+  - [ ] Radial Menu (at users hand - maybe activated by gesture)
 - [ ] **#3** Advanced accessibility and registration of loaders (like done with spawners)
 - [ ] Variability Model improvements (non-boolean & mixed constraints)
 - [ ] Text input (VR keyboard)
@@ -37,16 +38,17 @@
   - [ ] Support of different controller types
   - [ ] Configuration of button layout through user
   - [ ] Use Unity's [Script Execution Order](https://docs.unity3d.com/Manual/class-MonoManager.html) feature
-- [ ] Support of different HMDs
+- [ ] Support of different HMDs (e.g. Oculus Rift)
 - [ ] Multi-user VR experience
-- [X] **#2** Minimal cone tree layout *(05.08.2019)*
+  - [ ] Opening & joining sessions from within the application (maybe in entry room)
+  - [ ] Show an avatar for each user that only the other person can see
 
 ## Minor
 - [X] Enable/Disable all visualizations in UI (includes graphs) *(10.07.2019)*
 - [X] Improve overview texture generation by NOT pre-calculating line patterns *(17.07.2019)*
 - [X] Nodes rotating towards parent node in cone tree layout *(05.08.2019)*
 - [X] Generic code for cone tree layout used by software hierarchy visualization and variability model *(05.08.2019)*
-  - [ ] Cleanup scenes accordingly after this modification!
+  - [X] Cleanup example scenes accordingly after this modification! *(08.08.2019)*
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
 - [X] **#1** Same color coding for cone tree edges and code city *(21.08.2019)*
