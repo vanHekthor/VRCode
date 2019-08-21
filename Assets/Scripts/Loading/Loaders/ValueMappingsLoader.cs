@@ -46,8 +46,8 @@ namespace VRVis.IO {
         private Dictionary<string, EdgeSetting> settings_edges = new Dictionary<string, EdgeSetting>();
         private bool firstEdgeSetting = true;
 
-        private Dictionary<string, IMappingMethod> methods_filenames = new Dictionary<string, IMappingMethod>();
-        private Dictionary<string, FilenameSetting> settings_filenames = new Dictionary<string, FilenameSetting>();
+        private IDictionary<string, IMappingMethod> methods_filenames = new Dictionary<string, IMappingMethod>();
+        private IDictionary<string, FilenameSetting> settings_filenames = new Dictionary<string, FilenameSetting>();
         private bool firstFilenameSetting = true;
 
         /// <summary>Path of the currently loaded file</summary>
@@ -197,8 +197,8 @@ namespace VRVis.IO {
 
             // print debug result information
             string msg = "Finished loading " + success + "/" + total + " mapping files!\n(" +
-                "methods: nfp=" + methods_nfps.Count + ", feature=" + methods_features.Count + ", edge=" + methods_edges.Count + "; " +
-                "settings: nfp=" + settings_nfps.Count + ", feature=" + settings_features.Count + ", edge=" + settings_edges.Count + ")";
+                "methods: nfp=" + methods_nfps.Count + ", feature=" + methods_features.Count + ", edge=" + methods_edges.Count + ", filename=" + methods_filenames.Count + "; " +
+                "settings: nfp=" + settings_nfps.Count + ", feature=" + settings_features.Count + ", edge=" + settings_edges.Count + ", filename=" + settings_filenames.Count + ")";
             if (success != total) { Debug.LogWarning(msg); } else { Debug.Log(msg); }
 
             loadingSuccessful = true;

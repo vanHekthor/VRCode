@@ -18,7 +18,7 @@ namespace VRVis.Mappings {
 
         private Color color;
         private string query_method;
-        private ISet<string> query_patterns;
+        private ISet<string> query_patterns = new HashSet<string>();
 
         private static readonly ISet<string> supported_methods = new HashSet<string>(){
             "startswith", "endswith", "regex"
@@ -78,6 +78,7 @@ namespace VRVis.Mappings {
         /// </summary>
         private void LoadDefaults() {
             color = new Color(1, 1, 1, 1);
+            query_patterns = new HashSet<string>();
         }
 
         /// <summary>Initialize this instance from JSON.</summary>
@@ -85,7 +86,7 @@ namespace VRVis.Mappings {
             
             // load base components first
             base.LoadFromJSON(o, loader, name);
-
+            
             // overwrite query
             JObject q = o["query"] as JObject;
             if (q != null) {
@@ -95,9 +96,12 @@ namespace VRVis.Mappings {
                 if (qvalues == null) { Debug.LogError("FILENAME [" + name + "] query: missing values!"); return false; }
                 
                 query_method = ((string) q["method"]).ToLower();
-                if (supported_methods.Contains(query_method)) { Debug.LogError("FILENAME [" + name + "] query: method not supported!"); return false; }
+                if (!supported_methods.Contains(query_method)) { Debug.LogError("FILENAME [" + name + "] query: method \"" + query_method + "\" not supported!"); return false; }
                 
-                foreach (JToken t in qvalues) { query_patterns.Add((string) t); }
+                foreach (JToken t in qvalues) {
+                    if (t == null) { continue; }
+                    query_patterns.Add((string) t);
+                }
                 if (qvalues.Count == 0) { Debug.LogError("FILENAME [" + name + "] query: no values!"); return false; }
             }
 
