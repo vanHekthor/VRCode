@@ -267,8 +267,6 @@ namespace VRVis.Interaction.LaserPointer {
             Vector2 fingerpos = scrollWheel.GetAxis(controller.handType);
             if (fingerpos.x < -wheel_width || fingerpos.x > wheel_width) { return false; }
             else if (fingerpos.y > wheel_height || fingerpos.y < -wheel_height) { return false; }
-
-            Debug.Log("FingerposY: " + fingerpos.y);
             
             // haptic feedback
             if (scrollStarted && Time.time > lastFeedback + 0.1f) {
