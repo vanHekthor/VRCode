@@ -51,12 +51,10 @@ namespace Wacki {
         
         public override void OnEnterControl(GameObject control) {
             if (!available()) { return; }
-            // ToDo: haptic pulse
         }
 
         public override void OnExitControl(GameObject control) {
             if (!available()) { return; }
-            // ToDo: haptic pulse
         }
 
         public override bool ButtonToggleClicked() {

@@ -181,11 +181,6 @@ namespace VRVis.Elements {
 
                 // check if the feature occurs in the variability model and warn the user if it doesn't
                 if (propType == ARProperty.TYPE.FEATURE) {
-                    
-                    // ToDo: cleanup
-                    //if (!ApplicationLoader.GetInstance().GetFeatureLoader().FeatureExists(propName)) {
-                    //    Debug.LogWarning("Feature (" + propName + ") of region (" + GetID() + ") is not defined!");
-                    //}
 
                     if (ApplicationLoader.GetInstance().GetVariabilityModelLoader().LoadedSuccessful()) {
                         VariabilityModel vm = ApplicationLoader.GetInstance().GetVariabilityModel();
@@ -367,12 +362,6 @@ namespace VRVis.Elements {
 
             foreach (RProperty_NFP property in NFPs) {
 
-                // ToDo: cleanup
-                // calculate performance influence value of this property
-                //FeatureLoader ftLoader = ApplicationLoader.GetInstance().GetFeatureLoader();
-                //if (!ftLoader.CalculatePIMValue(property)) { continue; }
-
-
                 // calculate performance influence value of this property using the variability model configuration
                 VariabilityModel vm = null;
                 VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
@@ -381,7 +370,6 @@ namespace VRVis.Elements {
                 // if variability model is missing, calculate the average of all values
                 if (vm == null) { property.SetValue(property.GetAverageValue()); }
                 else { vm.CalculatePIMValue(property); }
-
 
                 // check if instance exists and update value
                 MinMaxValue minMax = new MinMaxValue();

@@ -12,7 +12,8 @@ namespace VRVis.IO.Features {
     /// https://github.com/se-passau/SPLConqueror/blob/master/SPLConqueror/SPLConqueror/InfluenceFunction.cs <para/>
     /// It represents a term like 2.1 * x... mainly used as step functions in this context.<para/>
     /// As I understood from the original code, "log10(...)" is replaced by "[...]" for evaluation.
-    /// At least thats how this code handles the case.
+    /// At least thats how this code handles the case.<para/>
+    /// Created by Leon H. (2019)
     /// </summary>
     public class InfluenceFunction {
 
