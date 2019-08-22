@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Xml;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.Spawner.Layouts;
 
 namespace VRVis.IO.Features {
@@ -11,7 +12,7 @@ namespace VRVis.IO.Features {
     /// <summary>
     /// Abstract base class for all types of features.<para/>
     /// This base class basically implements a "range feature".
-    /// Because everything can be defined as a range of numbers.
+    /// Because everything can be defined as a range of numbers.<para/>
     /// For instance, a boolean feature is a range of 0 to 1,
     /// defined with a step size of 1 (on or off).
     /// </summary>
@@ -47,6 +48,9 @@ namespace VRVis.IO.Features {
 
         /// <summary>Index in performance influence model array of values.</summary>
         private uint pimIndex = 0;
+
+        /// <summary>To notify registered listeners about the "value change" event.</summary>
+        public UnityEvent valueChangedEvent = new UnityEvent();
 
 
 
@@ -143,6 +147,7 @@ namespace VRVis.IO.Features {
 
             // notify variability model about the change
             model.ValueChangeNotification(this, prevValue, newValue);
+            valueChangedEvent.Invoke();
         }
 
 

@@ -6,7 +6,7 @@ using UnityEngine.EventSystems;
 /// Initial code by github.com/wacki.<para/>
 /// 
 /// Modified and extended by github.com/S1r0hub.<para/>
-/// Updated: 09.08.2019
+/// Updated: 22.08.2019
 /// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
@@ -131,11 +131,11 @@ namespace VRVis.Interaction.LaserPointer {
             UpdateCall();
         }
 
-        /**
-         * Performs laser update.
-         * Using raycast to detect hit and showing it.
-         * Moved to a separate method to be called from other methods as well.
-         */
+        /// <summary>
+        /// Performs a laser update.
+        /// Using raycast to detect hit and showing it.<para/>
+        /// Moved to a separate method to be called from other methods as well.
+        /// </summary>
         protected virtual void UpdateCall() {
 
             // check if user turns laser on/off and react accordingly
