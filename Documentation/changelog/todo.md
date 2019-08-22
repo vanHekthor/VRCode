@@ -52,6 +52,8 @@
 - [X] Apply minimal cone tree layout algorithm to variability model as well *(06.08.2019)*
 - [X] Better font for code in code window (e.g. Consolas - type "monospace" font) *(08.08.2019)*
 - [X] **#1** Same color coding for cone tree edges and code city *(21.08.2019)*
+- [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
+- [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [ ] Horizontal scrolling with new scroll-wheel implementation
 - [ ] ValueMappings: provide some default color methods for usage in mappings
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
@@ -73,8 +75,6 @@
 - [ ] Instant snap to start/end of file instead of "endless" scrolling
 - [ ] Improve edge rendering to avoid thin edges when they curve
 - [ ] Edges with lighting for better depth clues
-- [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
-- [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
 - [ ] Allow teleport when laser pointer is disabled
 - [ ] Notation hints on feature graph (e.g. on hover)
