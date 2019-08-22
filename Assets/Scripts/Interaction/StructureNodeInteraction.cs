@@ -75,15 +75,8 @@ namespace VRVis.Interaction {
             if (nodeInfo) {
                 Debug.Log("Interaction with: " + nodeInfo.GetSNode().GetPath());
 
-                if (nodeInfo.GetSNode().GetNodeType() == SNode.DNodeTYPE.FILE) {
-                    InteractionVisualFeedback(colorClickedFile);
-
-                    // spawn code window if not done yet
-                    // ToDo: give user ability to place the code window before actually spawning it
-                    /*if (ApplicationLoader.GetInstance().fileSpawner.SpawnFile(nodeInfo.GetDNode(), Vector3.up * 3, Quaternion.identity)) {
-                        Debug.Log("Code window spawned.");
-                    }*/
-                }
+                if (nodeInfo.GetSNode().GetNodeType() == SNode.DNodeTYPE.FILE)
+                { InteractionVisualFeedback(colorClickedFile); }
                 else { InteractionVisualFeedback(colorClickedOther); }
             }
             else if (nodeInfoV2) {
@@ -99,7 +92,6 @@ namespace VRVis.Interaction {
         // POINTER EVENT HANDLING
 
         public void OnPointerClick(PointerEventData eventData) {
-
             Debug.Log("Clicked at file structure item: " + gameObject.name, gameObject);
             Interaction();
         }
