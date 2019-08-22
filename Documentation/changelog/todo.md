@@ -74,7 +74,7 @@
 - [ ] Improve edge rendering to avoid thin edges when they curve
 - [ ] Edges with lighting for better depth clues
 - [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
-- [ ] **#3** Scroll wheel texture and rotation
+- [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
 - [ ] Allow teleport when laser pointer is disabled
 - [ ] Notation hints on feature graph (e.g. on hover)
