@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using VRVis.Fallback;
 using VRVis.Interaction.LaserPointer;
+using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Utilities;
 
@@ -12,7 +13,8 @@ namespace VRVis.Spawner.CodeCity {
 
     /// <summary>
     /// Holds information about a single element of the code city.<para/>
-    /// An instance of this script is attached to the spawned elements.
+    /// An instance of this script is attached to the spawned elements.<para/>
+    /// Last-Updated: 22.08.2019
     /// </summary>
     public class CodeCityElement : MonoBehaviour, IPointerClickHandler {
 
@@ -32,18 +34,28 @@ namespace VRVis.Spawner.CodeCity {
         /// <summary>Assign the partitioning tree node. (Should only be used by the CodeCity itself!)</summary>
         public void SetNode(CodeCityV1.PNode pNode) { this.pNode = pNode; }
 
-        /// <summary>Returns useful information about the element as a dictionary.</summary>
-        public Dictionary<string, string> GetInfo() {
+        /// <summary>
+        /// Returns useful information about the element as a dictionary.<para/>
+        /// Only builds the whole dictionary once on the first call.<para/>
+        /// After that, only changing entries are updated.
+        /// </summary>
+        public IDictionary<string, string> GetInfo() {
 
             if (pNode == null) { infoBuilt = true; }
-            if (infoBuilt) { return info; }
+
+            // only perform partial updates
+            if (infoBuilt) {
+
+                // ToDo: consider that height/width, ... may change as well in future versions
+                AddSpawnedStateToInfo();
+                return info;
+            }
 
             info.Clear();
             info.Add("Name", pNode.corNode.GetName());
             info.Add("Type", pNode.corNode.GetNodeType().ToString());
-            info.Add("Sub-Elements", pNode.subElements.ToString());
             
-            // sub-element count and similar can be calculated recursively
+            // sub-element count and similar could also be calculated recursively
             // [to see an example have a look at GetSubElementCount()]
 
             // prepare additional height information
@@ -54,9 +66,15 @@ namespace VRVis.Spawner.CodeCity {
                 heightAdd += ", " + Utility.ToStr(hp) + " %";
             }
 
-            info.Add("Height", pNode.GetHeight().ToString() + " (" + heightAdd + ")");
             info.Add("Width", pNode.GetWidth().ToString());
             info.Add("Length", pNode.GetLength().ToString());
+            info.Add("Height", pNode.GetHeight().ToString() + " (" + heightAdd + ")");
+
+            // show sub-elements of folders
+            if (pNode.corNode.IsFolder()) { info.Add("Sub-Elements", pNode.subElements.ToString()); }
+
+            // add info about spawned state (this needs to be updated on every new call)
+            AddSpawnedStateToInfo();
 
             infoBuilt = true;
             return info;
@@ -75,6 +93,21 @@ namespace VRVis.Spawner.CodeCity {
             if (node == null) { return 0; }
             if (node.isLeaf || node.isPackage) { return 1; }
             return GetSubElementCountRecursive(node.left) + GetSubElementCountRecursive(node.right);
+        }
+
+
+        /// <summary>Adds information about the spawned state to the info dictionary.</summary>
+        private void AddSpawnedStateToInfo() {
+
+            // tells if a file is already spawned
+            if (pNode.corNode.IsFile()) {
+
+                FileSpawner fs = ApplicationLoader.GetInstance().GetSpawner("FileSpawner") as FileSpawner;
+                if (fs != null) {
+                    bool spawned = fs.IsFileSpawned(pNode.corNode.GetFullPath());
+                    info["Spawned"] = spawned ? "yes" : "no";
+                }
+            }
         }
 
 

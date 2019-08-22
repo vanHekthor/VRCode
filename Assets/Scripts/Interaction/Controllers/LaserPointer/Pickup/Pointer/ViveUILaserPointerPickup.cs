@@ -52,6 +52,9 @@ namespace VRVis.Interaction.LaserPointer {
         [Tooltip("Threshold to activate scroll wheel (default 0.05)")]
         public float scrollActivationThreshold = 0.05f;
 
+        [Tooltip("Degree to turn per change unit (the higher the faster)")]
+        [Range(0, 360)] public float scrollWheelTurnDegree = 45;
+
         [Tooltip("Index of the code window mover controller in radial menu entries")]
         public int cwMoverIndex = 0;
 
@@ -239,6 +242,11 @@ namespace VRVis.Interaction.LaserPointer {
                 // smooth
                 scrollChange = (scrollChange + lastScrollChange) * 0.5f;
                 lastScrollChange = scrollChange;
+
+                // rotate scroll wheel object accordingly
+                // (change.y * 0.5 = "/ 2" bc. from top to bottom = maximum possible change of distance -> 2 on touchpad)
+                float angleDegree = (scrollChange.y * 0.5f) * scrollWheelTurnDegree;
+                scrollWheelObject.Rotate(new Vector3(0, 0, 1), angleDegree, Space.Self);
             }
         }
 

@@ -9,11 +9,12 @@ namespace VRVis.IO.Structure {
     /// <summary>
     /// Represents a basic node of the software system structure.<para/>
     /// Holds information about a folder or a file.<para/>
-    /// Such information is the path, fullPath, name, type (folder or file) and possible sub-nodes.
+    /// Such information is the path, fullPath, name, type (folder or file) and possible sub-nodes.<para/>
+    /// Last Updated: 22.08.2019
     /// </summary>
     public class SNode : GenericNode {
 
-        public enum DNodeTYPE {UNKNOWN, FILE, FOLDER};
+        public enum DNodeTYPE { UNKNOWN, FILE, FOLDER };
 
         private readonly string path;
         private readonly string fullPath;
@@ -54,6 +55,12 @@ namespace VRVis.IO.Structure {
         /// <summary>Get the code file regarding this node.</summary>
         public CodeFile GetCodeFile() { return codeFile; }
         public void SetCodeFile(CodeFile cf) { codeFile = cf; }
+
+        /// <summary>Tells if this node is of type folder.summary>
+        public bool IsFolder() { return nodeType == DNodeTYPE.FOLDER; }
+
+        /// <summary>Tells if this node is of type file.summary>
+        public bool IsFile() { return nodeType == DNodeTYPE.FILE; }
 
     }
 }
