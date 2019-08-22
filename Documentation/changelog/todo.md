@@ -91,8 +91,8 @@
 - [X] Last line number not shown in code file *(12.07.2019)*
 - [X] Cone tree leafs sometimes overlapping a bit in software structure *(21.08.2019)*
 - [X] **#1** State of nodes of the variability model not always updating properly *(22.08.2019)*
+- [X] Changing controller while pointing at folders/files does not change back color of marked folder/file *(22.08.2019)*
 - [ ] **#1** Overview region sometimes shown black
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
-- [ ] Change controller while pointing at folders/files does change back color of marked folder/file
 - [ ] Laser pointer sometimes not working right after startup (rare)
 - [ ] Horizontal scrollbar of code window is often not adjusting the content

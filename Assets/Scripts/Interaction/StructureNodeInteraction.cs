@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using Valve.VR.InteractionSystem;
 using VRVis.IO.Structure;
 using VRVis.Spawner.Structure;
 
@@ -30,6 +31,7 @@ namespace VRVis.Interaction {
         private Color colorDefault;
         private float clickedTime = 0;
         private bool clickColorShow = false;
+        private bool pointerHovering = false;
 
 
         void Start() {
@@ -53,8 +55,11 @@ namespace VRVis.Interaction {
             // remove clicked color after the time passed
             if (clickColorShow && Time.time > clickedTime) {
 
-                if (!highlightOnEnter) { GetComponent<Renderer>().material.color = colorDefault; }
-                else { highlightOnEnter.GetComponent<Renderer>().material.color = colorDefault; }
+                Color c = colorDefault;
+                if (pointerHovering) { c = colorHighlighted; }
+
+                if (!highlightOnEnter) { GetComponent<Renderer>().material.color = c; }
+                else { highlightOnEnter.GetComponent<Renderer>().material.color = c; }
                 clickColorShow = false;
             }
         }
@@ -118,6 +123,7 @@ namespace VRVis.Interaction {
                 if (!highlightOnEnter) { GetComponent<Renderer>().material.color = colorHighlighted; }
                 else { highlightOnEnter.GetComponent<Renderer>().material.color = colorHighlighted; }
                 clickColorShow = false;
+                pointerHovering = true;
             }
         }
 
@@ -127,7 +133,20 @@ namespace VRVis.Interaction {
                 if (!highlightOnEnter) { GetComponent<Renderer>().material.color = colorDefault; }
                 else { highlightOnEnter.GetComponent<Renderer>().material.color = colorDefault; }
             }
+
+            pointerHovering = false;
         }
 
+        /// <summary>Receives message from laser pointer (also on change).</summary>
+        public void PointerExit(Hand hand) {
+
+            if (!clickColorShow) {
+                if (!highlightOnEnter) { GetComponent<Renderer>().material.color = colorDefault; }
+                else { highlightOnEnter.GetComponent<Renderer>().material.color = colorDefault; }
+            }
+
+            pointerHovering = false;
+        }
+        
     }
 }

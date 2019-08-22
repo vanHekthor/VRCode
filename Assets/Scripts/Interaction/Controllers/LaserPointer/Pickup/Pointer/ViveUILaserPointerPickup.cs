@@ -331,7 +331,10 @@ namespace VRVis.Interaction.LaserPointer {
 	    private void OnDetachedFromHand(Hand hand) {
 
             // notify last hovered that pointer is detached
-            if (lastHovered != null) { lastHovered.SendMessage("PointerExit", hand, SendMessageOptions.DontRequireReceiver); }
+            if (lastHovered != null) {
+                lastHovered.SendMessage("PointerExit", hand, SendMessageOptions.DontRequireReceiver);
+                //lastHovered.SendMessage("PointerDetached", hand, SendMessageOptions.DontRequireReceiver);
+            }
 
             Debug.Log("Pickup Laser Pointer detached from hand!");
 		    Destroy(gameObject);
