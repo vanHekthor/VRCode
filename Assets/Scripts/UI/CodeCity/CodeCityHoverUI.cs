@@ -20,6 +20,15 @@ namespace VRVis.UI.CodeCity {
         public Vector3 uiPosition;
         public Vector3 uiRotation;
 
+        [Tooltip("UI distance from the camera")]
+        public float uiDistance = 1;
+
+        [Tooltip("Collision layers to avoid when placing the UI")]
+        public LayerMask collisionLayerMask;
+
+        [Tooltip("Collision radius to check")]
+        public float uiCollisionRadius = 0.15f;
+
         private GameObject uiInstance;
         private Hand attachedHand;
 
@@ -29,20 +38,26 @@ namespace VRVis.UI.CodeCity {
             if (uiInstance) {
 
                 // calculate position
-                Vector3 pos = CalculatePosition();
+                Vector3 pos = CalculatePosition(uiDistance);
                 Vector3 camPos = Camera.main.transform.position;
 
-                // ToDo: improve by passing a more useful object to PointerEntered
-                //       (it should tell about the Hand, hit object and also about the hit position)
-                float posDist = (pos - camPos).magnitude;
-                float elDist = (transform.position - attachedHand.transform.position).magnitude;
+                // ToDo: maybe use "Physics.BoxCast()" to improve behaviour
+                // perform raycast from hand position to the desired UI position
+                // and check if there is anything between to avoid putting the UI inside an element
+                Vector3 handPos = attachedHand.transform.position;
+                Vector3 handToPos = pos - handPos;
+                Ray ray = new Ray(handPos, handToPos);
+                RaycastHit hitInfo = new RaycastHit();
+                float max_ray_dist = handToPos.magnitude;
+                float radius = uiCollisionRadius;
+                if (Physics.SphereCast(ray, radius, out hitInfo, max_ray_dist - uiCollisionRadius * 0.5f, collisionLayerMask)) {
+                    if (hitInfo.collider.gameObject != uiInstance) { pos = CalculatePosition(hitInfo.distance); }
+                }
 
-                if (posDist > elDist) { pos = CalculatePosition(0.5f); }
+                // assign ui position and rotate to camera
                 uiInstance.transform.position = pos;
-
-                // rotate to camera
-                Vector3 dir = camPos - pos;
-                uiInstance.transform.rotation = Quaternion.LookRotation(-dir);
+                Vector3 rotDir = camPos - pos;
+                uiInstance.transform.rotation = Quaternion.LookRotation(-rotDir);
             }
         }
 
@@ -50,13 +65,11 @@ namespace VRVis.UI.CodeCity {
         /// <summary>
         /// Calculate the UI position.
         /// </summary>
-        private Vector3 CalculatePosition(float scale = 1f) {
-
+        private Vector3 CalculatePosition(float distance) {
             Vector3 fw = attachedHand.transform.forward;
             Vector3 u = Vector3.up;
-            Vector3 r = -Vector3.Cross(fw, u);
-            Vector3 pos = attachedHand.transform.position + (fw * uiPosition.z + r * uiPosition.x + u * uiPosition.y) * scale;
-            return pos;
+            Vector3 r = -Vector3.Cross(fw, u); // direction "to the right"
+            return attachedHand.transform.position + (fw * uiPosition.z + r * uiPosition.x + u * uiPosition.y).normalized * distance;
         }
 
 

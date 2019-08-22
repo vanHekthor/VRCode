@@ -54,6 +54,7 @@
 - [X] **#1** Same color coding for cone tree edges and code city *(21.08.2019)*
 - [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
 - [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
+- [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
 - [ ] Horizontal scrolling with new scroll-wheel implementation
 - [ ] ValueMappings: provide some default color methods for usage in mappings
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
@@ -61,7 +62,6 @@
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] VariabilityModelSpawner: improve option index retrieval in last version (see comments in code)
-- [ ] **#1** Add raycast to check that code city hover window is not inside building
 - [ ] Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Tilt hover window of directory graph to user
