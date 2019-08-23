@@ -9,6 +9,7 @@
 - [X] **#2** Minimal cone tree layout *(05.08.2019)*
 - [ ] **#1** Improve code city visualization
   - [ ] **#1** Textures to show regions and their performance
+  - [ ] Show edges/relations between buildings (edge bundling)
   - [ ] Interaction
     - [X] **#1** Selecting elements to open files *(09.08.2019)*
     - [X] Info on hover *(04.07.2019)*

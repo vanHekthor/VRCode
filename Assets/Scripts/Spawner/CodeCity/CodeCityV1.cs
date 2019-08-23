@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Mappings;
@@ -15,7 +16,7 @@ namespace VRVis.Spawner {
     /// Code City Visualization.<para/>
     /// 
     /// Created: 06/25/2019<para/>
-    /// Updated: 08/21/2019<para/>
+    /// Updated: 08/23/2019<para/>
     /// 
     /// Created by Leon Hutans, according to<para/>
     /// "Software Systems as Cities" by Richard Wettel.
@@ -52,6 +53,11 @@ namespace VRVis.Spawner {
 
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
+
+        // event system
+        [HideInInspector] public UnityEvent citySpawnedEvent = new UnityEvent();
+        [HideInInspector] public UnityEvent<bool> cityVisibilityChanged = new BoolEvent();
+        [System.Serializable] private class BoolEvent : UnityEvent<bool> {};
 
 
         /// <summary>
@@ -146,10 +152,21 @@ namespace VRVis.Spawner {
         }
 
 
+        private void OnDrawGizmos() {
+            if (!Application.isPlaying) {
+                Gizmos.color = Color.gray;
+                Vector3 center = parent.position;
+                Vector3 size = new Vector3(citySize.x, 1, citySize.y) * 0.5f;
+                Gizmos.DrawCube(center + Vector3.up * size.y * 0.5f, size);
+            }
+        }
+
+
         /// <summary>Show/Hide the visualization.</summary>
         public override void ShowVisualization(bool state) {
 
             if (!isSpawned || !parent) { return; }
+            cityVisibilityChanged.Invoke(state);
             parent.gameObject.SetActive(state);
         }
 
@@ -178,8 +195,16 @@ namespace VRVis.Spawner {
             SpawnCity(pTreeRoot);
             td = Mathf.Round((Time.realtimeSinceStartup - ts) * 1000f) / 1000f;
             ttotal += td;
+
+            // move root element to center of parent transform
+            if (i_spawned_packages > 0 || i_spawned_elements > 0) {
+                Transform rootTransform = parent.GetChild(0);
+                rootTransform.transform.position -= rootTransform.localScale * 0.5f;
+            }
+
             Debug.Log("Code City Spawned [" + td + " seconds, total: " + ttotal + "].\n(" + 
                 "elements: " + i_spawned_elements + ", packages: " + i_spawned_packages + ")");
+            citySpawnedEvent.Invoke();
             return true;
         }
 
@@ -505,7 +530,7 @@ namespace VRVis.Spawner {
             }
             
             // start recursive creation of city
-            SpawnCityRecursively(root, null, parent.position - new Vector3(0, groundHeight, 0), parent);
+            SpawnCityRecursively(root, null, parent.position - new Vector3(0, groundHeight * 0.5f, 0), parent);
             return true;
         }
 
