@@ -1,7 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-
+using VRVis.Interaction.CodeCity;
 
 namespace VRVis.Spawner.CodeCity {
 
@@ -9,16 +9,17 @@ namespace VRVis.Spawner.CodeCity {
     /// Baseplate of code city.<para/>
     /// Is attached to the gameobject that contains the code city.<para/>
     /// Created: 23.08.2019 (by Leon H.)<para/>
-    /// Updated: 23.08.2019
+    /// Updated: 27.08.2019
     /// </summary>
     public class CodeCityBase : MonoBehaviour {
 
+        [Tooltip("Code city component to create base plate for")]
         public CodeCityV1 codeCityComponent;
 
         [Tooltip("Transform that holds all the spawned plates (should not be this one!)")]
         public Transform modelHolder;
 
-        [Tooltip("Light to place above at middle of code city")]
+        [Tooltip("Light to place above at middle of code city (do not attach it directly to the city, the script does it)")]
         public Transform middleLight;
 
         [Header("Prefabs")]
@@ -32,7 +33,7 @@ namespace VRVis.Spawner.CodeCity {
         private Transform i_plateRotate;
         private Transform i_middlePart;
 
-        private float codeCityHeight;
+        private Vector3 prev_cityPos;
 
 
         private void Awake() {
@@ -66,19 +67,22 @@ namespace VRVis.Spawner.CodeCity {
             }
             
             Vector3 citySize = new Vector3(codeCityComponent.citySize.x, 0, codeCityComponent.citySize.y);
-            Vector3 cityCenter = codeCityComponent.parent.transform.position;
-            Vector3 invScale = new Vector3(1f / modelHolder.localScale.x, 1f / modelHolder.localScale.y, 1f / modelHolder.localScale.z);
+            Vector3 cityCenter = codeCityComponent.transform.position;
 
             // instantiate parts
-            Vector3 platePos = (cityCenter.y - plateLift.transform.localScale.y * 0.5f) * invScale.y * Vector3.up;
+            Vector3 platePos = (cityCenter.y - plateLift.transform.localScale.y) * Vector3.up;
             i_plateLift = Instantiate(plateLift, platePos, Quaternion.identity).transform;
             i_plateLift.SetParent(modelHolder, false);
-            Vector3 plateScale = new Vector3(citySize.x, i_plateLift.localScale.y, citySize.z);
+            Vector3 plateScale = new Vector3(citySize.x * 0.5f, i_plateLift.localScale.y, citySize.z * 0.5f);
             i_plateLift.localScale = plateScale;
 
+            CodeCityLift liftComponent = i_plateLift.GetComponent<CodeCityLift>();
+            if (liftComponent) { liftComponent.codeCity = codeCityComponent; }
+            
             platePos = i_plateLift.localPosition - Vector3.up * plateRotate.transform.localScale.y;
             i_plateRotate = Instantiate(plateRotate, platePos, Quaternion.identity).transform;
             i_plateRotate.SetParent(modelHolder, false);
+            plateScale.y = i_plateRotate.localScale.y;
             i_plateRotate.localScale = plateScale;
             
             i_middlePart = Instantiate(middlePart, Vector3.zero, Quaternion.identity).transform;
@@ -87,7 +91,8 @@ namespace VRVis.Spawner.CodeCity {
 
             // place light if assigned
             if (middleLight) {
-                middleLight.position = cityCenter + Vector3.up * (i_plateLift.position.y + 1);
+                middleLight.SetParent(codeCityComponent.transform, false);
+                middleLight.localPosition = Vector3.up * codeCityComponent.cityHeightRange.y * 1.5f;
                 middleLight.GetComponent<Light>().range = Mathf.Max(citySize.x, citySize.z);
             }
 
@@ -97,11 +102,40 @@ namespace VRVis.Spawner.CodeCity {
         }
 
 	
-	    // Update is called once per frame
-	    void Update () {
-		
-            // ToDo: adjust models based on rotation and so on and allow rotation + lift
+	    void Update() {
+
+            if (!codeCityComponent) { return; }
+
+            // only update on change detection
+            // ToDo: add rotation check as well as soon as it is possible
+            if (prev_cityPos != codeCityComponent.transform.position) {
+                prev_cityPos = codeCityComponent.transform.position;
+                UpdateModel();
+            }
 	    }
+
+
+        /// <summary>
+        /// Updates the base plate model (height and so on).<para/>
+        /// </summary>
+        private void UpdateModel() {
+            
+            Vector3 cityPos = codeCityComponent.transform.position;
+            Vector3 platePos = i_plateLift.localPosition;
+
+            platePos.y = cityPos.y - i_plateLift.localScale.y;
+            i_plateLift.localPosition = platePos;
+
+            platePos.y -= i_plateRotate.localScale.y;
+            i_plateRotate.localPosition = platePos;
+
+            // scale middle part
+            if (platePos.y <= 0) { i_middlePart.gameObject.SetActive(false); }
+            else {
+                i_middlePart.gameObject.SetActive(true);
+                i_middlePart.localScale = new Vector3(i_middlePart.localScale.x, platePos.y, i_middlePart.localScale.z);
+            }
+        }
 
     }
 }

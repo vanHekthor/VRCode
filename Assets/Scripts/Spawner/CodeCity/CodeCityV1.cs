@@ -123,6 +123,8 @@ namespace VRVis.Spawner {
         private uint i_spawned_packages = 0;
         private uint i_max_depth = 0;
 
+        private bool justSpawned = false;
+
 
         /// <summary>Prepares and spawns the visualization.</summary>
         public override bool SpawnVisualization() {
