@@ -19,7 +19,15 @@ namespace VRVis.Interaction.CodeCity {
 
         public CodeCityV1 codeCity; // assigned by CodeCityBase on prefab creation
         public bool rotateCodeCity = true;
+
+        [Tooltip("Keep rotating after hand is detached")]
         public bool maintainMomentum = true;
+
+        [Tooltip("Damp how fast the rotation stops")]
+        [Range(0, 10)] public float momentumDampRate = 0.5f;
+
+        [Tooltip("Minimum of change to stop the rotation faster")]
+        public float changeRateMin = 0.05f;
 
         private readonly Hand.AttachmentFlags attachmentFlags = Hand.AttachmentFlags.DetachFromOtherHand;
 
@@ -57,7 +65,9 @@ namespace VRVis.Interaction.CodeCity {
 
                 grabPosition = hand.transform.position;
                 startRotation = codeCity.transform.localRotation;
-                
+                sampleCounter = 0;
+                changeRate = 0;
+
                 hand.AttachObject(gameObject, startingGrabType, attachmentFlags);
                 hand.HoverLock(interactable);
             }
@@ -93,8 +103,9 @@ namespace VRVis.Interaction.CodeCity {
         /// </summary>
         private void UpdateRotation(Transform updateTransform) {
 
+            Quaternion prevRotOffset = rotationOffset;
             rotationOffset = CalculateRotationOffset(updateTransform);
-            changeSamples[sampleCounter % changeSamples.Length] = rotationOffset.y;
+            changeSamples[sampleCounter % changeSamples.Length] = (1.0f / Time.deltaTime) * (rotationOffset.y - prevRotOffset.y);
             sampleCounter++;
 
             if (rotateCodeCity && codeCity) {
@@ -119,16 +130,25 @@ namespace VRVis.Interaction.CodeCity {
         private void CalculateChangeRate() {
             if (changeSamples.Length == 0) { return; }
             changeRate = 0;
-            foreach (float f in changeSamples) { changeRate += f; }
-            changeRate /= changeSamples.Length;
+            int sampleCount = Mathf.Min(sampleCounter, changeSamples.Length);
+            for (int i = 0; i < sampleCount; i++) { changeRate += changeSamples[i]; }
+            changeRate /= sampleCount;
         }
 
 
         private void Update() {
             
-            if (maintainMomentum && changeRate != 0f) {
+            // apply rest of momentum
+            if (maintainMomentum && changeRate != 0) {
 
-                //changeRate = Mathf.Lerp(changeRate, 0f, Time.deltaTime);
+                changeRate = Mathf.Lerp(changeRate, 0, momentumDampRate * Time.deltaTime);
+                
+                // stop faster for too small rate
+                if (Mathf.Abs(changeRate) < changeRateMin) { changeRate = Mathf.Lerp(changeRate, 0, Time.deltaTime); }
+
+                if (rotateCodeCity && codeCity) {
+                    codeCity.transform.Rotate(Vector3.up, changeRate, Space.Self);
+                }
             }
         }
 

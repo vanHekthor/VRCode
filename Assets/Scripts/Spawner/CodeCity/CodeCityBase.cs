@@ -34,7 +34,6 @@ namespace VRVis.Spawner.CodeCity {
         private Transform i_middlePart;
 
         private Vector3 prev_cityPos;
-        private Quaternion prev_cityRot;
 
 
         private void Awake() {
@@ -111,14 +110,15 @@ namespace VRVis.Spawner.CodeCity {
 
             if (!codeCityComponent) { return; }
 
-            // only update on change detection
-            // ToDo: add rotation check as well as soon as it is possible
+            // only update position on change detection
             Transform cct = codeCityComponent.transform;
-            if (prev_cityPos != cct.position || prev_cityRot != cct.rotation) {
+            if (prev_cityPos != cct.position) {
                 prev_cityPos = cct.position;
-                prev_cityRot = cct.rotation;
                 UpdateModel();
             }
+
+            // always update model rotation for quick response
+            if (modelHolder) { modelHolder.transform.rotation = codeCityComponent.transform.rotation; }
 	    }
 
 
@@ -142,9 +142,6 @@ namespace VRVis.Spawner.CodeCity {
                 i_middlePart.gameObject.SetActive(true);
                 i_middlePart.localScale = new Vector3(i_middlePart.localScale.x, platePos.y, i_middlePart.localScale.z);
             }
-
-            // update rotation of this model
-            if (modelHolder) { modelHolder.transform.rotation = codeCityComponent.transform.rotation; }
         }
 
     }
