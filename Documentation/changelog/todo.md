@@ -14,7 +14,7 @@
     - [X] **#1** Selecting elements to open files *(09.08.2019)*
     - [X] Info on hover *(04.07.2019)*
     - [X] Lifting (changing position on y-axis) *(27.08.2019)*
-    - [ ] Rotation (rotate around y-axis)
+    - [X] Rotation (rotate around y-axis) *(28.08.2019)*
     - [ ] "Be the data" approach (maybe?)
     - [ ] **#3** Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
