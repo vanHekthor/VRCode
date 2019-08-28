@@ -15,7 +15,7 @@ namespace VRVis.Interaction.CodeCity {
     /// Created: 27.08.2019 (Leon H.)<para/>
     /// Updated: 27.08.2019
     /// </summary>
-    [RequireComponent( typeof( Interactable ) )]
+    [RequireComponent(typeof(Interactable))]
     public class CodeCityLift : MonoBehaviour {
 
 		public Vector3 startPosition;
@@ -24,7 +24,7 @@ namespace VRVis.Interaction.CodeCity {
         public CodeCityV1 codeCity; // assigned by CodeCityBase on prefab creation
         public bool positionCodeCity = true;
 
-        private Hand.AttachmentFlags attachmentFlags = Hand.AttachmentFlags.DetachFromOtherHand;
+        private readonly Hand.AttachmentFlags attachmentFlags = Hand.AttachmentFlags.DetachFromOtherHand;
 
         private Interactable interactable;
 
@@ -37,8 +37,8 @@ namespace VRVis.Interaction.CodeCity {
         }
 
         private void Start() {
-            if (!codeCity) { Debug.LogWarning("Code city component not assigned!"); }
-            if (positionCodeCity && codeCity) { UpdateLinearMapping(codeCity.transform); }
+            if (positionCodeCity && !codeCity) { Debug.LogWarning("Code city component not assigned!"); }
+            else if (positionCodeCity && codeCity) { UpdateLinearMapping(codeCity.transform); }
         }
 
 

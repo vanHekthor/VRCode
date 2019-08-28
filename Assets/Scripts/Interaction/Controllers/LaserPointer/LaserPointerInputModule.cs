@@ -7,9 +7,9 @@ using System.Collections.Generic;
 /// If this is not working at all (e.g. the Process function is not called)<para/>
 /// ensure that you have only one "EventSystem" component in the scene!<para/>
 /// 
-/// Code by Wacki<para/>
+/// Initial code by Wacki<para/>
 /// Modified by S1r0hub (11.2018)<para/>
-/// Updated: 09.08.2019
+/// Updated: 28.08.2019
 /// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
@@ -75,8 +75,8 @@ namespace VRVis.Interaction.LaserPointer {
         /// Adds the controller to be an input provider
         /// and synchronizes the layer masks if desired.
         /// </summary>
-        public void AddController(IUILaserPointer controller, bool syncLayerMasks=true) {
-            if (syncLayerMasks) { controller.rayLayerMask = layerMask; } // synchronize layermasks
+        public void AddController(IUILaserPointer controller) {
+            if (controller.syncLayerMaskInputModule) { controller.rayLayerMask = layerMask; } // synchronize/override layermasks
             _controllerData.Add(controller, new ControllerData());
             Debug.Log("Laser pointer registered");
         }
@@ -124,6 +124,11 @@ namespace VRVis.Interaction.LaserPointer {
 
                 IUILaserPointer controller = pair.Key;
                 ControllerData data = pair.Value;
+
+                // use controller layermask if desired
+                if (controller.overrideInputModuleLayerMask) {
+                    raycaster.eventMask = controller.rayLayerMask;
+                }
 
                 // skip raycasting and events in general
                 // if the layer is currently not enabled

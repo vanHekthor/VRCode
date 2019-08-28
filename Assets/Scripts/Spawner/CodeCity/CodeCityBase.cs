@@ -9,7 +9,7 @@ namespace VRVis.Spawner.CodeCity {
     /// Baseplate of code city.<para/>
     /// Is attached to the gameobject that contains the code city.<para/>
     /// Created: 23.08.2019 (by Leon H.)<para/>
-    /// Updated: 27.08.2019
+    /// Updated: 28.08.2019
     /// </summary>
     public class CodeCityBase : MonoBehaviour {
 
@@ -34,6 +34,7 @@ namespace VRVis.Spawner.CodeCity {
         private Transform i_middlePart;
 
         private Vector3 prev_cityPos;
+        private Quaternion prev_cityRot;
 
 
         private void Awake() {
@@ -59,6 +60,7 @@ namespace VRVis.Spawner.CodeCity {
         /// <summary>Spawns the base plates of the code city.</summary>
         private void SpawnCityBase() {
             
+            if (!isActiveAndEnabled) { return; }
             Debug.Log("Spawning code city base plates..");
 
             // remove all children (works bc. destroy is not executed immediately)
@@ -84,6 +86,9 @@ namespace VRVis.Spawner.CodeCity {
             i_plateRotate.SetParent(modelHolder, false);
             plateScale.y = i_plateRotate.localScale.y;
             i_plateRotate.localScale = plateScale;
+
+            CodeCityRotate rotComponent = i_plateRotate.GetComponent<CodeCityRotate>();
+            if (rotComponent) { rotComponent.codeCity = codeCityComponent; }
             
             i_middlePart = Instantiate(middlePart, Vector3.zero, Quaternion.identity).transform;
             i_middlePart.SetParent(modelHolder, false);
@@ -108,15 +113,17 @@ namespace VRVis.Spawner.CodeCity {
 
             // only update on change detection
             // ToDo: add rotation check as well as soon as it is possible
-            if (prev_cityPos != codeCityComponent.transform.position) {
-                prev_cityPos = codeCityComponent.transform.position;
+            Transform cct = codeCityComponent.transform;
+            if (prev_cityPos != cct.position || prev_cityRot != cct.rotation) {
+                prev_cityPos = cct.position;
+                prev_cityRot = cct.rotation;
                 UpdateModel();
             }
 	    }
 
 
         /// <summary>
-        /// Updates the base plate model (height and so on).<para/>
+        /// Updates the base plate model (height and rotation).<para/>
         /// </summary>
         private void UpdateModel() {
             
@@ -135,6 +142,9 @@ namespace VRVis.Spawner.CodeCity {
                 i_middlePart.gameObject.SetActive(true);
                 i_middlePart.localScale = new Vector3(i_middlePart.localScale.x, platePos.y, i_middlePart.localScale.z);
             }
+
+            // update rotation of this model
+            if (modelHolder) { modelHolder.transform.rotation = codeCityComponent.transform.rotation; }
         }
 
     }

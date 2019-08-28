@@ -9,10 +9,12 @@
 - [X] **#2** Minimal cone tree layout *(05.08.2019)*
 - [ ] **#1** Improve code city visualization
   - [ ] **#1** Textures to show regions and their performance
-  - [ ] Show edges/relations between buildings (edge bundling)
+  - [ ] **#2** Show edges/relations between buildings (edge bundling)
   - [ ] Interaction
     - [X] **#1** Selecting elements to open files *(09.08.2019)*
     - [X] Info on hover *(04.07.2019)*
+    - [X] Lifting (changing position on y-axis) *(27.08.2019)*
+    - [ ] Rotation (rotate around y-axis)
     - [ ] "Be the data" approach (maybe?)
     - [ ] **#2** Jump to according position in code when clicked on NFP texture
 - [ ] External visualization settings (can be used for later loading of workspace)
@@ -93,6 +95,7 @@
 - [X] Cone tree leafs sometimes overlapping a bit in software structure *(21.08.2019)*
 - [X] **#1** State of nodes of the variability model not always updating properly *(22.08.2019)*
 - [X] Changing controller while pointing at folders/files does not change back color of marked folder/file *(22.08.2019)*
+- [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (was caused by input module having different layer mask)
 - [ ] **#1** Overview region sometimes shown black
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (rare)

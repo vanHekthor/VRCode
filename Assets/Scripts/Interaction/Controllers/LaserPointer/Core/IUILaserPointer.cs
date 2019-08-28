@@ -6,7 +6,7 @@ using UnityEngine.EventSystems;
 /// Initial code by github.com/wacki.<para/>
 /// 
 /// Modified and extended by github.com/S1r0hub.<para/>
-/// Updated: 22.08.2019
+/// Updated: 28.08.2019
 /// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
@@ -23,8 +23,14 @@ namespace VRVis.Interaction.LaserPointer {
         public bool laserDefaultOn = false;
         public bool laserAlwaysOn = false;
 
-        [Tooltip("Layer mask for ray hit")]
+        [Tooltip("Layer mask for physics ray hit (for others change InputModule!)")]
         public LayerMask rayLayerMask;
+
+        [Tooltip("Override this layer mask with the one of the input module?")]
+        public bool syncLayerMaskInputModule = false;
+
+        [Tooltip("Let input module use this layermask for raycasting everything (not just physics)?")]
+        public bool overrideInputModuleLayerMask = true;
 
         private GameObject hitPoint;
         private GameObject pointer;
