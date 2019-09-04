@@ -155,7 +155,7 @@ namespace VRVis.Elements {
             return properties.ContainsKey(propertyType);
         }
 
-        /// <summary>Check if example this property is known.</summary>
+        /// <summary>Checks if this property with the according name is known.</summary>
         public bool HasProperty(ARProperty.TYPE propertyType, string propertyName) {
             return HasPropertyType(propertyType) && properties[propertyType].ContainsKey(propertyName);
         }

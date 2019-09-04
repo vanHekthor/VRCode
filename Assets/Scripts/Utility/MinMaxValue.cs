@@ -92,5 +92,16 @@ namespace VRVis.Utilities {
             return GetRangePercentage(GetMinValue(), GetMaxValue(), value);
         }
 
+        /// <summary>
+        /// Returns the value if it is inside the bounds,
+        /// otherwise returns the cropped value.<para/>
+        /// Checks also if the min/max values are set!
+        /// </summary>
+        public float CropToBounds(float value) {
+            if (minValueSet && value < minValue) { return minValue; }
+            if (maxValueSet && value > maxValue) { return maxValue; }
+            return value;
+        }
+
     }
 }

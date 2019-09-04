@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.IO.Features;
 using VRVis.RegionProperties;
 using VRVis.Spawner;
@@ -26,6 +27,9 @@ namespace VRVis.IO {
 
         [Tooltip("[NFP Update] How long to wait after a coroutine run finished before starting the next one")]
         public float waitPerRun = 0.1f;
+
+        public UnityEvent nfpUpdateStartedEvent = new UnityEvent();
+        public UnityEvent nfpUpdateFinishedEvent = new UnityEvent();
 
         // reference to the structure loader instance
         private StructureLoader loader;

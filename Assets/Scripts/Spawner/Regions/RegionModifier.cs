@@ -16,7 +16,9 @@ namespace VRVis.Spawner.Regions {
     /// This class provides methods to apply values to spawned regions.<para/>
     /// It modifies the color and scale properties of the region objects.<para/>
     /// An instance of this class is spawned with a reference to the according CodeFile.<para/>
-    /// It can retrieve the required "spawned regions" and other information from it.
+    /// It can retrieve the required "spawned regions" and other information from it.<para/>
+    /// Created: early 2019 (Leon H.)<para/>
+    /// Updated: 04.09.2019
     /// </summary>
     public class RegionModifier {
 
@@ -193,9 +195,9 @@ namespace VRVis.Spawner.Regions {
                 }
 
                 // get absolute value and crop to bounds
-                float absValue = nfpProperty.GetValue();
-                if (absValue < minMax.GetMinValue()) { absValue = minMax.GetMinValue(); }
-                else if (absValue > minMax.GetMaxValue()) { absValue = minMax.GetMaxValue(); }
+                float absValue = minMax.CropToBounds(nfpProperty.GetValue());
+                /*if (absValue < minMax.GetMinValue()) { absValue = minMax.GetMinValue(); } // ToDo: cleanup
+                else if (absValue > minMax.GetMaxValue()) { absValue = minMax.GetMaxValue(); }*/
 
                 // apply relative color
                 float valuePercentage = minMax.GetRangePercentage(absValue);
@@ -353,14 +355,14 @@ namespace VRVis.Spawner.Regions {
         /// <summary>
         /// Get min/max values of this property accordingly.<para/>
         /// Which min/max values are returned depends on the priority.<para/>
-        /// [1] Did user explicitly set min or max in mapping file? => return min or max or both accordingly<para/>
-        /// [2] Does user want to see local file min/max? => return it<para/>
+        /// [1] Did the user explicitly set min or max in mapping file? => return min or max or both accordingly<para/>
+        /// [2] Does the user want to see local file min/max? => return it<para/>
         /// [3] Return the global min/max for this property.<para/>
         /// Returns null if the property name or the code file is null.<para/>
         /// UPDATE 18.03.2019: Order changed of [1] and [2]! (explicitly set min/max is now used for global and local relativity)
         /// </summary>
         /// <param name="returnNullIfLocalMMNotFound">Returns null if the local min/max could not be found - this is caused if there are no regions in a file</param>
-        public MinMaxValue GetMinMaxValues(string propertyName, CodeFile codeFile, MinMaxValue explicitMinMax, bool returnNullIfLocalMMNotFound = false) {
+        public static MinMaxValue GetMinMaxValues(string propertyName, CodeFile codeFile, MinMaxValue explicitMinMax, bool returnNullIfLocalMMNotFound = false) {
 
             // Priority order of shown min/max information (1 = highest priority)
             // 1. min/max explicitly set in the mapping file => more priority bc. the user set it
