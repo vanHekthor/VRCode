@@ -51,13 +51,22 @@ namespace VRVis.Spawner {
         public Color packageColorFrom = new Color(0.3f, 0.3f, 0.3f);
         public Color packageColorTo = new Color(0.9f, 0.9f, 0.9f);
 
+        [Tooltip("If element textures should be generated")]
+        public bool generateTextures = true;
+
+        [Tooltip("Generates textures in a coroutine over time (not instantly)")]
+        public bool generateTexturesInCoroutine = true;
+
+        [Tooltip("How many textures to generate per frame (if generation in coroutine is enabled)")]
+        public int generateTexturesPerFrame = 10;
+
         [Header("Debug")]
         public bool PRINT_DEBUG = true;
 
         // event system
         [HideInInspector] public UnityEvent citySpawnedEvent = new UnityEvent();
         [HideInInspector] public UnityEvent<bool> cityVisibilityChanged = new BoolEvent();
-        [System.Serializable] private class BoolEvent : UnityEvent<bool> {};
+        [Serializable] private class BoolEvent : UnityEvent<bool> {};
 
 
         /// <summary>
@@ -122,6 +131,10 @@ namespace VRVis.Spawner {
         private uint i_spawned_elements = 0;
         private uint i_spawned_packages = 0;
         private uint i_max_depth = 0;
+
+        private List<CodeCityElement> elements_spawned = new List<CodeCityElement>();
+        private Coroutine textureGenCoroutine = null;
+        private bool textureGenRunning = false;
 
 
         /// <summary>Prepares and spawns the visualization.</summary>
@@ -189,6 +202,7 @@ namespace VRVis.Spawner {
             spawn_multBy = new Vector2(citySize.x, citySize.y) * 0.5f; // * 0.5 important bc. of Unity scales!
 
             // spawn the city layout
+            elements_spawned.Clear();
             i_spawned_elements = 0;
             i_spawned_packages = 0;
             ts = Time.realtimeSinceStartup;
@@ -201,6 +215,9 @@ namespace VRVis.Spawner {
                 Transform rootTransform = parent.GetChild(0);
                 rootTransform.transform.position -= rootTransform.localScale * 0.5f;
             }
+
+            // texturing if settings tell to do it in coroutine
+            if (generateTexturesInCoroutine) { GenerateElementTextures(generateTexturesPerFrame); }
 
             Debug.Log("Code City Spawned [" + td + " seconds, total: " + ttotal + "].\n(" + 
                 "elements: " + i_spawned_elements + ", packages: " + i_spawned_packages + ")");
@@ -300,7 +317,7 @@ namespace VRVis.Spawner {
                     // change size of element according to position
                     if (addSpaceAndMargin) {
 
-                        // would be "hit" a border placing it here?
+                        // tells if we "hit" a border when placing it here
                         bool x_hb = pn.pos.x == 0;
                         bool y_hb = pn.pos.y == 0;
 
@@ -586,10 +603,11 @@ namespace VRVis.Spawner {
 
                 // add code city element and information
                 CodeCityElement cce = cube.AddComponent<CodeCityElement>();
+                elements_spawned.Add(cce);
                 cce.SetNode(node);
                 
-                // ToDo: texturing of buildings
                 // add color and more according to type of node
+                // texturing is done in a separate step to avoid long loading times
                 if (node.isLeaf) {
 
                     i_spawned_elements++;
@@ -625,11 +643,62 @@ namespace VRVis.Spawner {
                     }
                 }
 
+                // texturing if settings tell to not use coroutine
+                if (!generateTexturesInCoroutine) {
+                    CodeCityTexture cct = cce.GetComponent<CodeCityTexture>();
+                    if (cct && cct.GenerateTexture()) { cct.ApplyTexture(); }
+                }
+
                 trans = cube.transform;
             }
             
             if (node.left != null) { SpawnCityRecursively(node.left, node, parentPosWorld, trans); }
             if (node.right != null) { SpawnCityRecursively(node.right, node, parentPosWorld, trans); }
+        }
+
+
+        // ---------------------------------------------------------------------------------------
+        // Generating and spawning the textures of city elements.
+
+        /// <summary>
+        /// Triggers the texture generation process for the city element.<para/>
+        /// Also stops a process that is currently/still running.
+        /// </summary>
+        private void GenerateElementTextures(int elementsPerFrame) {
+
+            if (textureGenCoroutine != null && textureGenRunning) {
+                Debug.LogWarning("Stopping unfinished texture generation!");
+                StopCoroutine(textureGenCoroutine);
+            }
+
+            textureGenCoroutine = StartCoroutine(ElementTextureGenerator(elementsPerFrame));
+        }
+
+        private IEnumerator ElementTextureGenerator(int perFrame) {
+
+            Debug.Log("Starting city texture generation... (" + perFrame + " per frame)");
+            textureGenRunning = true;
+            int generated = 0; // to control how many per frame
+            int skipped = 0;
+            int failed = 0;
+
+            foreach (CodeCityElement element in elements_spawned) {
+
+                CodeCityTexture cct = element.GetComponent<CodeCityTexture>();
+                if (!cct) { skipped++; continue; }
+                if (!cct.GenerateTexture()) { failed++; continue; }
+                cct.ApplyTexture();
+
+                generated++;
+                if (generated >= perFrame) {
+                    generated = 0;
+                    yield return new WaitForEndOfFrame();
+                }
+            }
+
+            textureGenRunning = false;
+            Debug.Log("Code city texture generation finished " + 
+                "(total: " + elements_spawned.Count + ", skipped: " + skipped + ", failed: " + failed + ")");
         }
 
     }

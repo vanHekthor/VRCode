@@ -15,8 +15,8 @@
     - [X] Info on hover *(04.07.2019)*
     - [X] Lifting (changing position on y-axis) *(27.08.2019)*
     - [X] Rotation (rotate around y-axis) *(28.08.2019)*
-    - [ ] "Be the data" approach (maybe?)
     - [ ] **#3** Jump to according position in code when clicked on NFP texture
+    - [ ] "Be the data" approach (maybe?)
 - [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Code Window Content Overview
   - [X] Overview of code window content *(12.07.2019)*
@@ -83,10 +83,10 @@
 - [ ] Notation hints on feature graph (e.g. on hover)
 - [ ] Information about edges (e.g. on hover)
   - [ ] Type and value/weight of edge
-  - [ ] Classes to connect between
-  - [ ] Line numbers to connect to
-- [ ] Improve counting of edges
-- [ ] Advanced positioning and rotating of code windows
+  - [ ] Classes/files to connect between
+  - [ ] Line numbers (in code) to connect to
+- [ ] Improve counting of edges (add numbers or similar to show)
+- [ ] Advanced positioning and rotating of code windows (snap to..., rotate with respect to...)
 - [ ] Code cleanup
 
 ## Bugs
@@ -95,7 +95,7 @@
 - [X] Cone tree leafs sometimes overlapping a bit in software structure *(21.08.2019)*
 - [X] **#1** State of nodes of the variability model not always updating properly *(22.08.2019)*
 - [X] Changing controller while pointing at folders/files does not change back color of marked folder/file *(22.08.2019)*
-- [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (was caused by input module having different layer mask)
+- [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (caused by input module having different layer mask)
 - [ ] **#1** Overview region sometimes shown black
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (rare)

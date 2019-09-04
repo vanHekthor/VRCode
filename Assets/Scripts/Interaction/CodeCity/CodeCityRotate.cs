@@ -23,7 +23,7 @@ namespace VRVis.Interaction.CodeCity {
         [Tooltip("Keep rotating after hand is detached")]
         public bool maintainMomentum = true;
 
-        [Tooltip("Damp how fast the rotation stops")]
+        [Tooltip("Controls how fast the rotation stops (0 = never)")]
         [Range(0, 10)] public float momentumDampRate = 0.5f;
 
         [Tooltip("Minimum of change to stop the rotation faster")]
@@ -38,7 +38,7 @@ namespace VRVis.Interaction.CodeCity {
         private Quaternion rotationOffset;
 
         private readonly int numSamples = 5;
-        private float[] changeSamples; // change in y-rotation of code city
+        private float[] changeSamples; // stores the change in y-rotation
         private int sampleCounter = 0;
         private float changeRate = 0;
 
