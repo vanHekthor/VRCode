@@ -46,6 +46,9 @@ namespace VRVis.Spawner.CodeCity {
             slu.nfpUpdateStartedEvent.AddListener(NFPUpdateStartedEvent);
             slu.nfpUpdateFinishedEvent.AddListener(NFPUpdateFinishedEvent);
 
+            ApplicationLoader.GetApplicationSettings().nfpRelativityChangedEvent.AddListener(NFPUpdateFinishedEvent);
+            ApplicationLoader.GetApplicationSettings().selectedNFPChangedEvent.AddListener(NFPUpdateFinishedEvent);
+
             // run initial update
             if (codeCity.IsCitySpawned()) { GenerateElementTextures(generateTexturesPerFrame); }
         }

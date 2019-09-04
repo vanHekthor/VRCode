@@ -58,7 +58,8 @@
 - [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
 - [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
-- [ ] **#1** Update code city texture when user changes NFP relativity and active NFP
+- [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
+- [ ] Use more Unity Events to react on changes to settings
 - [ ] Horizontal scrolling with new scroll-wheel implementation
 - [ ] ValueMappings: provide some default color methods for usage in mappings
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types

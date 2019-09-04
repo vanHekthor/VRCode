@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.RegionProperties;
@@ -24,6 +25,10 @@ namespace VRVis.Settings {
 
         /// <summary>Tells how many edge types can be active at the same time</summary>
         public readonly int MAX_ACTIVE_EDGE_TYPES = 20;
+
+        // notify listeners when nfp relativity was changed
+        public UnityEvent nfpRelativityChangedEvent = new UnityEvent();
+        public UnityEvent selectedNFPChangedEvent = new UnityEvent();
 
 
         /// <summary>Holds the active features selected by the user</summary>
@@ -80,6 +85,7 @@ namespace VRVis.Settings {
 
             // update all currently spawned code window regions
             RefreshSpawnedFiles(ARProperty.TYPE.NFP, false);
+            nfpRelativityChangedEvent.Invoke();
             return true;
         }
 
@@ -118,6 +124,7 @@ namespace VRVis.Settings {
             if (propertyName == selectedNFP) { return; }
             selectedNFP = propertyName;
             NFPSettingsChanged(true);
+            selectedNFPChangedEvent.Invoke();
         }
 
         /// <summary>Currently selected non function property visualization.</summary>
