@@ -122,6 +122,7 @@ namespace VRVis.IO {
             }
 
             // reset progress information
+            nfpUpdateStartedEvent.Invoke();
             fileNo = 0;
             filesTotal = loader.GetFileCount();
             updateFailure = false;
@@ -306,6 +307,7 @@ namespace VRVis.IO {
 
             updateFinished = true;
             SetProgress(1, true);
+            nfpUpdateFinishedEvent.Invoke();
         }
 
 

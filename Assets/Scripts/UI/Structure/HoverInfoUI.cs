@@ -14,7 +14,8 @@ namespace VRVis.UI.Structure {
     /// A script used by the VR pointer to show information
     /// about the element the user is currently hovering above.<para/>
     /// E.g. pointing at a file or folder shows name and path ...<para/>
-    /// Attach this component to the file and folder prefabs.
+    /// Attach this component to the file and folder prefabs.<para/>
+    /// Updated: 04.09.2019
     /// </summary>
     public class HoverInfoUI : MonoBehaviour {
 
@@ -126,7 +127,7 @@ namespace VRVis.UI.Structure {
                 // get codefile instance
                 CodeFile cf = null;
                 if (loader.GetStructureLoader() != null) {
-                    cf = loader.GetStructureLoader().GetFileByFullPath(n.GetFullPath());
+                    cf = loader.GetStructureLoader().GetFile(n);
                 }
 
                 // outgoing edges

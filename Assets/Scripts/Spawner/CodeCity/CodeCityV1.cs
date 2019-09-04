@@ -15,8 +15,8 @@ namespace VRVis.Spawner {
     /// <summary>
     /// Code City Visualization.<para/>
     /// 
-    /// Created: 06/25/2019<para/>
-    /// Updated: 08/23/2019<para/>
+    /// Created: 25.06.2019<para/>
+    /// Updated: 04.09.2019<para/>
     /// 
     /// Created by Leon Hutans, according to<para/>
     /// "Software Systems as Cities" by Richard Wettel.
@@ -152,6 +152,9 @@ namespace VRVis.Spawner {
 
             return success;
         }
+
+
+        public bool IsCitySpawned() { return isSpawned; }
 
 
         private void OnDrawGizmos() {

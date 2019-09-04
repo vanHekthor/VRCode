@@ -8,7 +8,7 @@
 - [X] Basic **code city** visualization *(28.06.2019)*
 - [X] **#2** Minimal cone tree layout *(05.08.2019)*
 - [ ] **#1** Improve code city visualization
-  - [ ] **#1** Textures to show regions and their performance
+  - [X] **#1** Textures to show regions and their performance *(04.09.2019)*
   - [ ] **#2** Show edges/relations between buildings (edge bundling)
   - [ ] Interaction
     - [X] **#1** Selecting elements to open files *(09.08.2019)*
@@ -58,6 +58,7 @@
 - [X] **#3** Improved scrolling using a gesture *(16.08.2019)*
 - [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
+- [ ] **#1** Update code city texture when user changes NFP relativity and active NFP
 - [ ] Horizontal scrolling with new scroll-wheel implementation
 - [ ] ValueMappings: provide some default color methods for usage in mappings
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
@@ -87,6 +88,7 @@
   - [ ] Line numbers (in code) to connect to
 - [ ] Improve counting of edges (add numbers or similar to show)
 - [ ] Advanced positioning and rotating of code windows (snap to..., rotate with respect to...)
+- [ ] Improve how CodeFile instances are retrieved (assigning an ID for every file and using this internally instead of strings)
 - [ ] Code cleanup
 
 ## Bugs

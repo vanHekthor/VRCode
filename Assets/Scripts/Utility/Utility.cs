@@ -10,7 +10,8 @@ namespace VRVis.Utilities {
 
     /// <summary>
     /// Helper methods that can for instance,
-    /// convert data types and load file contents.
+    /// convert data types and load file contents.<para/>
+    /// Updated: 04.09.2019
     /// </summary>
     public class Utility {
 
@@ -201,7 +202,7 @@ namespace VRVis.Utilities {
         // I/O Related
 
         /// <summary>
-        /// Returns the lines of code or 0 if the file does not exist.<para/>
+        /// Returns the lines of code or 0 if the file does not exist or can not be read.<para/>
         /// Implemented with respect to the optimization approach of:<para/>
         /// https://nima-ara-blog.azurewebsites.net/counting-lines-of-a-text-file/
         /// </summary>
@@ -249,6 +250,7 @@ namespace VRVis.Utilities {
                 }
             }
 
+            stream.Close();
             if (pending) { cnt++; }
             return cnt;
         }

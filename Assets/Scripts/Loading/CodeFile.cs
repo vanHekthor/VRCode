@@ -69,6 +69,10 @@ namespace VRVis.IO {
         /// <summary>stores min/max values of non functional properties (NFP) of all regions (key = prop. name)</summary>
         private Dictionary<string, MinMaxValue> nfpMinMaxValues = new Dictionary<string, MinMaxValue>();
 
+        // stores line count for access to this information without opening the file
+        private long lineCountQuick = -1;
+        private bool lineCountQuick_set = false;
+
 
 
         // CONSTRUCTORS
@@ -117,6 +121,21 @@ namespace VRVis.IO {
         public MinMaxValue GetNFPMinMaxValue(string propertyName) {
             if (!nfpMinMaxValues.ContainsKey(propertyName)) { return null; }
             return nfpMinMaxValues[propertyName];
+        }
+
+        /// <summary>
+        /// Retrieves the amount of lines this file has.<para/>
+        /// This method can be used without the need to spawn the file first.<para/>
+        /// Once read, the file will only be analyzed when you use the force parameter,
+        /// otherwise, you can safely call this method many times without performance issues.<para/>
+        /// If an issue occurs while reading the file, the returned value will be zero.
+        /// </summary>
+        /// <param name="forceRefresh">Force to refresh the line count (can take some time).</param>
+        public long GetLineCountQuick(bool forceRefresh = false) {
+            if (lineCountQuick_set && !forceRefresh) { return lineCountQuick; }
+            lineCountQuick_set = true;
+            lineCountQuick = Utility.GetLOC(GetNode().GetFullPath());
+            return lineCountQuick;
         }
 
 

@@ -13,7 +13,8 @@ namespace VRVis.IO {
     /// <summary>
     /// Set up the tree of nodes of the software system recursively.<para/>
     /// The settings of this instance might be changed/initialized by the ApplicationLoader script
-    /// because most of them are set in the global application configuration file.
+    /// because most of them are set in the global application configuration file.<para/>
+    /// Updated: 04.09.2019
     /// </summary>
     public class StructureLoader : BasicLoader {
 
@@ -120,6 +121,15 @@ namespace VRVis.IO {
             if (!filesFullPath.ContainsKey(relativeFilePath)) { return null; }
             return GetFileByFullPath(filesFullPath[relativeFilePath]);
         }
+
+        /// <summary>
+        /// Uses the information stored by the node to retrieve the CodeFile instance.<para/>
+        /// Can return null if the file was not found!
+        /// </summary>
+        public CodeFile GetFile(SNode node) {
+            return GetFileByFullPath(node.GetFullPath());
+        }
+        
 
         /// <summary>Get min/max values of all non functional properties.</summary>
         public Dictionary<string, MinMaxValue> GetNFPMinMaxValues() { return nfpMinMaxValues; }

@@ -45,8 +45,14 @@ namespace VRVis.Spawner.CodeCity {
             StructureLoaderUpdater slu = ApplicationLoader.GetInstance().GetStructureLoaderUpdater();
             slu.nfpUpdateStartedEvent.AddListener(NFPUpdateStartedEvent);
             slu.nfpUpdateFinishedEvent.AddListener(NFPUpdateFinishedEvent);
+
+            // run initial update
+            if (codeCity.IsCitySpawned()) { GenerateElementTextures(generateTexturesPerFrame); }
         }
 
+
+        // ---------------------------------------------------------------------------------------
+        // Event callbacks.
 
         private void CitySpawnedEvent() {
             GenerateElementTextures(generateTexturesPerFrame);
@@ -57,7 +63,7 @@ namespace VRVis.Spawner.CodeCity {
         }
 
         private void NFPUpdateFinishedEvent() {
-            // ToDo: re-generate all textures
+            GenerateElementTextures(generateTexturesPerFrame);
         }
 
 
@@ -123,7 +129,7 @@ namespace VRVis.Spawner.CodeCity {
             // use file path and property selection to only spawn regions of interest
             List<CodeCityTexture.Info> regionsToSpawn = new List<CodeCityTexture.Info>();
 
-            CodeFile codeFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFileByFullPath(node.GetFullPath());
+            CodeFile codeFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFile(node);
             if (codeFile == null) { return regionsToSpawn; }
 
             // get the currently selected property to show
