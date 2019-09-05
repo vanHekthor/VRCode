@@ -10,7 +10,7 @@ namespace VRVis.Spawner.CodeCity {
     /// Attached to a code city element.<para/>
     /// Is called by the code city component when a texture should be generated.<para/>
     /// Created: 04.09.2019 (Leon H.)<para/>
-    /// Updated: 04.09.2019
+    /// Updated: 05.09.2019
     /// </summary>
     [RequireComponent(typeof(MeshFilter))]
     public class CodeCityTexture : MonoBehaviour {
