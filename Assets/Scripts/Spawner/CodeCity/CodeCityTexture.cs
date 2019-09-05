@@ -43,7 +43,15 @@ namespace VRVis.Spawner.CodeCity {
         public bool IsGenerated() { return generated; }
 
 
-        /// <summary>Generates the texture and tells if this was successful.</summary>
+        /// <summary
+        /// >Generates the texture and tells if this was successful.<para/>
+        /// 
+        /// CURRENT TEXTURE LOOKS LIKE THIS:<para/>
+        /// [1] (pixel 1 = base color of the cube)<para/>
+        /// [2]<para/>
+        /// [...] (rest of the pixels represent the region texture)<para/>
+        /// [n]<para/>
+        /// </summary>
 	    public bool GenerateTexture(List<Info> regionTexInfo) {
 
             generated = false;
@@ -60,8 +68,8 @@ namespace VRVis.Spawner.CodeCity {
             long LOC = codeFile.GetLineCountQuick();
 
             //float ratio = transform.localScale.x / transform.localScale.y;
-            int width = 4; // pixel
-            tex = new Texture2D(width, (int) LOC, TextureFormat.RGB24, false) {
+            int width = 1; // pixel
+            tex = new Texture2D(width, (int) LOC + 1, TextureFormat.RGB24, false) {
                 filterMode = FilterMode.Point,
             };
 
@@ -71,17 +79,17 @@ namespace VRVis.Spawner.CodeCity {
 
             // add regions
             if (LOC > 0) {
-                int left_spacing = 1;
+                int top_spacing = 1;
                 foreach (Info info in regionTexInfo) {
                     foreach (Region.Section s in info.region.GetSections()) {
                         
-                        int from = Mathf.RoundToInt((float) s.start / LOC * tex.height);
-                        int to = Mathf.RoundToInt((float) s.end / LOC * tex.height);
+                        int from = Mathf.RoundToInt((float) s.start / LOC * (tex.height - top_spacing)) + top_spacing;
+                        int to = Mathf.RoundToInt((float) s.end / LOC * (tex.height - top_spacing)) + top_spacing;
                         if (from > to || from < 0) { continue; }
                         if (to > tex.height) { to = tex.height; }
 
                         for (int y = from-1; y < to; y++) {
-                            for (int x = left_spacing; x < tex.width; x++) {
+                            for (int x = 0; x < tex.width; x++) {
                                 colors[y * tex.width + x] = info.color;
                             }
                         }
@@ -116,25 +124,39 @@ namespace VRVis.Spawner.CodeCity {
         /// <summary>Applies the UV coordinates to the MeshFilter.</summary>
         private void SetUVCoordinates() {
 
+            // UV coordinates sources:
+            // https://answers.unity.com/questions/63088/uv-coordinates-of-primitive-cube.html
+            // https://answers.unity.com/questions/542787/change-texture-of-cube-sides.html
+            // https://answers.unity.com/questions/306959/uv-mapping.html
+
             List<Vector2> uv = new List<Vector2>();
             for (int i = 0; i < mf.mesh.uv.Length; i++) { uv.Add(Vector2.zero); }
 
-            float pf = 1f / tex.width; // relative pos of front image
-            float fw = 3f / tex.width; // relative front image width
+            // by assigning all others to (0,0), we make sure that the block is colored in its default color
 
             // FRONT    2    3    0    1
             /*
-            uv[2] = new Vector2(pf, 1f);
-            uv[3] = new Vector2(pf + fw, 1f);
-            uv[0] = new Vector2(pf, 0f);
-            uv[1] = new Vector2(pf + fw, 0f);
+            uv[2] = new Vector2(uvsFront.x, uvsFront.y);
+            uv[3] = new Vector2(uvsFront.x + uvsFront.width, uvsFront.y);
+            uv[0] = new Vector2(uvsFront.x, uvsFront.y - uvsFront.height);
+            uv[1] = new Vector2(uvsFront.x + uvsFront.width, uvsFront.y - uvsFront.height);
             */
 
             // BACK    6    7   10   11
+            /*
+            float pf = 1f / tex.width; // relative pos of front image
+            float fw = 3f / tex.width; // relative front image width
             uv[6] = new Vector2(pf, 1f);
             uv[7] = new Vector2(pf + fw, 1f);
             uv[10] = new Vector2(pf, 0f);
             uv[11] = new Vector2(pf + fw, 0f);
+            */
+
+            float st = 1f / tex.height; // relative spacing from top
+            uv[6] = new Vector2(0, 1);
+            uv[7] = new Vector2(1, 1);
+            uv[10] = new Vector2(0, st);
+            uv[11] = new Vector2(1, st);
 
             /*
             // LEFT   19   17   16   18
