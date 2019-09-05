@@ -17,11 +17,11 @@
     - [X] Rotation (rotate around y-axis) *(28.08.2019)*
     - [ ] **#3** Jump to according position in code when clicked on NFP texture
     - [ ] "Be the data" approach (maybe?)
-- [ ] External visualization settings (can be used for later loading of workspace)
-- [ ] Code Window Content Overview
+- [X] Code Window Content Overview
   - [X] Overview of code window content *(12.07.2019)*
   - [X] Overview of code regions *(18.07.2019)*
-  - [ ] Where and how to show the content overview window?
+  - [X] Where and how to show the content overview window? (either this or heightmap) *(30.08.2019)*
+- [ ] External visualization settings (can be used for later loading of workspace)
 - [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction (make use of second controller in meaningful way)
@@ -60,14 +60,14 @@
 - [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
 - [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
 - [ ] Use more Unity Events to react on changes to settings
-- [ ] Horizontal scrolling with new scroll-wheel implementation
-- [ ] ValueMappings: provide some default color methods for usage in mappings
+- [ ] Horizontal scrolling with new scroll-wheel implementation required?
+- [ ] ValueMappings: provide some default color methods for usage in mappings (e.g. Fixed-Red, ...)
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
 - [ ] \(Sorting files in cone tree layout by their type to get kinda like a pie chart when color is applied\)?
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] VariabilityModelSpawner: improve option index retrieval in last version (see comments in code)
-- [ ] Add possibility to enable/disable code/region overview window
+- [ ] **#2** Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Tilt hover window of directory graph to user
 - [ ] Hints on interaction when user selects a tool for the first time
@@ -99,7 +99,7 @@
 - [X] **#1** State of nodes of the variability model not always updating properly *(22.08.2019)*
 - [X] Changing controller while pointing at folders/files does not change back color of marked folder/file *(22.08.2019)*
 - [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (caused by input module having different layer mask)
-- [ ] **#1** Overview region sometimes shown black
+- [X] **#1** Overview region sometimes shown black (no longer seen since 23.08.2019 - closed)
+- [X] Horizontal scrollbar of code window is sometimes not adjusting the content
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
-- [ ] Laser pointer sometimes not working right after startup (rare)
-- [ ] Horizontal scrollbar of code window is often not adjusting the content
+- [ ] Laser pointer sometimes not working right after startup (very rare event that occurred during user study)
