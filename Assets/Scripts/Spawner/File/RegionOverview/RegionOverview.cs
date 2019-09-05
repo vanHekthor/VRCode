@@ -20,7 +20,7 @@ namespace VRVis.Spawner.File.Overview {
     /// The script will automatically register to events of both of these spawners.<para/>
     /// 
     /// Created: 12.07.2019 (by Leon H.)<para/>
-    /// Last Updated: 12.07.2019
+    /// Last Updated: 05.09.2019
     /// </summary>
     public class RegionOverview : MonoBehaviour {
 
@@ -42,6 +42,9 @@ namespace VRVis.Spawner.File.Overview {
         [Tooltip("Color for invisible character parts")]
         public Color invisibleColor = new Color(0, 0, 0, 0);
 
+        [Tooltip("Prevent region update if the heightmap is shown")]
+        public bool updateIfHeightmapShown = false;
+
         // this texture always stays the same and can be reused
         private Texture2D codeTexture = null;
         private Texture2D regionTexture = null;
@@ -62,7 +65,6 @@ namespace VRVis.Spawner.File.Overview {
         private static Dictionary<string, int> bitStringIndex = new Dictionary<string, int>();
         private static Dictionary<char, int> patternIndex = new Dictionary<char, int>();
         private static readonly int fullPattern = BitStringToInt("111111111");
-
 
         // !!!
         // DONE: Put generation of line patterns and code texture in one procedure for less memory consumption.
@@ -127,10 +129,15 @@ namespace VRVis.Spawner.File.Overview {
 
 
         /// <summary>
-        /// Called as a callback method when regions where spawned.
+        /// Called as a callback method when regions where spawned.<para/>
+        /// Checks if the heightmap visualization is active, as the overview is not shown if it is active.
         /// </summary>
         /// <param name="file">The affected code file</param>
         private void RegionsChangedEvent(CodeFile file) {
+
+            // don't update if the heightmap is shown
+            bool heightmapShown = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(Settings.ApplicationSettings.NFP_VIS.HEIGHTMAP);
+            if (!updateIfHeightmapShown && heightmapShown) { return; }
 
             if (file == null || file != fileRefs.GetCodeFile()) { return; }
             if (codeTexture == null) { GenerateCodeTexture(); }

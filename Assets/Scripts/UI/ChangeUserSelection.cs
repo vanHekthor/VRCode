@@ -88,6 +88,10 @@ namespace VRVis.Testing.Interaction {
             ApplicationLoader.GetApplicationSettings().SetNFPVisActive(Settings.ApplicationSettings.NFP_VIS.HEIGHTMAP, show, true);
         }
 
+        public void ShowContentOverview(bool show) {
+            ApplicationLoader.GetApplicationSettings().SetVisualizationVisibility("overview", show);
+        }
+
 
         // ------------------------------------------------------------
         // Show/hide other visualizations

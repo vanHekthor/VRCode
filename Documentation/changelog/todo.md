@@ -59,7 +59,9 @@
 - [X] **#3** Scroll wheel texture and rotation *(22.08.2019)*
 - [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
 - [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
+- [X] **#2** Add possibility to enable/disable code/region overview window *(05.09.2019)*
 - [ ] Use more Unity Events to react on changes to settings
+- [ ] For every change in visualizations (like show/hide) all NFP regions are always re-created (this can be improved!)
 - [ ] Horizontal scrolling with new scroll-wheel implementation required?
 - [ ] ValueMappings: provide some default color methods for usage in mappings (e.g. Fixed-Red, ...)
 - [ ] ValueMappingsLoader: refactoring and generalization of setting types
@@ -67,7 +69,6 @@
 - [ ] Put overview texture generation in a coroutine to minimize performance impact
 - [ ] Improve code overview for the case that there are too many lines resulting in less than one pixel on the texture
 - [ ] VariabilityModelSpawner: improve option index retrieval in last version (see comments in code)
-- [ ] **#2** Add possibility to enable/disable code/region overview window
 - [ ] Add possibility to show/hide code or regions or both in overview window?
 - [ ] Tilt hover window of directory graph to user
 - [ ] Hints on interaction when user selects a tool for the first time

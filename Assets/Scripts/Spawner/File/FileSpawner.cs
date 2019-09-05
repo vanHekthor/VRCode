@@ -442,7 +442,16 @@ namespace VRVis.Spawner {
         /// (basically re-apply the visual properties)
         /// </summary>
         public void RefreshSpawnedFileRegionValues(ARProperty.TYPE propType) {
+
+            bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
+
             foreach (CodeFile file in GetSpawnedFiles()) {
+
+                // false (default - hides height map) means code marking
+                // true means height map visualization (show height map)
+                file.ToggleHeightMap(heightMapVisible);
+
+                // refresh only the values (without re-generating the gameobjects)
                 regionSpawner.RefreshRegionValues(file, propType);
             }
         }

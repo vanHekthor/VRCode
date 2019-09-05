@@ -51,6 +51,37 @@ namespace VRVis.IO {
         }
 
         /// <summary>
+        /// Checks if the model is valid and used.<para/>
+        /// NOTE: returns also true if the model is null!
+        /// So check for this case yourself.
+        /// </summary>
+        /// <param name="reason">In case false is returned, tells why</param>
+        public bool IsModelValidAndUsed(VariabilityModel vm, out string reason) {
+
+            reason = "";
+            if (model == null) { return true; }
+
+            bool validationRequired = vm.ChangedSinceLastValidation();
+            bool invalid = !vm.GetLastValidationStatus();
+            bool appliedOnce = vm.GetValuesAppliedOnce();
+
+            if (validationRequired) {
+                reason = "Variability Model not validated!";
+                return false;
+            }
+            else if (invalid) {
+                reason = "Variability Model is invalid!";
+                return false;
+            }
+            else if (!appliedOnce) {
+                reason = "Variability Model not applied yet!";
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Puts the model option hierarchy in JSON format.<para/>
         /// Copy the output and put it into a formatter like: https://jsonformatter.curiousconcept.com/.
         /// </summary>

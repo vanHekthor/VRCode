@@ -26,9 +26,17 @@ namespace VRVis.Settings {
         /// <summary>Tells how many edge types can be active at the same time</summary>
         public readonly int MAX_ACTIVE_EDGE_TYPES = 20;
 
+
         // notify listeners when nfp relativity was changed
         public UnityEvent nfpRelativityChangedEvent = new UnityEvent();
         public UnityEvent selectedNFPChangedEvent = new UnityEvent();
+        
+        // currently: to notify listeners when the overview visualization visibility changes
+        class StringBoolEvent : UnityEvent<string, bool> {}
+        public UnityEvent<string, bool> visibilityChangedEvent = new StringBoolEvent();
+
+        /// <summary>Dictionary to store new visualization visibility states</summary>
+        public Dictionary<string, bool> visualizationVisibility = new Dictionary<string, bool>();
 
 
         /// <summary>Holds the active features selected by the user</summary>
@@ -110,10 +118,29 @@ namespace VRVis.Settings {
 
         /// <summary>Enable/disable this NFP visualization type.</summary>
         public void SetNFPVisActive(NFP_VIS visType, bool state, bool updateRegions = false) {
-            
             if (nfpVisualizationActive[visType] == state) { return; } // nothing to do
             nfpVisualizationActive[visType] = state;
-            if (updateRegions) { NFPSettingsChanged(true); }
+            bool respawnRegionObjects = true;
+            if (visType == NFP_VIS.HEIGHTMAP && state == false) { respawnRegionObjects = false; } // improves performance
+            if (updateRegions) { NFPSettingsChanged(respawnRegionObjects); }
+        }
+
+
+        /// <summary>Can be called to notify overview visualizations to change their visible state.</summary>
+        public void SetVisualizationVisibility(string visName, bool state) {
+            visibilityChangedEvent.Invoke(visName, state);
+            visualizationVisibility[visName] = state;
+        }
+
+        /// <summary>
+        /// Get the visualization visibility state (currently only used by overview window - future ready approach).<para/>
+        /// Returns true if the visualization exists and writes its visibility state to the visibility parameter.
+        /// </summary>
+        public bool GetVisualizationVisibility(string visName, out bool visibility) {
+            visibility = false;
+            if (!visualizationVisibility.ContainsKey(visName)) { return false; }
+            visibility = visualizationVisibility[visName];
+            return true;
         }
 
 

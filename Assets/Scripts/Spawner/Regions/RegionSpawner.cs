@@ -147,7 +147,6 @@ namespace VRVis.Spawner {
                 if (!element) { continue; }
                 DestroyImmediate(element);
             }
-
         }
 
 
@@ -169,26 +168,10 @@ namespace VRVis.Spawner {
             // check if variability model is used and valid (if invalid, do not spawn any regions)
             VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
             if (vml != null && vml.LoadedSuccessful()) {
-
-                VariabilityModel vm = vml.GetModel();
-                if (vm != null) {
-
-                    bool validationRequired = vm.ChangedSinceLastValidation();
-                    bool invalid = !vm.GetLastValidationStatus();
-                    bool appliedOnce = vm.GetValuesAppliedOnce();
-
-                    if (validationRequired) {
-                        Debug.LogWarning("Failed to spawn NFP regions! - Variability Model not validated!");
-                        return false;
-                    }
-                    else if (invalid) {
-                        Debug.LogWarning("Failed to spawn NFP regions! - Variability Model is invalid!");
-                        return false;
-                    }
-                    else if (!appliedOnce) {
-                        Debug.LogWarning("Failed to spawn NFP regions! - Variability Model not applied yet!");
-                        return false;
-                    }
+                string reason;
+                if (!vml.IsModelValidAndUsed(vml.GetModel(), out reason)) {
+                    Debug.LogWarning("Failed to spawn NFP regions! - " + reason);
+                    return false;
                 }
             }
 
@@ -632,12 +615,16 @@ namespace VRVis.Spawner {
 
         /// <summary>Refresh the represented region value (to re-apply the visual properties).</summary>
         public void RefreshRegionValues(CodeFile file, ARProperty.TYPE propType) {
-            
             new RegionModifier(file, this).ApplyRegionValues(new ARProperty.TYPE[]{ propType });
+            FireRegionValuesChangedEvent(file);
+        }
 
-            // invoke event to notify scripts that use it
+
+        /// <summary>Notify listeners that regions changed.</summary>
+        public void FireRegionValuesChangedEvent(CodeFile file) {
             onRegionsValuesChanged.Invoke(file);
         }
+
 
         /// <summary>Refresh the shown regions for this property type.</summary>
         /// <param name="refreshRepresentation">Tells if the visual properties should be applied or not</param>

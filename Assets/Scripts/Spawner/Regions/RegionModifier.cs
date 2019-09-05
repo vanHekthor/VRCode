@@ -35,7 +35,7 @@ namespace VRVis.Spawner.Regions {
 
         public RegionModifier(CodeFile codeFile, RegionSpawner regionSpawner) {
             
-            this.file = codeFile;
+            file = codeFile;
             this.regionSpawner = regionSpawner;
 
             //visPropLoader = ApplicationLoader.GetInstance().GetVisualPropertiesLoader();
@@ -62,7 +62,19 @@ namespace VRVis.Spawner.Regions {
                     // update heightmap labels according to which min/max values are currently used as reference
                     UpdateHeightmapLabels();
 
-                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.NFP).ForEach(region => ApplyRegionValues_NFP(region));
+                    // check if any region changed its color
+                    bool regionColorChanged = false;
+
+                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.NFP).ForEach(region =>
+                        {
+                            Color color_prev = region.GetCurrentNFPColor();
+                            ApplyRegionValues_NFP(region);
+                            if (!regionColorChanged && region.GetCurrentNFPColor() != color_prev) { regionColorChanged = true; }
+                        }
+                    );
+
+                    // notify listeners about the change in color
+                    if (regionColorChanged) { regionSpawner.FireRegionValuesChangedEvent(file); }
                 }
                 else if (type == ARProperty.TYPE.FEATURE) {
                     regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.FEATURE).ForEach(region => ApplyRegionValues_Features(region));
@@ -196,8 +208,6 @@ namespace VRVis.Spawner.Regions {
 
                 // get absolute value and crop to bounds
                 float absValue = minMax.CropToBounds(nfpProperty.GetValue());
-                /*if (absValue < minMax.GetMinValue()) { absValue = minMax.GetMinValue(); } // ToDo: cleanup
-                else if (absValue > minMax.GetMaxValue()) { absValue = minMax.GetMaxValue(); }*/
 
                 // apply relative color
                 float valuePercentage = minMax.GetRangePercentage(absValue);
