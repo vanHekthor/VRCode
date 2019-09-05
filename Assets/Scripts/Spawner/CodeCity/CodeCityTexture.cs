@@ -43,8 +43,8 @@ namespace VRVis.Spawner.CodeCity {
         public bool IsGenerated() { return generated; }
 
 
-        /// <summary
-        /// >Generates the texture and tells if this was successful.<para/>
+        /// <summary>
+        /// Generates the texture and tells if this was successful.<para/>
         /// 
         /// CURRENT TEXTURE LOOKS LIKE THIS:<para/>
         /// [1] (pixel 1 = base color of the cube)<para/>
