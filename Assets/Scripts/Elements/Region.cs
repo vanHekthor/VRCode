@@ -31,6 +31,7 @@ namespace VRVis.Elements {
         private readonly string id;
         private readonly string location;
         private int[] nodes;
+        private int locs; // total lines of code
 
         // to store node sections (e.g. if nodes = [1,2,3,4,8,9] -> [from: 1, to: 4] and [from: 8, to: 9])
         public struct Section {
@@ -38,11 +39,18 @@ namespace VRVis.Elements {
             /// <summary>Starts at 1 if represents first line in a file</summary>
             public int start;
             public int end;
+            private int locs;
 
             public Section(int start, int end) {
                 this.start = start;
                 this.end = end;
+                locs = 0;
+                UpdateLOCs();
             }
+
+            /// <summary>Lines of code this section uses.</summary>
+            public int GetLOCs() { return locs; }
+            public void UpdateLOCs() { locs = end - start; }
         }
 
         private List<Section> sections = new List<Section>();
@@ -101,6 +109,7 @@ namespace VRVis.Elements {
             // set the nodes and process the sections
             SetNodes(readNodes);
             ProcessNodes();
+            locs = readNodes.Length;
 
             // get properties
             //Debug.Log("Loading region properties...");
@@ -124,6 +133,9 @@ namespace VRVis.Elements {
 
         public int[] GetNodes() { return nodes; }
         private void SetNodes(int[] nodes) { this.nodes = nodes; }
+
+        /// <summary>Get the lines of code (equal to the amount of nodes).</summary>
+        public int GetLOCs() { return locs; }
 
         public List<Section> GetSections() { return sections; }
 

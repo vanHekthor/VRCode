@@ -22,6 +22,7 @@
   - [X] Overview of code regions *(18.07.2019)*
   - [X] Where and how to show the content overview window? (either this or heightmap) *(30.08.2019)*
 - [ ] External visualization settings (can be used for later loading of workspace)
+  - [ ] Settings to change what is displayed by the width, length and height of code city elements
 - [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction (make use of second controller in meaningful way)

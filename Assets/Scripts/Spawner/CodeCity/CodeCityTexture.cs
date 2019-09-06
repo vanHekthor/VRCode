@@ -7,19 +7,34 @@ using VRVis.IO;
 namespace VRVis.Spawner.CodeCity {
 
     /// <summary>
-    /// Attached to a code city element.<para/>
+    /// Attached to the code city elements.<para/>
     /// Is called by the code city component when a texture should be generated.<para/>
     /// Created: 04.09.2019 (Leon H.)<para/>
-    /// Updated: 05.09.2019
+    /// Updated: 06.09.2019
     /// </summary>
     [RequireComponent(typeof(MeshFilter))]
     public class CodeCityTexture : MonoBehaviour {
+
+        [Tooltip("Show areas of the file where regions are missing (shows where in the file the regions are)")]
+        public bool showMissingRegions = true;
+
+        [Tooltip("If \"showMissingRegions\" is disabled, enable this to separate regions using a line")]
+        public bool showSepLine = true;
+
+        [Tooltip("Width of the separation line")]
+        public int sepLineWidth = 2;
+
+        [Tooltip("Color of the separation line")]
+        public Color sepLineColor = Color.black;
 
         private Color baseColor;
         private Texture2D tex;
         private bool generated = false;
         private CodeCityElement cce;
         private MeshFilter mf;
+
+        // spacing to store base color in texture
+        private readonly int base_spacing = 1;
 
         /// <summary>Region texture information.</summary>
         public class Info {
@@ -65,11 +80,17 @@ namespace VRVis.Spawner.CodeCity {
             // get the total line count
             CodeFile codeFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFile(cce.GetSNode());
             if (codeFile == null) { return false; }
-            long LOC = codeFile.GetLineCountQuick();
+            
+            long LOC = 0;
+            int sepLine = (showSepLine ? sepLineWidth : 0);
+            if (!showMissingRegions) { regionTexInfo.ForEach(info => LOC += info.region.GetLOCs() + sepLine); }
+            else { LOC = codeFile.GetLineCountQuick(); }
+            Debug.Log(codeFile.GetNode().GetName() + ": " + LOC);
 
-            //float ratio = transform.localScale.x / transform.localScale.y;
             int width = 1; // pixel
-            tex = new Texture2D(width, (int) LOC + 1, TextureFormat.RGB24, false) {
+            int height = base_spacing + (int) LOC;
+
+            tex = new Texture2D(width, height, TextureFormat.RGB24, false) {
                 filterMode = FilterMode.Point,
             };
 
@@ -78,13 +99,13 @@ namespace VRVis.Spawner.CodeCity {
             for (int i = 0; i < colors.Length; i++) { colors[i] = baseColor; }
 
             // add regions
-            if (LOC > 0) {
-                int top_spacing = 1;
+            if (LOC > 0 && showMissingRegions) {
+                
                 foreach (Info info in regionTexInfo) {
                     foreach (Region.Section s in info.region.GetSections()) {
-                        
-                        int from = Mathf.RoundToInt((float) s.start / LOC * (tex.height - top_spacing)) + top_spacing;
-                        int to = Mathf.RoundToInt((float) s.end / LOC * (tex.height - top_spacing)) + top_spacing;
+
+                        int from = Mathf.RoundToInt((float) s.start / LOC * (tex.height - base_spacing)) + base_spacing;
+                        int to = Mathf.RoundToInt((float) s.end / LOC * (tex.height - base_spacing)) + base_spacing;
                         if (from > to || from < 0) { continue; }
                         if (to > tex.height) { to = tex.height; }
 
@@ -92,6 +113,58 @@ namespace VRVis.Spawner.CodeCity {
                             for (int x = 0; x < tex.width; x++) {
                                 colors[y * tex.width + x] = info.color;
                             }
+                        }
+                    }
+                }
+            }
+            else if (LOC > 0 && !showMissingRegions) {
+
+                // sort sections based on their "start" value
+                List<KeyValuePair<Region.Section, int>> sections = new List<KeyValuePair<Region.Section, int>>();
+
+                for (int i = 0; i < regionTexInfo.Count; i++) {
+
+                    Info info = regionTexInfo[i];
+                    foreach (Region.Section s in info.region.GetSections()) {
+
+                        // very simple insertion sort (ToDo: improve if required)
+                        int index = -1;
+                        for (int k = 0; k < sections.Count; k++) {
+                            if (s.start < sections[k].Key.start) {
+                                index = k;
+                                break;
+                            }
+                        }
+
+                        if (index > -1) { sections.Insert(index, new KeyValuePair<Region.Section, int>(s, i)); }
+                        else { sections.Add(new KeyValuePair<Region.Section, int>(s, i)); }
+                    }
+                }
+
+                System.Text.StringBuilder strb = new System.Text.StringBuilder("[");
+                foreach (var s in sections) {
+                    strb.Append(s.Key.start);
+                    strb.Append(",");
+                }
+                strb.Append("]");
+                Debug.Log("Sort: " + strb.ToString());
+
+                float curPos = 0;
+                foreach (var se in sections) {
+
+                    float start = curPos + 1;
+                    float end = start + se.Key.GetLOCs();
+                    curPos = end + sepLine;
+
+                    int from = Mathf.RoundToInt(start / LOC * (tex.height - base_spacing)) + base_spacing;
+                    int to = Mathf.RoundToInt(end / LOC * (tex.height - base_spacing)) + base_spacing;
+                    if (from > to || from < 0) { continue; }
+                    if (to > tex.height) { to = tex.height; }
+                    
+                    // draw region color and separation line
+                    for (int y = from-1; y < to + sepLine; y++) {
+                        for (int x = 0; x < tex.width; x++) {
+                            colors[y * tex.width + x] = y < to ? regionTexInfo[se.Value].color : sepLineColor;
                         }
                     }
                 }
@@ -129,60 +202,34 @@ namespace VRVis.Spawner.CodeCity {
             // https://answers.unity.com/questions/542787/change-texture-of-cube-sides.html
             // https://answers.unity.com/questions/306959/uv-mapping.html
 
+            // by assigning all others to (0,0), we make sure that the block is colored in its default color
             List<Vector2> uv = new List<Vector2>();
             for (int i = 0; i < mf.mesh.uv.Length; i++) { uv.Add(Vector2.zero); }
 
-            // by assigning all others to (0,0), we make sure that the block is colored in its default color
 
             // FRONT    2    3    0    1
-            /*
-            uv[2] = new Vector2(uvsFront.x, uvsFront.y);
-            uv[3] = new Vector2(uvsFront.x + uvsFront.width, uvsFront.y);
-            uv[0] = new Vector2(uvsFront.x, uvsFront.y - uvsFront.height);
-            uv[1] = new Vector2(uvsFront.x + uvsFront.width, uvsFront.y - uvsFront.height);
-            */
 
             // BACK    6    7   10   11
-            /*
-            float pf = 1f / tex.width; // relative pos of front image
-            float fw = 3f / tex.width; // relative front image width
-            uv[6] = new Vector2(pf, 1f);
-            uv[7] = new Vector2(pf + fw, 1f);
-            uv[10] = new Vector2(pf, 0f);
-            uv[11] = new Vector2(pf + fw, 0f);
-            */
 
-            float st = 1f / tex.height; // relative spacing from top
-            uv[6] = new Vector2(0, 1);
-            uv[7] = new Vector2(1, 1);
+            // relative spacing from base color
+            float st = (float) base_spacing / tex.height;
+
+            uv[6] = new Vector2(0, 1f);
+            uv[7] = new Vector2(1, 1f);
             uv[10] = new Vector2(0, st);
             uv[11] = new Vector2(1, st);
 
-            /*
             // LEFT   19   17   16   18
-            uv[19] = Vector2( uvsLeft.x, uvsLeft.y );
-            uv[17] = Vector2( uvsLeft.x + uvsLeft.width, uvsLeft.y );
-            uv[16] = Vector2( uvsLeft.x, uvsLeft.y - uvsLeft.height );
-            uv[18] = Vector2( uvsLeft.x + uvsLeft.width, uvsLeft.y - uvsLeft.height );
 
             // RIGHT   23   21   20   22
-            uv[23] = Vector2( uvsRight.x, uvsRight.y );
-            uv[21] = Vector2( uvsRight.x + uvsRight.width, uvsRight.y );
-            uv[20] = Vector2( uvsRight.x, uvsRight.y - uvsRight.height );
-            uv[22] = Vector2( uvsRight.x + uvsRight.width, uvsRight.y - uvsRight.height );
+            uv[23] = new Vector2(1, 1f);
+            uv[21] = new Vector2(1, st);
+            uv[20] = new Vector2(0, 1f);
+            uv[22] = new Vector2(0, st);
 
             // TOP    4    5    8    9
-            uv[4] = Vector2( uvsTop.x, uvsTop.y );
-            uv[5] = Vector2( uvsTop.x + uvsTop.width, uvsTop.y );
-            uv[8] = Vector2( uvsTop.x, uvsTop.y - uvsTop.height );
-            uv[9] = Vector2( uvsTop.x + uvsTop.width, uvsTop.y - uvsTop.height );
 
             // BOTTOM   15   13   12   14
-            uv[15] = Vector2( uvsBottom.x, uvsBottom.y );
-            uv[13] = Vector2( uvsBottom.x + uvsBottom.width, uvsBottom.y );
-            uv[12] = Vector2( uvsBottom.x, uvsBottom.y - uvsBottom.height );
-            uv[14] = Vector2( uvsBottom.x + uvsBottom.width, uvsBottom.y - uvsBottom.height );
-            */
 
             // apply UV coordinates
             mf.mesh.SetUVs(0, uv);
