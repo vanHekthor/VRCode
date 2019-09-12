@@ -34,14 +34,6 @@ namespace VRVis.Interaction.LaserPointer {
 
         [Tooltip("If available, assign the scroll wheel here")]
         public Transform scrollWheelObject;
-        
-        /*
-        [Tooltip("Minimum input of touchpad to have an effect")]
-        public Vector2 minScrollThreshold = new Vector2(0.4f, 0.4f);
-
-        [Tooltip("Map the values from min scroll to 1 on this vector (for x: 0...scrollMapping.x, for y: 0-scrollMapping.y)")]
-        public Vector2 scrollMapping = new Vector2(1, 1);
-        */
 
         [Tooltip("Multiply the scroll input value with this factor")]
         [Range(0, 100)] public float scrollMult = 16;
@@ -113,8 +105,6 @@ namespace VRVis.Interaction.LaserPointer {
 
             if (!IsAvailable()) { return; }
 
-            //Debug.LogWarning("Laser entered: " + control.name, control);
-
             // haptic pulse if object has supported layer
             PulseOnEnter poe = control.GetComponent<PulseOnEnter>();
             if (poe != null) {
@@ -149,42 +139,6 @@ namespace VRVis.Interaction.LaserPointer {
             return stateChangedToTrue;
         }
 
-
-        /*
-        public override bool IsScrolling() {
-            
-            if (scrollWheel == null || !controller) { return false; }
-            Vector2 curAxis = scrollWheel.GetAxis(controller.handType);
-            return Mathf.Abs(curAxis.x) >= minScrollThreshold.x || Mathf.Abs(curAxis.y) >= minScrollThreshold.y;
-        }
-        
-        public override Vector2 GetScrollDelta() {
-            
-            if (scrollWheel == null || !controller) { return Vector2.zero; }
-
-            Vector2 curAxis = scrollWheel.GetAxis(controller.handType);
-
-            // max of input values
-            float max = 1;
-            float rangeX = max - minScrollThreshold.x;
-            float rangeY = max - minScrollThreshold.y;
-
-            // get positive or negative direction
-            float xNeg = curAxis.x < 0 ? -1 : 1;
-            float yNeg = curAxis.y < 0 ? -1 : 1;
-
-            // check that min threshold is exceeded (it is not, if diff is less than 0)
-            float xCur = Mathf.Abs(curAxis.x) - minScrollThreshold.x;
-            float yCur = Mathf.Abs(curAxis.y) - minScrollThreshold.y;
-            if (xCur < 0) { xCur = 0; }
-            if (yCur < 0) { yCur = 0; }
-
-            // map value on range
-            float xVal = (xCur / rangeX) * scrollMapping.x * xNeg;
-            float yVal = (yCur / rangeY) * scrollMapping.y * yNeg;
-            return new Vector2(xVal * -1, yVal); // invert scroll dir on horizontal axis
-        }
-        */
 
         public override bool IsScrolling() { return scrolling && scrollStarted && scrollChange != Vector2.zero; }
 

@@ -62,6 +62,7 @@
 - [X] **#1** Add raycast to check that code city hover window is not inside building *(22.08.2019)*
 - [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
 - [X] **#2** Add possibility to enable/disable code/region overview window *(05.09.2019)*
+- [ ] **#2** Selecting and configuring numerical options (requires UI concerns)
 - [ ] Use more Unity Events to react on changes to settings
 - [ ] For every change in visualizations (like show/hide) all NFP regions are always re-created (this can be improved!)
 - [ ] Horizontal scrolling with new scroll-wheel implementation required?
@@ -77,7 +78,6 @@
 - [ ] Hints on interaction while using the tools
 - [ ] Feature graph: enable parent node if child node activated
   - [ ] Automated check/validation of alternate group selection
-  - [ ] **#2** Selecting and configuring numerical options (requires UI concerns)
 - [ ] Possibility to zoom on text for better readability
 - [ ] Feature regions counter to show amount of "affected" lines
 - [ ] Instant snap to start/end of file instead of "endless" scrolling
