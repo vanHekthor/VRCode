@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using Valve.VR.InteractionSystem;
+using VRVis.IO.Features;
 using VRVis.Spawner.ConfigModel;
 using VRVis.UI.VariabilityModel;
 
@@ -11,9 +12,9 @@ namespace VRVis.Interaction {
     /// <summary>
     /// Class that handles pointer interaction for feature model nodes.<para/>
     /// This script should be attached to each node of the spawned model (attach to prefabs).<para/>
-    /// Last Update: 22.08.2019
+    /// Last Update: 12.09.2019
     /// </summary>
-    public class VariabilityModelInteraction : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler {
+    public class VariabilityModelInteraction : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler, IPointerClickHandler {
 
         [Tooltip("The UI showing up if the user hovers over a node")]
         public GameObject hoverInfoPrefab;
@@ -111,6 +112,27 @@ namespace VRVis.Interaction {
             // move in direction and apply rotation offset
             hoverUIInstance.transform.position += hoverUIInstance.transform.forward * distFromCenter;
             hoverUIInstance.transform.Rotate(rotationOffset);
+        }
+
+
+        /// <summary>Called when a click on a VM's node occurred.</summary>
+        public void OnPointerClick(PointerEventData eventData) {
+
+            VariabilityModelNodeInfo info = GetComponent<VariabilityModelNodeInfo>();
+            if (!info) {
+                Debug.LogError("Missing info!", this);
+                return;
+            }
+
+            // simply change status if boolean feature
+            AFeature option = info.GetOption();
+            if (option is Feature_Boolean) {
+                ((Feature_Boolean) option).SwitchSelected();
+                info.UpdateColor();
+            }
+
+            // ToDo: show on terminal to change numeric value (slider)
+            // ToDo: maybe also show boolean value on/off as slider (0 to 1)
         }
 
     }

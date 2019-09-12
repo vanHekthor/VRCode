@@ -18,7 +18,7 @@ namespace VRVis.Interaction.LaserPointer {
     /// Written by github.com/S1r0hub (Leon H.)<para/>
     /// 
     /// Created: 22.11.2018<para/>
-    /// Updated: 15.08.2019<para/>
+    /// Updated: 12.09.2019<para/>
     /// 
     /// Some methods are from Wacki as mentioned in the default ViveUILaserPointer script.<para/>
     /// This script is modified to work only in the VRVis system.
@@ -334,9 +334,10 @@ namespace VRVis.Interaction.LaserPointer {
             StructureNodeInfoV2 nodeInfV2 = go.GetComponent<StructureNodeInfoV2>();
             if (nodeInfV2 != null) { StructureNodeClicked(nodeInfV2.GetSNode(), go.transform); }
 
-            // check if click reached a feature model node
-            VariabilityModelNodeInfo vmNodeInf = go.GetComponent<VariabilityModelNodeInfo>();
-            if (vmNodeInf != null) { VariabilityModelNodeClicked(vmNodeInf); }
+            // ToDo: cleanup
+            // BELOW CODE IS DISCARDED: pointer click is now handled by VariabilityModelInteraction.cs
+            //VariabilityModelNodeInfo vmNodeInf = go.GetComponent<VariabilityModelNodeInfo>();
+            //if (vmNodeInf != null) { VariabilityModelNodeClicked(vmNodeInf); }
 
             // code city uses the EventSystem and catches OnPointerClick()
             // - use this approach for future additions!
@@ -385,26 +386,8 @@ namespace VRVis.Interaction.LaserPointer {
                     // or make it light up for a short amount of time to show where it is?
 
                     Debug.LogWarning("File already spawned: " + node.GetName());
-
                 }
             }
-        }
-
-
-        /// <summary>
-        /// Called when a click on a vm node occurred.
-        /// </summary>
-        private void VariabilityModelNodeClicked(VariabilityModelNodeInfo nInf) {
-
-            // simply change status if boolean feature
-            AFeature option = nInf.GetOption();
-            if (option is Feature_Boolean) {
-                ((Feature_Boolean) option).SwitchSelected();
-                nInf.UpdateColor();
-            }
-            
-            // ToDo: show on terminal to change numeric value (slider)
-            // ToDo: maybe also show boolean value on/off as slider (0 to 1)
         }
 
     }

@@ -72,6 +72,7 @@ namespace VRVis.IO.Features {
             // add root as default binary option
             root = new Feature_Boolean(this, ROOT_NAME);
             root.SetSelected(true);
+            root.SetReadOnly(true);
             binaryOptions.Add(root);
 
             // [INDEXING] root

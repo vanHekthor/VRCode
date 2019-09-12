@@ -30,6 +30,8 @@ namespace VRVis.IO.Features {
         private float value_default;
         private float value; // current value
 
+        private bool readonlyOption = false;
+
         private string parentName = null;
         private AFeature parent = null;
         private Dictionary<string, AFeature> children = new Dictionary<string, AFeature>();
@@ -112,6 +114,13 @@ namespace VRVis.IO.Features {
 
         public float GetDefaultValue() { return value_default; }
 
+
+        /// <summary>If set true, this option can no longer be modified.</summary>
+        public void SetReadOnly(bool state) { readonlyOption = state; }
+
+        public bool IsReadOnly() { return readonlyOption; }
+
+
         /// <summary>
         /// Get the current value considering the hierarchy configuration.<para/>
         /// The returned value just tells about the current influence in the variability model.<para/>
@@ -135,6 +144,8 @@ namespace VRVis.IO.Features {
 
         /// <summary>Set the value of this feature (will also crop it to the bounds).</summary>
         public void SetValue(float value, bool setAsDefault = false, bool ignoreBounds = false) {
+
+            if (IsReadOnly()) { return; }
 
             if (!ignoreBounds) { value = value < from ? from : value > to ? to : value; }
             if (setAsDefault) { value_default = value; }
