@@ -336,7 +336,7 @@ namespace VRVis.Spawner.File.Overview {
             
             Debug.LogWarning("Code texture generation...");
 
-            Texture2D tex = new Texture2D(width, height) {
+            Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, false) {
                 filterMode = FilterMode.Point,
                 alphaIsTransparency = true
             };
