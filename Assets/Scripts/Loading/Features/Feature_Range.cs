@@ -161,7 +161,7 @@ namespace VRVis.IO.Features {
                 if (distToPrev < min_diff) { dist_less_times++; }
                 else { dist_less_times = 0; }
 
-                allValues.Add(nextValue);
+                if (nextValue <= GetTo()) { allValues.Add(nextValue); }
                 curValue = nextValue;
                 loop_steps++;
             }
