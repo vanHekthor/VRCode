@@ -10,7 +10,9 @@ namespace VRVis.UI.VariabilityModel {
 
     /// <summary>
     /// Script attached to the UI shown if hovered over a model node.<para/>
-    /// Holds information about the text elements to change...
+    /// Holds information about the text elements to change and keeps it in sync.<para/>
+    /// Created: 2019 (Leon H.)<para/>
+    /// Updated: 13.09.2019
     /// </summary>
     public class VariabilityNodeHoverUI : MonoBehaviour {
 
@@ -26,8 +28,8 @@ namespace VRVis.UI.VariabilityModel {
 
         private AFeature curOption;
         private VariabilityModelNodeInfo curNodeInfo;
-        //private Coroutine updateCoroutine;
 
+        // callback to register feature value changes and update the shown information
         private UnityAction valueChangeCallback;
 
 

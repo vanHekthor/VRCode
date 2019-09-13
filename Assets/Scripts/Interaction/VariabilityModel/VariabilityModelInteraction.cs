@@ -13,7 +13,7 @@ namespace VRVis.Interaction {
     /// Class that handles pointer interaction for feature model nodes.<para/>
     /// This script should be attached to each node of the spawned model (attach to prefabs).<para/>
     /// Created: 2019 (Leon H.)<para/>
-    /// Updated: 12.09.2019
+    /// Updated: 13.09.2019
     /// </summary>
     public class VariabilityModelInteraction : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler, IPointerClickHandler {
 
@@ -130,17 +130,22 @@ namespace VRVis.Interaction {
         /// <summary>Called when a click on a VM's node occurred.</summary>
         public void OnPointerClick(PointerEventData eventData) {
 
+            if (eventData.selectedObject && eventData.selectedObject != gameObject) { return; }
+            eventData.Use();
+
             VariabilityModelNodeInfo info = GetComponent<VariabilityModelNodeInfo>();
             if (!info) {
                 Debug.LogError("Missing info!", this);
                 return;
             }
-            
+
             // simply change status if boolean feature
             AFeature option = info.GetOption();
             if (option is Feature_Boolean) {
                 ((Feature_Boolean) option).SwitchSelected();
                 info.UpdateColor();
+                // ToDo: required to show boolean value on/off as slider (0 to 1)?
+                return;
             }
 
             // remove modification UI if shown and enable hover UI
@@ -153,8 +158,6 @@ namespace VRVis.Interaction {
             // attach and prepare modification UI
             ShowModUI(option as Feature_Range);
             if (hoverUIInstance) { hoverUIInstance.SetActive(false); }
-
-            // ToDo: maybe also show boolean value on/off as slider (0 to 1)
         }
 
 

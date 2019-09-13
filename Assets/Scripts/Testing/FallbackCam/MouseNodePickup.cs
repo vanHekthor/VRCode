@@ -17,7 +17,9 @@ namespace VRVis.Fallback {
     /// The mouse should be able to click on a node.<para/>
     /// The node then gets "attached" / "selected"
     /// and the next click of the mouse will spawn
-    /// the code window at this position in the world.
+    /// the code window at this position in the world.<para/>
+    /// Created: 2019 (Leon H.)<para/>
+    /// Updated: 13.09.2019
     /// </summary>
     public class MouseNodePickup : MonoBehaviour {
 
@@ -98,7 +100,7 @@ namespace VRVis.Fallback {
                         if (hit.collider.gameObject != null) {
 
                             hitObj = hit.collider.gameObject;
-                            Debug.Log("Mouse click on game object", hitObj);
+                            //Debug.Log("Mouse click on game object", hitObj);
 
                             // notify event handlers
                             MousePickupEventData data = new MousePickupEventData(EventSystem.current, this) {
@@ -204,28 +206,9 @@ namespace VRVis.Fallback {
             }
             while (nodeWithInfo.parent != null);
 
-            // in case a node info was found
-            if (nInf != null) {
 
-                // find according option by index
-                AFeature option = nInf.GetOption();
-                if (option != null) {
-
-                    // just switch its selected state
-                    if (option is Feature_Boolean) { ((Feature_Boolean) option).SwitchSelected(); }
-                                        
-                    // ToDo: handle numeric option (Feature_Range)
-                    // ToDo: show name and more (e.g. value for num. option) facing user
-
-                    // update color according to new value
-                    nInf.UpdateColor();
-
-                    Debug.Log("Clicked at feature model node: " + option.GetName() + " aka. " + option.GetDisplayName() + ", value now: " + option.GetValue());
-                }
-                else { Debug.LogWarning("Clicked at feature tree node but option not found!"); }
-
-                return;
-            }
+            // other click handling like for variability model and code city
+            // is performed over PointerClickEvent in their according code
         }
 
 

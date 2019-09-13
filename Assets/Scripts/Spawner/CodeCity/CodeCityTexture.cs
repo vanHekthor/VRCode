@@ -85,7 +85,7 @@ namespace VRVis.Spawner.CodeCity {
             int sepLine = (showSepLine ? sepLineWidth : 0);
             if (!showMissingRegions) { regionTexInfo.ForEach(info => LOC += info.region.GetLOCs() + sepLine); }
             else { LOC = codeFile.GetLineCountQuick(); }
-            Debug.Log(codeFile.GetNode().GetName() + ": " + LOC);
+            //Debug.Log(codeFile.GetNode().GetName() + ": " + LOC);
 
             int width = 1; // pixel
             int height = base_spacing + (int) LOC;
@@ -141,6 +141,8 @@ namespace VRVis.Spawner.CodeCity {
                     }
                 }
 
+                /*
+                // DEBUG: to check if sorting is correct
                 System.Text.StringBuilder strb = new System.Text.StringBuilder("[");
                 foreach (var s in sections) {
                     strb.Append(s.Key.start);
@@ -148,6 +150,7 @@ namespace VRVis.Spawner.CodeCity {
                 }
                 strb.Append("]");
                 Debug.Log("Sort: " + strb.ToString());
+                */
 
                 float curPos = 0;
                 foreach (var se in sections) {

@@ -14,7 +14,9 @@ namespace VRVis.IO.Features {
     /// This base class basically implements a "range feature".
     /// Because everything can be defined as a range of numbers.<para/>
     /// For instance, a boolean feature is a range of 0 to 1,
-    /// defined with a step size of 1 (on or off).
+    /// defined with a step size of 1 (on or off).<para/>
+    /// Created: 2019 (Leon H.)<para/>
+    /// Updated: 13.09.2019
     /// </summary>
     public abstract class AFeature : GenericNode {
 
@@ -95,7 +97,7 @@ namespace VRVis.IO.Features {
             return name_display;
         }
 
-        public void SetDisplayName(string name) { name_display = name; }
+        public void SetDisplayName(string name) { name_display = name.Trim(); }
 
 
         public float GetFrom() { return from; }
@@ -247,12 +249,14 @@ namespace VRVis.IO.Features {
 
 
         /// <summary>
-        /// Remove invalid characters from a given feature/option name.
-        /// Allowed are only letters and numbers, separated by "_".
+        /// Remove invalid characters from a given feature/option name.<para/>
+        /// Allowed are only letters and numbers, separated by "_".<para/>
+        /// Whitespaces before and after the name are removed as well.
         /// </summary>
         /// <returns>The valid string with invalid characters removed</returns>
         public static string RemoveInvalidCharsFromName(string name) {
 
+            name = name.Trim();
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < name.Length; i++) {
                 char c = name[i];

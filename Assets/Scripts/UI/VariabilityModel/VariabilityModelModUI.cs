@@ -10,7 +10,7 @@ namespace VRVis.UI.VariabilityModel {
     /// Script that is attached to the variability model modification UI prefab.<para/>
     /// It takes care of preparing the UI for usage and deals with interaction events.
     /// Created: 12.09.2019 (Leon H.)<para/>
-    /// Updated: 12.09.2019
+    /// Updated: 13.09.2019
     /// </summary>
     public class VariabilityModelModUI : MonoBehaviour {
 
@@ -21,9 +21,16 @@ namespace VRVis.UI.VariabilityModel {
         public Transform optionNameText;
 
         [Tooltip("GameObject that should receive a notification and has the ChangeTextHelper attached to it")]
+        public Transform optionStringText;
+
+        [Tooltip("GameObject that should receive a notification and has the ChangeTextHelper attached to it")]
         public Transform valueText;
         
+        [Tooltip("Maximum amount of ticks that the slider can have (can vary a bit when below is active)")]
         public int maxSliderTicks = 10;
+
+        [Tooltip("Allow to adjust the max slider ticks to make even values easier to modify for the user")]
+        public bool allowMakeTicksEven = true;
 
 
         private Feature_Range feature;
@@ -36,38 +43,50 @@ namespace VRVis.UI.VariabilityModel {
         public void PrepareUI(Feature_Range range_feature) {
 
             feature = range_feature;
+            
+            // update name and display text
+            string displayName = feature.GetDisplayName();
+            if (displayName.Length > 0) { displayName = "(" + displayName + ")"; }
             optionNameText.SendMessage("ChangeText", feature.GetName(), SendMessageOptions.DontRequireReceiver);
+            optionStringText.SendMessage("ChangeText", displayName, SendMessageOptions.DontRequireReceiver);
+
             range_feature.valueChangedEvent.AddListener(UpdateFeatureValue);
             if (valueSlider) { valueSlider.interactable = false; }
             List<float> values = range_feature.GetAllValues();
-            Debug.Log("Values " + feature.GetName());
 
             /*
+            // DEBUG: print available values of the feature
             System.Text.StringBuilder strb = new System.Text.StringBuilder();
             foreach (float f in values) { strb.Append(f); strb.Append(','); }
-            Debug.Log(strb.ToString());
+            Debug.Log("Values: " + strb.ToString());
             */
 
             // get only a few of these values if there are too many
             sliderValues = new List<float>();
 
-            if (values.Count <= maxSliderTicks) { values.ForEach(v => sliderValues.Add(v)); }
+            // make odd or even depending on amount of values and maxSliderTicks
+            bool ticksEven = maxSliderTicks % 2 == 0;
+            bool valuesEven = values.Count % 2 == 0;
+            int maxTicks = maxSliderTicks;
+            if (ticksEven && !valuesEven) { maxTicks++; }
+            else if (ticksEven && valuesEven) { maxTicks--; }
+
+            if (values.Count <= maxTicks) { values.ForEach(v => sliderValues.Add(v)); }
             else {
 
                 // we always want the first and the last included
-                float frac = values.Count / (float) maxSliderTicks;
-                for (int i = 0; i <= maxSliderTicks; i++) {
-                    int index = Mathf.FloorToInt(frac * i);
-                    if (index >= values.Count-1) { break; }
+                float frac = values.Count / (float) (maxTicks-1);
+                for (int i = 0; i < maxTicks; i++) {
+                    float fi = frac * i;
+                    int index = Mathf.FloorToInt(fi);
+                    if (index > values.Count-1) { break; }
                     sliderValues.Add(values[index]);
                 }
 
-                if (sliderValues.Count < maxSliderTicks) {
+                if (sliderValues.Count < maxTicks) {
                     sliderValues.Add(values[values.Count-1]);
                 }
             }
-
-            // ToDo: fix slider last step not shown!
 
             if (valueSlider) {
                 valueSlider.interactable = !feature.IsReadOnly();
