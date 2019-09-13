@@ -21,6 +21,7 @@
   - [X] Overview of code window content *(12.07.2019)*
   - [X] Overview of code regions *(18.07.2019)*
   - [X] Where and how to show the content overview window? (either this or heightmap) *(30.08.2019)*
+- [ ] **#2** Improve when to update specific parts of the code window (e.g. do not update everything if only feature regions changed)
 - [ ] External visualization settings (can be used for later loading of workspace)
   - [ ] Setting: What is displayed by the width, length and height of code city elements
   - [ ] Setting: What is displayed by the city element texture
