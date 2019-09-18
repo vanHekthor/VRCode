@@ -64,6 +64,7 @@
 - [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
 - [X] **#2** Add possibility to enable/disable code/region overview window *(05.09.2019)*
 - [X] **#2** Selecting and configuring numerical options (requires UI concerns) *(12.09.2019)*
+- [ ] Upgrade Unity version and project + ensure everything still works fine
 - [ ] Use more Unity Events to react on changes to settings
 - [ ] For every change in visualizations (like show/hide) all NFP regions are always re-created (this can be improved!)
 - [ ] Horizontal scrolling with new scroll-wheel implementation required?
