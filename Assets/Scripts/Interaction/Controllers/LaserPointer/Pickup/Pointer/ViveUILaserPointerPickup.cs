@@ -316,6 +316,16 @@ namespace VRVis.Interaction.LaserPointer {
         // ---------------------------------------------------------------------------------------------------
         // EVENTS
 
+        /// <summary>
+        /// Notify last hovered gameobject that the pointer exit (e.g. causes to hide UI elements).
+        /// </summary>
+        public override void HideLaser() {
+            base.HideLaser();
+            if (lastHovered != null) {
+                lastHovered.SendMessage("PointerExit", controller, SendMessageOptions.DontRequireReceiver);
+            }
+        }
+
         public void OnPointerClick(PointerEventData eventData) {
 
             if (!VRVIS) { return; }

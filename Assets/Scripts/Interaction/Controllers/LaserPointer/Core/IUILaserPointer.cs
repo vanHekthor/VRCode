@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 
 
@@ -31,6 +32,12 @@ namespace VRVis.Interaction.LaserPointer {
 
         [Tooltip("Let input module use this layermask for raycasting everything (not just physics)?")]
         public bool overrideInputModuleLayerMask = true;
+
+
+        [Header("Laserpointer Event Callbacks")]
+        public BoolEvent laserActiveStateChanged = new BoolEvent();
+        [System.Serializable] public class BoolEvent : UnityEvent<bool> {}
+
 
         private GameObject hitPoint;
         private GameObject pointer;
@@ -215,15 +222,17 @@ namespace VRVis.Interaction.LaserPointer {
         public void ResetHitColor() { SetHitColor(hitColor); }
 
 
-        public void ShowLaser() {
+        public virtual void ShowLaser() {
             pointer.SetActive(true);
             laserActive = true;
+            laserActiveStateChanged.Invoke(laserActive);
         }
 
-        public void HideLaser() {
+        public virtual void HideLaser() {
             hitPoint.SetActive(false);
             pointer.SetActive(false);
             laserActive = false;
+            laserActiveStateChanged.Invoke(laserActive);
         }
 
 

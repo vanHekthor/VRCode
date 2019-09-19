@@ -9,7 +9,7 @@ using System.Collections.Generic;
 /// 
 /// Initial code by Wacki<para/>
 /// Modified by S1r0hub (11.2018)<para/>
-/// Updated: 28.08.2019
+/// Updated: 19.09.2019
 /// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
@@ -22,10 +22,16 @@ namespace VRVis.Interaction.LaserPointer {
 
         // storage class for controller specific data
         public class ControllerData {
+
             public LaserPointerEventData pointerEvent;
             public GameObject currentPoint;
             public GameObject currentPressed;
             public GameObject currentDragging;
+
+            public void Reset() {
+                pointerEvent = null;
+                currentPoint = currentPressed = currentDragging = null;
+            }
         };
 
         private Camera UICamera;
@@ -134,6 +140,7 @@ namespace VRVis.Interaction.LaserPointer {
                 // if the layer is currently not enabled
                 if (!controller.IsLaserActive()) {
                     ClearSelection();
+                    data.Reset();
                     continue;
                 }
 

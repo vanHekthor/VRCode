@@ -67,6 +67,7 @@
 - [X] **#1** Update code city texture when user changes NFP relativity and active NFP *(04.09.2019)*
 - [X] **#2** Add possibility to enable/disable code/region overview window *(05.09.2019)*
 - [X] **#2** Selecting and configuring numerical options (requires UI concerns) *(12.09.2019)*
+- [X] Allow teleport when laser pointer is disabled *(19.09.2019)*
 - [ ] Upgrade Unity version and project + ensure everything still works fine
 - [ ] Use more Unity Events to react on changes to settings
 - [ ] For every change in visualizations (like show/hide) all NFP regions are always re-created (this can be improved!)
@@ -89,7 +90,6 @@
 - [ ] Improve edge rendering to avoid thin edges when they curve
 - [ ] Edges with lighting for better depth clues
 - [ ] Improve pointing at files far away (e.g. searching inside a radius)
-- [ ] Allow teleport when laser pointer is disabled
 - [ ] Notation hints on feature graph (e.g. on hover)
 - [ ] Information about edges (e.g. on hover)
   - [ ] Type and value/weight of edge
@@ -110,5 +110,6 @@
 - [X] **#1** Overview region sometimes shown black (no longer seen since 23.08.2019 - closed)
 - [X] Horizontal scrollbar of code window is sometimes not adjusting the content
 - [X] Terminal: Variability Model: Validation color not changed if terminal disabled and option state changes *(19.09.2019)*
+- [X] Hover windows still showing if laser pointer was disabled *(19.09.2019)*
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (very rare event that occurred during user study)
