@@ -49,7 +49,7 @@ The currently supported XML structure looks like the following:
 | parent | string | The name of the parent option or empty to use "root".
 | impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option "\<option>B \| C \| D\</option>" to A.
 | excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>Entries like "A \| B \| C" will be split up and added as single entries.
-| optional | boolean | **(BIN. OPTIONS ONLY)** Tells of this option is **optional** to be selected **mandatory**.
+| optional | boolean | **(BIN. OPTIONS ONLY)** Tells if this option is **optional** to be selected.<br/>If false, the option is considered to be **mandatory**.
 | minValue | float | **(NUM. OPTIONS ONLY)** Minimum value a numeric option can take.
 | maxValue | float | **(NUM. OPTIONS ONLY)** Maximum value a numeric option can take.
 | stepFunction | string | **(NUM. OPTIONS ONLY)** Tells how to continue starting from "minValue" until "maxValue" is reached ("n" can be placed and represents this numeric option value)
