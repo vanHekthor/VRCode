@@ -89,7 +89,7 @@ vertices (char * 4): 36248
 -> should only fit **once** in a Unity text component  
 -> Test Result: "It does so (as expected)."  
 
-**The limit seems to be correct.***
+**The limit seems to be correct.**
 
 
 <br/>
