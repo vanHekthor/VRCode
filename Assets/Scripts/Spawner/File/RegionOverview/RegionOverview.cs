@@ -539,6 +539,7 @@ namespace VRVis.Spawner.File.Overview {
                             for (int y = y_s; y < y_s + 3; y++) {
                                 for (int x = pixelPos_x; x < pixelPos_x + 3; x++) {
                                     int pos = y * width + x;
+                                    if (pos >= colors.Length) { break; }
                                     if ((pattern & 1) == 1) { colors[pos] = ci.color; }
                                     else { colors[pos] = invisibleColor; }
                                     pattern = pattern >> 1;

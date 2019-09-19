@@ -108,8 +108,8 @@
 - [X] Changing controller while pointing at folders/files does not change back color of marked folder/file *(22.08.2019)*
 - [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (caused by input module having different layer mask)
 - [X] **#1** Overview region sometimes shown black (no longer seen since 23.08.2019 - closed)
-- [X] Horizontal scrollbar of code window is sometimes not adjusting the content
 - [X] Terminal: Variability Model: Validation color not changed if terminal disabled and option state changes *(19.09.2019)*
 - [X] Hover windows still showing if laser pointer was disabled *(19.09.2019)*
+- [X] Horizontal scrollbar of code window is sometimes not adjusting the content *(19.09.2019)*
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (very rare event that occurred during user study)
