@@ -1,54 +1,49 @@
-# VR-VIS THESIS 2018/19
+# VR-VIS Framework
+
+Created during the thesis of Leon H. in 2018/19.  
 
 A virtual reality framework to explore and analyze software systems  
 using available performance, feature model, and control flow data.  
 Please refer to the publication for more detailed information.  
 
-Specifications in form of README files can be found in [this repository](vrvis-thesis-docs).
+The following sections will provide an overview of the repository contents,
+including links to installation instructions and more.  
 
 
-# Installation
+# Instructions
 
-## Required Software
+## General
 
-The following software must be installed.  
+- [Installation (overview)](documentation/framework-setup.md)
+- [Installation (detailed - with figures) (PDF)](documentation/instructions/01_installation.pdf)
+- [Getting Started (PDF)](documentation/instructions/02_getting-started.pdf)
+- [Current Features (PDF)](documentation/instructions/03_current-features.pdf)
 
-Software | Tested Version
----- | ----
-[SteamVR](https://store.steampowered.com/app/250820/SteamVR) | 1.3.22, 1.4.1
-[Unity](https://unity3d.com/de/get-unity/download/archive) | 2018.2.10f1 with .NET 4.x enabled
-[SteamVR Plugin](https://assetstore.unity.com/packages/tools/integration/steamvr-plugin-32647) | 2.2.0
-[TextMeshPro Plugin](https://assetstore.unity.com/packages/essentials/beta-projects/textmesh-pro-84126) | 1.2.2
+## Project Setup
 
-Newer versions were not tested.  
-Therefore, we cannot guarantee that they work.  
+This section lists instructions and descriptions that are required if you want
+to load in your own software project and visualize it with this software.  
 
-## Preparation
+- [Workspace (overview)](documentation/workspace.md)
+- [Application Configuration ("app_config.json")](documentation/file-specs/app_config.md)
+- [Edge Definition ("edges_*.json")](documentation/file-specs/edges.md)
+- [Region Definition ("regions_*.json")](documentation/file-specs/regions.md)
+- [Feature Model Definition (variability_model.xml)](documentation/file-specs/feature-model.md)
+- [Value Mappings (mappings_*.json)](documentation/file-specs/value-mapping.md)
 
-After installing SteamVR and Unity, start Unity and install the two aforementioned plugins using the [Asset Store](https://docs.unity3d.com/Manual/AssetStore.html).  
-Most important is, that you are able to use the components of the SteamVR Plugin (e.g. Window -> SteamVR Input).  
-If this works, you can open the project of this repository with Unity.  
-Make sure the scene "Assets/Scenes/ExampleScene_Catena.unity" or any of the scenes located in the "Assets/Scenes/tasks" folder is loaded that supports VR.  
-Also ensure that SteamVR is up and running.  
-Sometimes, you have to be logged into your Steam account for full functionality!  
-You can try to run the application and see if basic things like the controllers work.  
-In case they don't, exit the application, open "Window -> SteamVR Input" and open the "bindings menu".  
-The default bindings must be loaded.  
-Using it as a base, edit it and in case you see a warning for an unassigned button (Trackpad), add it accordingly under the default tab.  
-Apply the binding, close the bindings menu and inside the "SteamVR Input" menu that you have opened previously, click at "Save and generate".  
-Try running the application again.  
+## Additional
 
-Further information with possible troubleshooting will be added here in a while.  
+This section lists additional content like explanations about how some visualizations are implemented.
 
+- [Example Images](documentation/example-imgs/)
+- [Cone Tree Base (PDF)](documentation/cone-tree/cone-tree.pdf)
+- [Cone Tree Examples (images)](documentation/cone-tree/examples)
+- [Changelogs](documentation/changelog/changelog.md)
+- [ToDo List](documentation/changelog/todo.md)
 
-## No VR
-(Limited functionality, for testing purposes only!)
+<br/>
 
-Previous steps are still required (installing and preparing Unity).  
-In case you do not have a VR setup available, open the scene under "Assets/Scenes/ExampleScene_Catena_NoVR.unity".  
-Press the "Play" button and you should be able to move around using your keyboard and mouse.  
-Keyboard "W, S, A and D" control the direction.  
-Holding "SHIFT" pressed will let you fly faster.  
-Move the mouse while holding the button pressed to look around.  
-You can interact with basic things, spawn files and close them using the "Mouse Wheel Button".  
-GUI elements can be used as well but the VR tools (controllers) are not available in this mode.  
+![Cone Tree for Casacore](documentation/example-imgs/software-graph-casacore.png)
+![Code City Visualization for Catena](documentation/example-imgs/code-city.png)
+![Feature Diagram for Catena](documentation/example-imgs/feature-diagram-catena.png)
+![Code Windows](documentation/example-imgs/code-windows.png)

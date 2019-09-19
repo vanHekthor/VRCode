@@ -1,11 +1,11 @@
 # Value Mapping System V2.0
 
-Mapping files follow the naming convention `mapping_*.json`.  
-This means any file starting with `mapping_` and ending width `.json` will be parsed.  
+Mapping files follow the naming convention `mappings_*.json`.  
+This means any file starting with `mappings_` and ending width `.json` will be parsed.  
 It is suggested that the following files are used:  
-- mapping_nfps.json
-- mapping_features.json
-- mapping_edges.json
+- mappings_nfps.json
+- mappings_features.json
+- mappings_edges.json
 
 Each file should then include the respective mapping of the according type.  
 

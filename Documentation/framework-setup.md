@@ -2,6 +2,7 @@
 
 **NOTE:** For more detailed descriptions, please use the [instructions](instructions/).
 
+
 ## Required Software
 
 The following software must be installed.  
@@ -15,6 +16,7 @@ Software | Tested Version
 
 Newer versions were not tested.  
 Therefore, we cannot guarantee that they work.  
+
 
 ## Preparation
 
