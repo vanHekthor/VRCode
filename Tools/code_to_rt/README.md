@@ -74,10 +74,7 @@ With `rt` as a shortcut for `Rich Text`.
 
 #### Some Calculation
 
-File Commit Version:  
-https://github.com/S1r0hub/ConfigCrusher_data/commit/4db7662ca2b98f03622fc45fa6a2bb34885433a2  
-
-Limit (found on the Internet): 65535 vertices  
+Limit (found online): 65535 vertices  
 -> Character Limit: 65535 / 4 = 16383 (around 16000) characters  
 
 file: **main.py**:  
@@ -92,7 +89,7 @@ vertices (char * 4): 36248
 -> should only fit **once** in a Unity text component  
 -> Test Result: "It does so (as expected)."  
 
-**The limit I found seems to be correct.***
+**The limit seems to be correct.***
 
 
 <br/>
