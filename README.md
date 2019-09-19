@@ -41,6 +41,15 @@ This section lists additional content like explanations about how some visualiza
 - [Changelogs](Documentation/changelog/changelog.md)
 - [ToDo List](Documentation/changelog/todo.md)
 
+
+# Tools
+
+The following tools will help you to perform e.g. syntax highlighting on your project source code.  
+
+- [Syntax Highlighter](Tools/code_to_rt/) - to show syntax highlighting in Unity
+- [NFP Convertion Tool](Tools/nfp_conversion/) - to convert measurement data to the regions format
+
+
 <br/>
 
 ![Cone Tree for Casacore](Documentation/example-imgs/software-graph-casacore.png)
