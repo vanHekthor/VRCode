@@ -47,8 +47,8 @@ The currently supported XML structure looks like the following:
 | name | string | The name of this option.<br/>Can consist of letters, numbers and only **_** as a special character.
 | outputString | string | How this option should be shown/named in the application.
 | parent | string | The name of the parent option or empty to use "root".
-| impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option "<option>B | C | D</option>" to A.
-| excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>Entries like "A | B | C" will be split up and added as single entries.
+| impliedOptions | XML-Element with string | Tells which options have to be selected, when this option is selected.<br/>For instance, A => B means "B needs to be true, when A is true".<br/>Can be used to create an **OR-GROUP**.<br/>For instance, option "A" has sub-options "B", "C" and "D".<br/>If at least one should be selected, add the implied option "\<option>B \| C \| D\</option>" to A.
+| excludedOptions | XML-Element with string | Tells which options can not be selected, when this option is selected.<br/>Can be used to create an **ALTERNATIVE-GROUP**.<br/>Entries like "A \| B \| C" will be split up and added as single entries.
 | optional | boolean | **(BIN. OPTIONS ONLY)** Tells of this option is **optional** to be selected **mandatory**.
 | minValue | float | **(NUM. OPTIONS ONLY)** Minimum value a numeric option can take.
 | maxValue | float | **(NUM. OPTIONS ONLY)** Maximum value a numeric option can take.
