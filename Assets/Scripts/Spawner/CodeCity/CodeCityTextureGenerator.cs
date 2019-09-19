@@ -153,9 +153,6 @@ namespace VRVis.Spawner.CodeCity {
             ValueMappingsLoader vml = ApplicationLoader.GetInstance().GetMappingsLoader();
             NFPSetting setting = vml.GetNFPSetting(activeNFP);
 
-            // check if current settings are valid
-
-
             foreach (CodeCityTexture.Info info in regionsToSpawn) {
 
                 // get the according nfp property

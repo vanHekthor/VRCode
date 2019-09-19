@@ -7,12 +7,14 @@ using VRVis.IO.Features;
 using VRVis.Mappings;
 using VRVis.Mappings.Methods;
 using VRVis.Mappings.Methods.Base;
+using VRVis.UI.Helper;
 
 namespace VRVis.Spawner {
 
     /// <summary>
     /// Takes care of spawning UI elements once the application finished loading.<para/>
-    /// Used and called by the ApplicationLoader class so attach it to the same GameObject.
+    /// Used and called by the ApplicationLoader class so attach it to the same GameObject.<para/>
+    /// Updated: 19.09.2019
     /// </summary>
     public class UISpawner : ASpawner {
 
@@ -493,7 +495,11 @@ namespace VRVis.Spawner {
                 }
                 else if (progress == 1) {
                     statusTextApply.text = "Finished";
-                    statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_VALID, SendMessageOptions.DontRequireReceiver);
+
+                    // removed bc. sendmessage is not available if object is disabled
+                    //statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_VALID, SendMessageOptions.DontRequireReceiver);
+                    ChangeImageHelper ih = statusBarApply.GetComponent<ChangeImageHelper>();
+                    if (ih) { ih.ChangeImageColor(VariabilityModel.COLOR_VALID); }
                 }
                 else {
                     float percentage = Mathf.Round(progress * 10000f) / 10000f * 100f;
@@ -506,7 +512,11 @@ namespace VRVis.Spawner {
 
                 if (updateFailure) {
                     progress = 1;
-                    statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_INVALID);
+
+                    // removed bc. sendmessage is not available if object is disabled
+                    //statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_INVALID);
+                    ChangeImageHelper ih = statusBarApply.GetComponent<ChangeImageHelper>();
+                    if (ih) { ih.ChangeImageColor(VariabilityModel.COLOR_INVALID); }
                 }
 
                 RectTransform rt = statusBarApply.GetComponent<RectTransform>();
@@ -536,7 +546,10 @@ namespace VRVis.Spawner {
                     rt.localScale = newScale;
                 }
 
-                statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_INVALID);
+                // removed bc. sendmessage is not available if object is disabled
+                //statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_INVALID);
+                ChangeImageHelper ih = statusBarApply.GetComponent<ChangeImageHelper>();
+                if (ih) { ih.ChangeImageColor(VariabilityModel.COLOR_INVALID); }
             }
         }
 
@@ -545,11 +558,19 @@ namespace VRVis.Spawner {
 
             Color statusColor = validity_now ? VariabilityModel.COLOR_VALID : VariabilityModel.COLOR_INVALID;
             if (statusTextValidate) { statusTextValidate.text = validity_now ? "Valid" : "Invalid!"; }
+
+            // removed bc. sendmessage is not available if object is disabled
             statusBarValidate.SendMessage("ChangeImageColor", statusColor, SendMessageOptions.DontRequireReceiver);
+            ChangeImageHelper vih = statusBarValidate.GetComponent<ChangeImageHelper>();
+            if (vih) { vih.ChangeImageColor(statusColor); }
 
             if (validity_now) {
                 if (statusTextApply) { statusTextApply.text = "Update required"; }
-                statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
+
+                // removed bc. sendmessage is not available if object is disabled
+                //statusBarApply.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
+                ChangeImageHelper ih = statusBarApply.GetComponent<ChangeImageHelper>();
+                if (ih) { ih.ChangeImageColor(VariabilityModel.COLOR_CHANGED); }
             }
         }
 
@@ -557,7 +578,11 @@ namespace VRVis.Spawner {
         public void VariabilityModelConfigChanged() {
 
             if (statusTextValidate) { statusTextValidate.text = "Update required"; }
-            statusBarValidate.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
+
+            // removed bc. sendmessage is not available if object is disabled
+            //statusBarValidate.SendMessage("ChangeImageColor", VariabilityModel.COLOR_CHANGED, SendMessageOptions.DontRequireReceiver);
+            ChangeImageHelper vih = statusBarValidate.GetComponent<ChangeImageHelper>();
+            if (vih) { vih.ChangeImageColor(VariabilityModel.COLOR_CHANGED); }
         }
 
     }

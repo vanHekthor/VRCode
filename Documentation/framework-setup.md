@@ -1,5 +1,7 @@
 # Framework Setup
 
+**NOTE:** For more detailed descriptions, please use the [instructions](instructions/).
+
 ## Required Software
 
 The following software must be installed.  

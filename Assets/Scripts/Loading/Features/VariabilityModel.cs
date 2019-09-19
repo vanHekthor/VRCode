@@ -10,7 +10,8 @@ namespace VRVis.IO.Features {
     /// <summary>
     /// Class thats representing a feature model.
     /// Will be initialized by the VariabilityModelLoader class.<para/>
-    /// Notice that a feature "name" is treated as a unique identifier and could be referred to as "id".
+    /// Notice that a feature "name" is treated as a unique identifier and could be referred to as "id".<para/>
+    /// Created: 2019 (Leon H.)
     /// </summary>
     public class VariabilityModel {
 
@@ -41,7 +42,7 @@ namespace VRVis.IO.Features {
         private Dictionary<string, AFeature> options = new Dictionary<string, AFeature>();
 
 
-        // ToDo: maybe make use of this if there are no "pimIndex" elements in the XML document given?
+        // maybe make use of this if there are no "pimIndex" elements in the XML document given? (UPDATE: pimIndex no longer used)
         /// <summary>Holds the keys in the same order as read from the array (required to get correct value from region array)</summary>
         private List<string> arrayOrder = new List<string>();
 

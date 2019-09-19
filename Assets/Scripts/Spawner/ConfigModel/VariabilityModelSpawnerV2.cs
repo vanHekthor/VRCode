@@ -17,10 +17,11 @@ namespace VRVis.Spawner {
     /// - [ ] Improve the option index retrieval (see accordingly commented sections)<para/>
     /// 
     /// Created: 01.02.2019 (by Leon H.)<para/>
-    /// Updated: 06.08.2019
+    /// Updated: 19.09.2019
     /// </summary>
     public class VariabilityModelSpawnerV2 : ASpawner {
 
+        [Header("Prefabs")]
         public GameObject binaryOptionPrefab;
         public GameObject numericOptionPrefab;
 
@@ -34,6 +35,7 @@ namespace VRVis.Spawner {
 
         public NotationPrefabs notationPrefabs;
 
+        [Header("Settings")]
         [Tooltip("Spacing between hierarchy levels")]
         public float levelSpacing = 1;
 

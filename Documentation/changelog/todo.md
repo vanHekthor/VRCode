@@ -25,6 +25,9 @@
 - [ ] External visualization settings (can be used for later loading of workspace)
   - [ ] Setting: What is displayed by the width, length and height of code city elements
   - [ ] Setting: What is displayed by the city element texture
+  - [ ] Setting: What is the position & maximum width, length, height of the code city visualization
+  - [ ] Setting: Where is the structure graph positioned & how is it rotated + spacing between nodes, ...
+  - [ ] Setting: Where is the feature diagram positioned & how is it rotated + spacing between nodes, ...
 - [ ] Overview of feature regions (already in code city texture considered?)
 - [ ] Add task window from user study to let users load/make notes
 - [ ] 2-Controller interaction (make use of second controller in meaningful way)
@@ -106,5 +109,6 @@
 - [X] **#1** Fix code city not having pointer collision *(28.08.2019)* (caused by input module having different layer mask)
 - [X] **#1** Overview region sometimes shown black (no longer seen since 23.08.2019 - closed)
 - [X] Horizontal scrollbar of code window is sometimes not adjusting the content
+- [ ] Terminal: Variability Model: Validation color not changed if terminal disabled and option state changes
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (very rare event that occurred during user study)
