@@ -560,7 +560,7 @@ namespace VRVis.Spawner {
             if (statusTextValidate) { statusTextValidate.text = validity_now ? "Valid" : "Invalid!"; }
 
             // removed bc. sendmessage is not available if object is disabled
-            statusBarValidate.SendMessage("ChangeImageColor", statusColor, SendMessageOptions.DontRequireReceiver);
+            //statusBarValidate.SendMessage("ChangeImageColor", statusColor, SendMessageOptions.DontRequireReceiver);
             ChangeImageHelper vih = statusBarValidate.GetComponent<ChangeImageHelper>();
             if (vih) { vih.ChangeImageColor(statusColor); }
 
