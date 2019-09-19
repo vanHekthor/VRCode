@@ -35,11 +35,11 @@ to load in your own software project and visualize it with this software.
 
 This section lists additional content like explanations about how some visualizations are implemented.
 
+- [Changelogs](Documentation/changelog/changelog.md)
+- [ToDo List](Documentation/changelog/todo.md)
 - [Example Images](Documentation/example-imgs/)
 - [Cone Tree Base (PDF)](Documentation/cone-tree/cone-tree.pdf)
 - [Cone Tree Examples (images)](Documentation/cone-tree/examples)
-- [Changelogs](Documentation/changelog/changelog.md)
-- [ToDo List](Documentation/changelog/todo.md)
 
 
 # Tools
