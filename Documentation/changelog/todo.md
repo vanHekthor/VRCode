@@ -111,5 +111,6 @@
 - [X] Terminal: Variability Model: Validation color not changed if terminal disabled and option state changes *(19.09.2019)*
 - [X] Hover windows still showing if laser pointer was disabled *(19.09.2019)*
 - [X] Horizontal scrollbar of code window is sometimes not adjusting the content *(19.09.2019)*
+- [X] Rare out of bounds exception when generating overview texture (when only a single line in file) *(19.09.2019)*
 - [ ] Overview window scroll for code and regions is hacky and sometimes wobbles a bit
 - [ ] Laser pointer sometimes not working right after startup (very rare event that occurred during user study)
