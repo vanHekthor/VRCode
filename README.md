@@ -14,10 +14,11 @@ including links to installation instructions and more.
 
 ## General
 
+- [Introduction Slides - Sept. 2019 (PDF)](Documentation/slides/introduction_sept-2019.pdf)
+- [Current Features - Sept. 2019 (PDF)](Documentation/instructions/03_current-features.pdf)
 - [Installation (overview)](Documentation/framework-setup.md)
 - [Installation (detailed - with figures) (PDF)](Documentation/instructions/01_installation.pdf)
 - [Getting Started (PDF)](Documentation/instructions/02_getting-started.pdf)
-- [Current Features (PDF)](Documentation/instructions/03_current-features.pdf)
 
 ## Project Setup
 
