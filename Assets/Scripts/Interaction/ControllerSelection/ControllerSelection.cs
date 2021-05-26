@@ -225,7 +225,7 @@ namespace VRVis.Interaction.ControllerSelectionSystem {
             selectedController_previous = selectedController;
             selectedController = ctrl;
 
-            // treat as controller to attach to hand
+            // treat as controller to attach to hand i.e. an actual controller was selected and not a button. For button look at the corresponding "else".
             if (ctrl.attachToHand) {
                 
                 // detach current controller first
