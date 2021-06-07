@@ -283,33 +283,14 @@ namespace VRVis.Interaction.Controller {
             if (TeleportButtonPressed() && teleportButtonLocked) { return; }
             else if (!TeleportButtonPressed() && teleportButtonLocked) { teleportButtonLocked = false; }
 
-            if (TeleportButtonClicked()) {
+            // get where the users finger is
+            Vector2 fingerPos = GetTrackpadPosition();
 
-                // store last down time to detect click
-                touchpadLastDownTime = Time.fixedTime;
-            }
+            // map rotation to left/right
+            RotateSelection(fingerPos.x);
 
-            if (TeleportButtonPressed()) {
-
-                // get where the users finger is
-                Vector2 fingerPos = GetTackpadPosition();
-
-                // map rotation to left/right
-                RotateSelection(fingerPos.x);
-
-                // map laser distance change to up/down
-                ChangeLaserDistance(fingerPos.y);
-            }
-            else if (TeleportButtonPressedLast()) { // if user stopped pressing
-
-                float timeHeld = Time.fixedTime - touchpadLastDownTime;
-                //Debug.Log("Hold down time: " + timeHeld); // for clicks between 0.9 and 0.15 seconds
-                if (timeHeld <= 0.15f) { // click threshold
-
-                    // continue rotating in users direction
-                    if (rotationModified) { rotationModified = false; }
-                }
-            }
+            // map laser distance change to up/down
+            ChangeLaserDistance(fingerPos.y);          
         }
 
         /// <summary>Rotate the selection.</summary>
@@ -469,9 +450,9 @@ namespace VRVis.Interaction.Controller {
             }  
 
             // check for button press
-            if (TriggerButtonDown() && !pressed) {
+            if (TriggerButtonUp() && pressed) {
 
-                pressed = true;
+                pressed = false;
 
                 // switch controller back to laser
                 if (switchToPreviousControllerWhenDone) { SwitchControllerToPrevious(); }
@@ -479,9 +460,6 @@ namespace VRVis.Interaction.Controller {
                 // deselect the object so that we no longer move it
                 selectedObject = null;
                 ResetSettings();
-            }
-            else if (TriggerButtonUp() && pressed) {
-                pressed = false;
             }
         }
 
@@ -658,7 +636,7 @@ namespace VRVis.Interaction.Controller {
             return state;
         }
 
-        public Vector2 GetTackpadPosition() {
+        public Vector2 GetTrackpadPosition() {
             if (trackpadPosition == null) { return Vector2.zero; }
             return trackpadPosition.GetAxis(controller.handType);
         }
