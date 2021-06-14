@@ -152,11 +152,12 @@ namespace VRVis.Interaction.LaserPointer {
         protected virtual void UpdateCall() {
 
             // check if user turns laser on/off and react accordingly
-            if (!laserAlwaysOn && ButtonToggleClicked()) {
-                if (laserActive) { HideLaser(); }
-                else { ShowLaser(); }
-                Debug.Log("Laser pointer " + (laserActive ? "enabled" : "disabled"));
-            }
+            // Disabled for the time being because with the Valve Index Controllers it was often triggered unintentionally! (qb19zexe, 03.06.2021) 
+            //if (!laserAlwaysOn && ButtonToggleClicked()) {
+            //    if (laserActive) { HideLaser(); }
+            //    else { ShowLaser(); }
+            //    Debug.Log("Laser pointer " + (laserActive ? "enabled" : "disabled"));
+            //}
 
             // don't do anything if the laser is disabled
             if (!laserActive) { return; }

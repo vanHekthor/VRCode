@@ -103,7 +103,11 @@ namespace VRVis.Testing.Interaction {
             s.ShowVisualization(active);
         }
 
-        public void ToggleSoftwareGraphVisualization(bool show) { SetSpawnerVis("StructureSpawner", show); }
+        public void ToggleSoftwareGraphVisualization(bool show) {
+            Debug.Log("Trying to spawn software graph!");
+            Debug.Log("Toogle is " + show);
+            SetSpawnerVis("StructureSpawner", show);
+        }
         public void ToggleFeatureGraphVisualization(bool show) { SetSpawnerVis("VariabilityModelSpawner", show); }
         public void ToggleCodeCityVisualization(bool show) { SetSpawnerVis("CodeCityV1", show); }
 
