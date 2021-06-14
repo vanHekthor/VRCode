@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 using VRVis.IO;
@@ -38,15 +39,15 @@ namespace VRVis.Spawner {
         [Header("NFP Selection")]
         [Tooltip("Parent element to attach elements to")]
         public Transform nfpGroupParent;
-        //public Transform featureGroupParent; // previous version using checkboxes
-        //public Transform edgeGroupParent; // previous version using checkboxes
-
+        
         [Header("Feature Region Selection")]
         [Tooltip("Container for inactive features")]
+        public Transform featureGroupParent; // previous version using checkboxes
         public Transform featureContainerInactive;
         public Transform featureContainerActive;
 
         [Header("Edge Type Selection")]
+        public Transform edgeGroupParent; // previous version using checkboxes
         public Transform edgeContainerInactive;
         public Transform edgeContainerActive;
 
@@ -110,8 +111,8 @@ namespace VRVis.Spawner {
 
             uint state = 0;
             if (SpawnNFPToggleGroup(nfpGroupParent)) { state++; }
-            //if (SpawnFeatureGroup(featureGroupParent)) { state++; } // checkbox version
-            //if (SpawnEdgeTypeGroup(edgeGroupParent)) { state++; } // checkbox version
+            if (SpawnFeatureGroup(featureGroupParent)) { state++; } // checkbox version
+            if (SpawnEdgeTypeGroup(edgeGroupParent)) { state++; } // checkbox version
             if (SpawnFeatureUI(featureContainerInactive, featureContainerActive)) { state++; }
             if (SpawnEdgeTypeUI(edgeContainerInactive, edgeContainerActive)) { state++; }
             return state == 3;
@@ -185,6 +186,7 @@ namespace VRVis.Spawner {
 
             // the message will be used by the "ChangeTextHelper" component if it exists
             entry.SendMessage("ChangeText", text, SendMessageOptions.DontRequireReceiver);
+            entry.GetComponentInChildren<TextMeshProUGUI>().SetText(text);
 
             // find toggle script
             Toggle toggle = entry.GetComponent<Toggle>();
@@ -375,7 +377,7 @@ namespace VRVis.Spawner {
 
         // ===== OLD CODE FOR CHECKBOXES (currently not in use but is working!) ===== //
 
-        /*
+        
         /// <summary>
         /// Spawns the group of feature checkboxes.
         /// </summary>
@@ -468,7 +470,7 @@ namespace VRVis.Spawner {
 
             return true;
         }
-        */
+        
 
         // ======================================================= //
 

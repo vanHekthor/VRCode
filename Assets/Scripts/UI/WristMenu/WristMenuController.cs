@@ -6,6 +6,7 @@ using Valve.VR.InteractionSystem;
 public class WristMenuController : MonoBehaviour {
 
     public static GameObject terminalInstance;
+    public GameObject holoPad;
 
     [Tooltip("Tag to find it if it is not assigned")]
     public string terminalTag;
@@ -18,6 +19,7 @@ public class WristMenuController : MonoBehaviour {
 
     void Awake()
     {
+        holoPad.SetActive(false);
         // try to find by tag
         if (!terminalInstance)
         {
@@ -46,7 +48,7 @@ public class WristMenuController : MonoBehaviour {
 
     public void OnWristButtonPress(Hand hand)
     {
-        Debug.Log("SteamVR Button pressed!");
+        Debug.Log("Wrist Button pressed!");
 
         if (!terminalInstance) { return; }
 
@@ -63,6 +65,9 @@ public class WristMenuController : MonoBehaviour {
             bool state = firstChild.activeSelf;
             firstChild.SetActive(!state);
         }
+
+        bool holoPadState = holoPad.activeSelf;
+        holoPad.SetActive(!holoPadState);
     }
    
 }
