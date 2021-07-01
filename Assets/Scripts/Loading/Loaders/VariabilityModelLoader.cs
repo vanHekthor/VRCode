@@ -18,7 +18,6 @@ namespace VRVis.IO {
         private static readonly string MODEL_DEFAULT_NAME = "Variability Model";
         private readonly VariabilityModel model;
 
-
         // CONSTRUCTOR
 
         public VariabilityModelLoader(string filePath)
@@ -39,8 +38,8 @@ namespace VRVis.IO {
             loadingSuccessful = false;
 
             // load model from xml file
-            if (!model.LoadXML(GetFilePath())) { return false; }
-
+            if (!model.LoadXML(GetFilePath())) { return false; }            
+        
             Debug.Log("Loading variability model finished: " + model.GetName() + "\n(" +
                 "Options: " + (model.GetOptionCount()-1) +
                 ", Binary: " + (model.GetBinaryOptionCount()-1) + 

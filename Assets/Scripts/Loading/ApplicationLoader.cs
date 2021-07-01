@@ -29,6 +29,7 @@ namespace VRVis.IO {
 
         public string configurationName = "app_config.json";
         public string variabilityModelName = "variability_model.xml";
+        public string influenceModelName = "model.csv";
 
         [Tooltip("Add the first x found feature regions to the selected list on startup")]
         public bool addFeatureRegions = false;
@@ -68,6 +69,7 @@ namespace VRVis.IO {
         private StructureLoader structureLoader;
         private StructureLoaderUpdater structureLoaderUpdater;
         private VariabilityModelLoader variabilityModelLoader;
+        private InfluenceModelLoader influenceModelLoader;
         private RegionLoader regionLoader;
         private EdgeLoader edgeLoader;
         private ValueMappingsLoader mappingsLoader;
@@ -118,7 +120,7 @@ namespace VRVis.IO {
                 Debug.LogError("Failed to load variability model!");
             }
 
-
+                       
             // load regions from file
             List<string> regionFiles = RegionLoader.GetRegionFiles(mainPath);
             string[] regionFilePaths = regionFiles != null ? regionFiles.ToArray() : new string[]{};
@@ -127,6 +129,11 @@ namespace VRVis.IO {
                 Debug.LogError("Failed to load regions!");
             }
 
+            // load influence model
+            influenceModelLoader = new InfluenceModelLoader(mainPath + influenceModelName, variabilityModelLoader.GetModel().GetOptions());
+            if (!influenceModelLoader.Load()) {
+                Debug.LogError("Failed to load influence model!");
+            }
 
             // load edges from file
             List<string> edgeFiles = EdgeLoader.GetEdgeFiles(mainPath);
@@ -205,6 +212,10 @@ namespace VRVis.IO {
         public VariabilityModelLoader GetVariabilityModelLoader() { return variabilityModelLoader; }
 
         public VariabilityModel GetVariabilityModel() { return variabilityModelLoader.GetModel(); }
+
+        public InfluenceModelLoader GetInfluenceModelLoader() { return influenceModelLoader;  }
+
+        public InfluenceModel GetInfluenceModel() { return influenceModelLoader.Model; }
 
         public RegionLoader GetRegionLoader() { return regionLoader; }
 

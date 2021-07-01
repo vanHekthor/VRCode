@@ -147,6 +147,10 @@ namespace VRVis.IO.Features {
             return (option = GetNumericOption(name, validateName));
         }
 
+        public IEnumerable<string> GetOptions() {
+            return options.Keys;
+        }
+
         /// <summary>Get index position for this option. Returns "-1" if not found!</summary>
         /// <returns>The position of the feature or "-1" if not found!</returns>
         public int GetOptionIndex(string name, bool validateName) {
@@ -498,6 +502,30 @@ namespace VRVis.IO.Features {
             // set value and mark it as valid
             property.SetValue(pimValue);
             return true;
+        }
+
+        /// <summary>
+        /// Calculates the region property values for the region that has the passed ID. It creates a configuration out of the options that were selected
+        /// and passes it together with the region id to the Influence Model which then evaluates the configuration.
+        /// </summary>
+        /// <param name="id">ID of the region</param>
+        /// <returns>Region property values</returns>
+        public Dictionary<string, double> CalculateRegionPropertyValues(string id) {
+            Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
+            Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
+
+            foreach (KeyValuePair<string, AFeature> option in options) {
+                if (option.Value is Feature_Boolean) {
+                    binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
+                }
+                else if (option.Value is Feature_Range) {
+                    numericOptionConfig.Add(option.Key, option.Value.GetValue());
+                }
+            }
+
+            Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+
+            return ApplicationLoader.GetInstance().GetInfluenceModel().EvaluateConfiguration(config, id);
         }
 
 
