@@ -372,16 +372,39 @@ namespace VRVis.Elements {
             // reset previous min max values
             foreach (MinMaxValue mm in nfpMinMaxValues.Values) { mm.ResetMinMax(); }
 
-            foreach (RProperty_NFP property in NFPs) {
+            //foreach (RProperty_NFP property in NFPs) {
 
-                // calculate performance influence value of this property using the variability model configuration
-                VariabilityModel vm = null;
-                VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
-                if (vml.LoadedSuccessful()) { vm = vml.GetModel(); }
-                
-                // if variability model is missing, calculate the average of all values
-                if (vm == null) { property.SetValue(property.GetAverageValue()); }
-                else { vm.CalculatePIMValue(property); }
+            //    // calculate performance influence value of this property using the variability model configuration
+            //    VariabilityModel vm = null;
+            //    VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
+            //    if (vml.LoadedSuccessful()) { vm = vml.GetModel(); }
+
+            //    // if variability model is missing, calculate the average of all values
+            //    if (vm == null) { property.SetValue(property.GetAverageValue()); }
+            //    else { vm.CalculatePIMValue(property); }
+
+            //    // Debug.Log("Old: " + GetID() + "; " + property.GetName() + " = " + property.GetValue());
+
+            //    // check if instance exists and update value
+            //    MinMaxValue minMax = new MinMaxValue();
+            //    string propName = property.GetName();
+            //    if (nfpMinMaxValues.ContainsKey(propName)) { minMax = nfpMinMaxValues[propName]; }
+            //    else { nfpMinMaxValues.Add(propName, minMax); }
+            //    minMax.Update(property.GetValue());
+            //}
+
+            // evalution using the new influence model, call the method in the variability model that uses the influence model
+            VariabilityModel variabilityModel = null;
+            VariabilityModelLoader variabilityModelLoader = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
+            if (variabilityModelLoader.LoadedSuccessful()) { variabilityModel = variabilityModelLoader.GetModel(); }
+
+            Dictionary<string, double> calculatedPropertyValues = variabilityModel.CalculateRegionPropertyValues(id);
+
+            foreach (RProperty_NFP property in NFPs) {
+                property.ResetValue();
+                property.SetValue((float) calculatedPropertyValues[property.GetName()]);
+
+                // Debug.Log("New: " + GetID() + "; " + property.GetName() + " = " + property.GetValue());
 
                 // check if instance exists and update value
                 MinMaxValue minMax = new MinMaxValue();
