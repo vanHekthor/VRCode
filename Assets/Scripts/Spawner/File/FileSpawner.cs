@@ -222,7 +222,7 @@ namespace VRVis.Spawner {
                 yield return null;
             }
 
-            // when we arrive here, everything completed successful
+            // when we arrive here, everything completed successfully
             spawning = false;
             Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
             callback(true, spawn_file, "");
