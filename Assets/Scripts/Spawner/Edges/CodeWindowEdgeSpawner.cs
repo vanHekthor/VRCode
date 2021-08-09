@@ -19,12 +19,16 @@ namespace VRVis.Spawner {
 
         [Tooltip("The edge representing GameObject with the LineRenderer component")]
 	    public GameObject edgeConnectionPrefab;
+        [Tooltip("The UI element that indicates the existence of an edge to another file and allows opening that file by clicking it.")]
+        public GameObject linkPrefab;
 
         /// <summary>
         /// Stores instances of connection instances of spawned edges.<para/>
         /// key = edge id, value = connection instance
         /// </summary>
         private Dictionary<uint, CodeWindowEdgeConnection> edgeConnections = new Dictionary<uint, CodeWindowEdgeConnection>();
+
+        private Dictionary<uint, CodeWindowLink> codeWindowLinks = new Dictionary<uint, CodeWindowLink>();
 
         /// <summary>Stores ids (value) of spawned edges starting from the code file (key)</summary>
         private Dictionary<CodeFile, HashSet<uint>> spawnedEdges = new Dictionary<CodeFile, HashSet<uint>>();
@@ -103,8 +107,11 @@ namespace VRVis.Spawner {
 
         /// <summary>
         /// Called by FileSpawner on code window creation.<para/>
-        /// Creates edges that go from this file to other currently shown files,
+        /// Creates edges that go from this file to other currently open code files,
         /// and the outgoing edges of other files ending in this file.
+        /// When the targeted file of an existing edge connection is not open yet, 
+        /// a link button is displayed next to the corresponding code line. This button allows the user
+        /// to open the targeted file and therefore make the egde connections to that file visible.
         /// </summary>
         public void CodeWindowSpawnedEvent(CodeFile codeFile) {
             
@@ -118,8 +125,13 @@ namespace VRVis.Spawner {
 
 
             // check if there is "garbage" to clean up or initialize hash set for this file
-            if (spawnedEdges.ContainsKey(codeFile)) { spawnedEdges[codeFile].Clear(); }
-            else { spawnedEdges.Add(codeFile, new HashSet<uint>()); }
+            if (spawnedEdges.ContainsKey(codeFile)) {
+                spawnedEdges[codeFile].Clear();
+            }
+            else 
+            {
+                spawnedEdges.Add(codeFile, new HashSet<uint>());
+            }
 
 
             // nothing to do yet because there are no other files to connect to
@@ -127,29 +139,47 @@ namespace VRVis.Spawner {
             //if (spawnedEdges.Count == 1) { return; }
 
 
-            // add the missing edges
+            // add the missing edges and link buttons
             uint failedSpawns = 0;
             uint newEdgesSpawned = 0;
-            AddMissingEdges(structureLoader, out failedSpawns, out newEdgesSpawned);
+            uint newLinkButtons = 0;
+            AddMissingEdges(structureLoader, out failedSpawns, out newEdgesSpawned, out newLinkButtons);
 
 
             // log infos and warn if some failed to spawn
-            string msg = "New edges spawned: " + newEdgesSpawned + " for file: " +
-                codeFile.GetNode().GetName() + " (failed: " + failedSpawns + ")";
-            if (failedSpawns > 0) { Debug.LogWarning(msg); } else { Debug.Log(msg); }
+            string spawnedEdgesMsg = "New edges spawned: " + newEdgesSpawned + " for file: " +
+                codeFile.GetNode().GetName() + " (failed incl. edges & link buttons: " + failedSpawns + ")";
+
+            string spawnedLinkButtonsMsg = "New link buttons spawned: " + newLinkButtons + " for file: " +
+                codeFile.GetNode().GetName() + " (failed incl. edges & link buttons: " + failedSpawns + ")";
+
+            string failedSpawnsMsg = failedSpawns + " failed link button and edge spawns for file: " +
+                codeFile.GetNode().GetName();
+
+            if (failedSpawns > 0) {
+                Debug.LogWarning(failedSpawnsMsg);
+            }
+            else 
+            {
+                Debug.Log(spawnedEdgesMsg);
+                Debug.Log(spawnedLinkButtonsMsg);
+            }
+
         }
 
 
-        /// <summary>Returns true if this edge type is currently active.</summary>
+        /// <summary>
+        /// Returns true if this edge type is currently active.
+        /// </summary>
         private bool IsEdgeTypeActive(string edgeType) {
             return ApplicationLoader.GetApplicationSettings().IsEdgeTypeActive(edgeType);
         }
 
 
         /// <summary>
-        /// Add missing edges after the spawnedEdges dictionary changed (e.g. new file added).
+        /// Add missing edges and link buttons after the spawnedEdges dictionary changed (e.g. new file added).
         /// </summary>
-        private void AddMissingEdges(StructureLoader sLoader, out uint failedSpawns, out uint newEdgesSpawned) {
+        private void AddMissingEdges(StructureLoader sLoader, out uint failedSpawns, out uint newEdgesSpawned, out uint newLinkButtons) {
 
             // keep entries that should be removed from spawnedEdges  
             List<CodeFile> removeFailed = new List<CodeFile>(); 
@@ -158,6 +188,8 @@ namespace VRVis.Spawner {
             // and add missing connections for all of them
             failedSpawns = 0;
             newEdgesSpawned = 0;
+            newLinkButtons = 0;
+
             foreach (KeyValuePair<CodeFile, HashSet<uint>> entry in spawnedEdges) {
 
                 // check if references exist - file is probably not spawned so clean up
@@ -176,19 +208,40 @@ namespace VRVis.Spawner {
                     if (!IsEdgeTypeActive(edge.GetEdgeType())) { continue; }
 
                     // this edge connection already exists / is already spawned
-                    if (entry.Value.Contains(edge.GetID())) { continue; }
-
-                    // try to create the connection instance
-                    CodeWindowEdgeConnection edgeCon = null;
-                    int state = SpawnEdgeConnection(entry.Key, edge, sLoader, out edgeCon);
-                    if (state < 1) {
-                        if (state == -1) { failedSpawns++; }
-                        continue;
+                    if (entry.Value.Contains(edge.GetID())) {
+                        if (edgeConnections.ContainsKey(edge.GetID())) {
+                            continue;
+                        }
                     }
 
-                    edgeConnections.Add(edge.GetID(), edgeCon);
-                    entry.Value.Add(edge.GetID());
-                    newEdgesSpawned++;
+                    // try to create the connection instance
+                    dynamic linkOrEdge = null;
+                    int state = SpawnConnectionInstance(entry.Key, edge, sLoader, out linkOrEdge);
+                    if (state < 0) {
+                        if (state == -1) { failedSpawns++; }
+                    }
+                    else if (state == 0) {
+                        if (!codeWindowLinks.ContainsKey(edge.GetID())) {
+                            codeWindowLinks.Add(edge.GetID(), linkOrEdge);
+                            entry.Value.Add(edge.GetID());
+                            newLinkButtons++;
+                        }                 
+                    }                    
+                    else if (state == 1) {
+                        if (!edgeConnections.ContainsKey(edge.GetID())) {
+                            edgeConnections.Add(edge.GetID(), linkOrEdge);
+                            entry.Value.Add(edge.GetID());
+                            newEdgesSpawned++;
+
+                            if (codeWindowLinks.ContainsKey(edge.GetID())) {
+                                Destroy(codeWindowLinks[edge.GetID()].gameObject);
+                                codeWindowLinks.Remove(edge.GetID());
+                            }
+                        }
+                    }
+                    //else if (state == 2) {
+
+                    //}
                 }
             }
 
@@ -199,7 +252,9 @@ namespace VRVis.Spawner {
 
         /// <summary>
         /// Called by FileSpawner on code window deletion.<para/>
-        /// Removes edges going from and to this code file.
+        /// Removes link buttons it contains and also edges going from and to this code file.
+        /// When edges have to be removed because the targeted code file is closed,
+        /// the edges get replaced by link buttons.
         /// </summary>
         public void CodeWindowRemovedEvent(CodeFile codeFile) {
             
@@ -231,37 +286,74 @@ namespace VRVis.Spawner {
                 foreach (uint edgeID in entry.Value) {
                
                     // add to list if connection ends at the deleted code file and remove from index
-                    if (edgeConnections[edgeID].GetEndCodeFile() == codeFile) { addToRemoveList.Add(edgeID); }
+                    if (edgeConnections.ContainsKey(edgeID)) {
+                        if (edgeConnections[edgeID].GetEndCodeFile() == codeFile) {
+                            addToRemoveList.Add(edgeID);
+                        }
+                    }
+                    else if (codeWindowLinks.ContainsKey(edgeID)) {
+                        if (codeWindowLinks[edgeID].BaseFile == codeFile) {
+                            addToRemoveList.Add(edgeID);
+                        }
+                    }                 
                 }
+
+                // structure loader is required to get code files
+                StructureLoader structureLoader = ApplicationLoader.GetInstance().GetStructureLoader();
+                if (structureLoader == null) { return; }
 
                 // add to list and remove edge IDs from file index
                 foreach (uint removeID in addToRemoveList) {
                     conInstancesToRemove.Add(removeID);
                     entry.Value.Remove(removeID);
+
+                    // try to create the connection instance
+                    dynamic edgeCon = null;
+                    int state = SpawnLink(edgeConnections[removeID].GetStartCodeFile(), edgeConnections[removeID].GetEdge(), structureLoader, out edgeCon);
+                    if (state < 0) { continue; } // failure
+                    else if (state == 0) {
+                        if (!codeWindowLinks.ContainsKey(removeID)) {
+                            codeWindowLinks.Add(removeID, edgeCon);
+                            entry.Value.Add(removeID);
+                        }
+                    }
                 }
             }
 
             // remove the listed edge instance
-            Debug.Log("Removing " + conInstancesToRemove.Count + " edge connections...");
+            Debug.Log("Removing " + conInstancesToRemove.Count + " edge connections and link buttons...");
 
+            int removedLinks = 0;
+            int removedEdges = 0;
             // destroy game objects of connections and remove from connection instance index
             foreach (uint edgeID in conInstancesToRemove) {
-                Destroy(edgeConnections[edgeID].gameObject);
-                edgeConnections.Remove(edgeID);
+                if (edgeConnections.ContainsKey(edgeID)) {
+                    Destroy(edgeConnections[edgeID].gameObject);
+                    edgeConnections.Remove(edgeID);
+                    removedEdges++;
+                }
+                else if (codeWindowLinks.ContainsKey(edgeID)) {
+                    Destroy(codeWindowLinks[edgeID].gameObject);
+                    codeWindowLinks.Remove(edgeID);
+                    removedLinks++;
+                }
             }
 
             // remove the codefile entry from spawned edges dictionary
             spawnedEdges.Remove(codeFile);
-            Debug.Log("Finished removing edge connections!");
+            Debug.Log("Finished removing edge connections and link buttons!");
+            Debug.Log("Removed " + removedEdges + " edges and " + removedLinks + " link buttons!");
         }
 
-
         /// <summary>
-        /// Spawn a new edge connectio instance.<para/>
-        /// Returns 1 on success, 0 if it already exists or target file is not spawned and -1 on failure!
+        /// Spawn a new connection instance (i.e. edge connection or link button if targeted code file is not open)<para/>
+        /// Returns 1 when an edge connection was successfully spawned
+        /// 0 when target file is not open yet and a link button was spawned
+        /// -1 when spawning failed
+        /// 2 when target file is not open yet and a link button already exists 
         /// </summary>
         /// <param name="edgeCon">The edge connection instance or null on failure</param>
-        private int SpawnEdgeConnection(CodeFile fromCodeFile, Edge edge, StructureLoader sLoader, out CodeWindowEdgeConnection edgeCon) {
+        private int SpawnConnectionInstance(CodeFile fromCodeFile, Edge edge, StructureLoader sLoader, out dynamic edgeCon) {
 
             edgeCon = null;
 
@@ -270,8 +362,10 @@ namespace VRVis.Spawner {
             CodeFile targetFile = sLoader.GetFileByRelativePath(targetPath);
             if (targetFile == null) { return -1; }
 
-            // check that the target file is spawned as well, otherwise skip!
-            if (!spawnedEdges.ContainsKey(targetFile)) { return 0; }
+            // check that the target file is spawned as well, otherwise spawn link button!
+            if (!spawnedEdges.ContainsKey(targetFile)) {
+                return SpawnLink(fromCodeFile, edge, sLoader, out edgeCon);
+            }
 
             // create edge connection instance
             GameObject edgeConInstance = Instantiate(edgeConnectionPrefab, Vector3.zero, Quaternion.identity);
@@ -298,18 +392,53 @@ namespace VRVis.Spawner {
             return 1;
         }
 
+        private int SpawnLink(CodeFile fromCodeFile, Edge edge, StructureLoader sLoader, out dynamic edgeCon) {
+            edgeCon = null;
+            
+            // find target - just skip if missing
+            string targetPath = edge.GetTo().file.ToLower();
+            CodeFile targetFile = sLoader.GetFileByRelativePath(targetPath);
+            if (targetFile == null) { return -1; }
+
+            if (!codeWindowLinks.ContainsKey(edge.GetID())) {
+                // show link button that indicates the existence of the edge and opens the targeted file when pressing it
+                GameObject linkInstance = Instantiate(linkPrefab, Vector3.zero, Quaternion.identity);
+                edgeCon = linkInstance.GetComponent<CodeWindowLink>();
+                if (!edgeCon) {
+                    DestroyImmediate(linkInstance);
+                    return -1;
+                }
+
+                // add instance to the according container
+                Transform linkContainer = fromCodeFile.GetReferences().GetEdgePoints().connectionContainer;
+                linkInstance.transform.SetParent(linkContainer);
+                linkInstance.transform.rotation = linkContainer.rotation;
+
+                if (!edgeCon.InitLink(edge, fromCodeFile, targetFile)) {
+                    DestroyImmediate(linkInstance);
+                    return -1;
+                }
+
+                return 0;
+            }
+            return 2;
+        }
+
 
         /// <summary>
-        /// Updates the currently spawned edges validating them by
+        /// Updates the currently spawned edges and links them by
         /// checking if they are marked as active/selected to be shown.<para/>
-        /// If a spawned edge is no longer active, it will be removed
-        /// and if an active edge type is available but not spawned, it will be spawned.<para/>
-        /// Returns false on errors (e.g. edge- or structure-loader missing).
+        /// If a spawned edge or link is no longer active, it will be removed
+        /// and if an active control flow type is available but not spawned, 
+        /// the link or the edge will be spawned.<para/>
+        /// Returns false when errors occur (e.g. edge- or structure-loader missing).
         /// </summary>
-        public bool UpdateSpawnedEdges(out uint edgesAdded, out uint edgesRemoved) {
+        public bool UpdateSpawnedEdges(out uint edgesAdded, out uint edgesRemoved, out uint linksAdded, out uint linksRemoved) {
 
             edgesAdded = 0;
             edgesRemoved = 0;
+            linksAdded = 0;
+            linksRemoved = 0;
 
             // edge loader is required
             if (edgeLoader == null) { edgeLoader = GetEdgeLoader(); }
@@ -333,37 +462,59 @@ namespace VRVis.Spawner {
                 foreach (Edge edge in edges) {
                 
                     // remove if not active or add if not spawned yet
-                    if (!IsEdgeTypeActive(edge.GetEdgeType())) { removeIDs.Add(edge.GetID()); }
+                    if (!IsEdgeTypeActive(edge.GetEdgeType())) {
+                        removeIDs.Add(edge.GetID());
+                    }
                     else if (!entry.Value.Contains(edge.GetID())) { toAdd.Add(edge); }
                 }
 
                 // remove the edges stored in the list
                 foreach (uint edgeID in removeIDs) {
 
-                    // destroy edge gameobject
-                    if (!edgeConnections.ContainsKey(edgeID)) { continue; }
-                    Destroy(edgeConnections[edgeID].gameObject);
-                    
-                    // remove from spawned edges index
-                    edgeConnections.Remove(edgeID);
-                    entry.Value.Remove(edgeID);
-                    edgesRemoved++;
+                    // destroy edge gameobject                    
+                    if (edgeConnections.ContainsKey(edgeID)) {
+                        Destroy(edgeConnections[edgeID].gameObject);
+
+                        // remove from spawned edges index
+                        edgeConnections.Remove(edgeID);
+                        entry.Value.Remove(edgeID);
+                        edgesRemoved++;
+                    }
+                    if (codeWindowLinks.ContainsKey(edgeID)) {
+                        Destroy(codeWindowLinks[edgeID].gameObject);
+
+                        // remove from spawned edges index
+                        codeWindowLinks.Remove(edgeID);
+                        entry.Value.Remove(edgeID);
+                        linksRemoved++;
+                    }           
+                   
                 }
 
                 // add missing edges stored in list
                 foreach (Edge edge in toAdd) {
 
-                    if (edgeConnections.ContainsKey(edge.GetID())) { continue; }
+                    // if (edgeConnections.ContainsKey(edge.GetID())) { continue; }
 
                     // try to create the connection instance
-                    CodeWindowEdgeConnection edgeCon = null;
-                    int state = SpawnEdgeConnection(entry.Key, edge, structureLoader, out edgeCon);
-                    if (state < 1) { continue; } // failure
-
-                    // add to spawned edges index
-                    edgeConnections.Add(edge.GetID(), edgeCon);
-                    entry.Value.Add(edge.GetID());
-                    edgesAdded++;
+                    dynamic edgeCon = null;
+                    int state = SpawnConnectionInstance(entry.Key, edge, structureLoader, out edgeCon);
+                    if (state < 0) { continue; } // failure
+                    else if (state == 0) {
+                        if (!codeWindowLinks.ContainsKey(edge.GetID())) {
+                            codeWindowLinks.Add(edge.GetID(), edgeCon);
+                            entry.Value.Add(edge.GetID());
+                            linksAdded++;
+                        }
+                    }
+                    else if (state == 1) {
+                        if (!edgeConnections.ContainsKey(edge.GetID())) {
+                            // add to spawned edges index
+                            edgeConnections.Add(edge.GetID(), edgeCon);
+                            entry.Value.Add(edge.GetID());
+                            edgesAdded++;
+                        }
+                    }                    
                 }
             }
 
