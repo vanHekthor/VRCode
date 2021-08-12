@@ -468,6 +468,7 @@ namespace VRVis.Spawner {
                     else if (!entry.Value.Contains(edge.GetID())) { toAdd.Add(edge); }
                 }
 
+
                 // remove the edges stored in the list
                 foreach (uint edgeID in removeIDs) {
 

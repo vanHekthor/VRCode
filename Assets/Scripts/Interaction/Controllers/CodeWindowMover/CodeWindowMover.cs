@@ -8,6 +8,9 @@ using VRVis.Interaction.ControllerSelectionSystem;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
+using VRVis.UI.CodeWindowScreen;
+using VRVis.UI.Helper;
+using VRVis.Utilities;
 
 namespace VRVis.Interaction.Controller {
 
@@ -101,6 +104,8 @@ namespace VRVis.Interaction.Controller {
         private bool rotationModified = false; // tells if the user modified the rotation
         private bool teleportButtonLocked = false;
 
+        private bool placeOntoSphereScreen = false;
+
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
 
@@ -112,7 +117,6 @@ namespace VRVis.Interaction.Controller {
 
 
         void Awake() {
-
             if (!rayOrigin) { rayOrigin = transform; }
             lastRayHitDistance = laserSettings.maxRayDistance;
         }
@@ -129,6 +133,9 @@ namespace VRVis.Interaction.Controller {
             else if (laserSettings.defaultLaserDistance < laserSettings.minLaserDistance) {
                 laserSettings.defaultLaserDistance = laserSettings.minLaserDistance;
             }
+
+            FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            placeOntoSphereScreen = fs.SpawnOntoSphericalScreen;
         }
 
 
@@ -370,26 +377,33 @@ namespace VRVis.Interaction.Controller {
             else if (newDist < minDist) { laserSettings.defaultLaserDistance = minDist; return; }
             laserSettings.defaultLaserDistance = newDist;
         }
-
-
+                
         /// <summary>
         /// Take care of selecting a spawn position for the code window.
         /// </summary>
         private void WindowPlacementUpdate(float placementDistance) {
+            FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
 
             // position the placement preview
             if (placementObject) {
                 placementObject.SetActive(true);
-                placementObject.transform.position = ray.origin + placementDistance * ray.direction;
+                               
+                if (!placeOntoSphereScreen) {
+                    placementObject.transform.position = ray.origin + placementDistance * ray.direction;
 
-                // make object look in direction of camera or apply rotation that user changed
-                // (if user changed the rotation, keep it, otherwise rotate to the user)
-                if (!rotationModified) {
-                    Vector3 v = rayOrigin.position - lastRayPoint;
-                    v.x = v.z = 0;
-                    placementObject.transform.LookAt(rayOrigin.position - v);
-                    placementObject.transform.Rotate(placementRotationOffset);
+                    //make object look in direction of camera or apply rotation that user changed
+                    //(if user changed the rotation, keep it, otherwise rotate to the user)
+                    if (!rotationModified) {
+                        Vector3 v = rayOrigin.position - lastRayPoint;
+                        v.x = v.z = 0;
+                        placementObject.transform.LookAt(rayOrigin.position - v);
+                        placementObject.transform.Rotate(placementRotationOffset);
+                    }
+
                 }
+                else {
+                    TransformPlaceholderOnSphericalWindowScreen(ref placementObject, ray, placementDistance);
+                }                
             }
 
             // check for button press
@@ -401,9 +415,14 @@ namespace VRVis.Interaction.Controller {
 
                 // define spawn position and spawn code window
                 Vector3 spawnPos = lastRayPoint + fileSpawnOffset;
-                Quaternion spawnRot = placementObject.transform.rotation; // Quaternion.identity
+                if (!placeOntoSphereScreen) {
+                    spawnPos = lastRayPoint + fileSpawnOffset;
+                }
+                else {
+                    spawnPos = placementObject.transform.position;
+                }
+                Quaternion spawnRot = placementObject.transform.rotation; // Quaternion.identity                
                 
-                FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
                 if (fs) { fs.SpawnFile(selectedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
                 else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
@@ -436,18 +455,23 @@ namespace VRVis.Interaction.Controller {
         /// </summary>
         private void WindowMovementUpdate(float distance) {
 
-            // move the code window to where the laser is
-            selectedObject.transform.position = ray.origin + distance * ray.direction;
+            if (!placeOntoSphereScreen) {
+                // move the code window to where the laser is
+                selectedObject.transform.position = ray.origin + distance * ray.direction;
 
-            // make object look in direction of camera or apply rotation that user changed
-            // (if user changed the rotation, keep it, otherwise rotate to the user)
-            if (!rotationModified) {
+                // make object look in direction of camera or apply rotation that user changed
+                // (if user changed the rotation, keep it, otherwise rotate to the user)
+                if (!rotationModified) {
 
-                Vector3 v = rayOrigin.position - lastRayPoint;
-                v.x = v.z = 0;
-                selectedObject.transform.LookAt(rayOrigin.position - v);
-                selectedObject.transform.Rotate(placementRotationOffset);
-            }  
+                    Vector3 v = rayOrigin.position - lastRayPoint;
+                    v.x = v.z = 0;
+                    selectedObject.transform.LookAt(rayOrigin.position - v);
+                    selectedObject.transform.Rotate(placementRotationOffset);
+                }
+            }
+            else {
+                TransformWindowOnSphericalWindowScreen(ref selectedObject, ray, distance);
+            }              
 
             // check for button press
             if (TriggerButtonUp() && pressed) {
@@ -455,12 +479,125 @@ namespace VRVis.Interaction.Controller {
                 pressed = false;
 
                 // switch controller back to laser
+                SetLaserColor(laserColor);
                 if (switchToPreviousControllerWhenDone) { SwitchControllerToPrevious(); }
 
                 // deselect the object so that we no longer move it
                 selectedObject = null;
                 ResetSettings();
             }
+        }
+
+        /// <summary>
+        /// Handles the transformation for the code window placeholder. When pointing at the window screen 
+        /// the placeholder gets displayed on the screen at the intersection point and faces the sphere screen center.
+        /// When the window screen also has a SphereGrid component then the placeholder snaps to the location of the
+        /// closest grid point (or rather the attachment point of that grid point).
+        /// When not pointing at the window screen the placeholder is shown at alternativePlacementDistance from
+        /// the laser pointer.
+        /// </summary>
+        /// <param name="placeholderObject"></param>
+        /// <param name="ray"></param>
+        /// <param name="alternativePlacementDistance">distance where placeholder is shown when not pointing at the window screen</param>
+        private void TransformPlaceholderOnSphericalWindowScreen(ref GameObject placeholderObject, Ray ray, float alternativePlacementDistance) {
+            FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+
+            Vector3 screenOrigin = fs.WindowScreenTransform.position;
+
+            double t = PositionOnSphere.SphereIntersect(fs.SphereScreenRadius, screenOrigin, ray.origin, ray.direction);
+            if (t > Mathf.Epsilon) {
+                Vector3 placeholderPosition = ray.origin + (float)t * ray.direction;
+
+                SphereGrid windowGrid = fs.WindowScreen.GetComponent<SphereGrid>();
+                if (!windowGrid) {
+                    placeholderPosition = FitIntoScreen(placeholderPosition, fs.WindowScreen.GetComponent<SphericalWindowScreen>());               
+                } else {
+                    placeholderPosition = windowGrid.GetClosestGridPoint(placeholderPosition).AttachmentPoint;
+                    if (placeholderPosition == null) {
+                        placeholderPosition = FitIntoScreen(placeholderPosition, fs.WindowScreen.GetComponent<SphericalWindowScreen>());
+                    }
+                }
+
+                placeholderObject.transform.position = placeholderPosition;
+                Vector3 lookDirection = placeholderPosition - screenOrigin;
+                placeholderObject.transform.rotation = Quaternion.LookRotation(lookDirection);
+            }
+            else {
+                placeholderObject.transform.position = ray.origin + alternativePlacementDistance * ray.direction;            
+            }
+        }
+
+        /// <summary>
+        /// Handles the transformation for a selected code window. When pointing at the window screen 
+        /// the code window gets displayed on the screen at the intersection point and faces the sphere screen center.
+        /// When the window screen also has a SphereGrid component then the code window snaps to the location of the
+        /// closest grid point (or rather the attachment point of that grid point).
+        /// When not pointing at the window screen the code window is shown at alternativePlacementDistance from
+        /// the laser pointer.
+        /// </summary>
+        /// <param name="windowObject"></param>
+        /// <param name="ray"></param>
+        /// <param name="alternativePlacementDistance"></param>
+        private void TransformWindowOnSphericalWindowScreen(ref Movable windowObject, Ray ray, float alternativePlacementDistance) {
+            FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+
+            Color moveColor = new Color(0, 1f, 1f, 1f);
+            SetLaserColor(moveColor);
+
+            Vector3 screenOrigin = fs.WindowScreenTransform.position;
+
+            double t = PositionOnSphere.SphereIntersect(fs.SphereScreenRadius, screenOrigin, ray.origin, ray.direction);
+            if (t > Mathf.Epsilon) {
+                Vector3 selectedWindowPosition = ray.origin + (float)t * ray.direction;
+
+                SphereGrid windowGrid = fs.WindowScreen.GetComponent<SphereGrid>();
+                if (!windowGrid) {
+                    selectedWindowPosition = FitIntoScreen(selectedWindowPosition, fs.WindowScreen.GetComponent<SphericalWindowScreen>());
+                }
+                else {
+                    GridElement gridElement = windowObject.gameObject.GetComponent<GridElement>();
+                    windowGrid.DetachGridElement(ref gridElement);
+
+                    SphereGridPoint selectedGridPoint = windowGrid.GetClosestGridPoint(selectedWindowPosition);
+                    selectedWindowPosition = selectedGridPoint.AttachmentPoint;
+
+                    windowGrid.AttachGridElement(ref gridElement, selectedGridPoint.LayerIdx, selectedGridPoint.ColumnIdx);
+
+                    if (selectedWindowPosition == null) {
+                        selectedWindowPosition = FitIntoScreen(selectedWindowPosition, fs.WindowScreen.GetComponent<SphericalWindowScreen>());
+                    }
+                }
+
+                windowObject.transform.position = selectedWindowPosition;
+                Vector3 lookDirection = windowObject.transform.position - screenOrigin;
+                windowObject.transform.rotation = Quaternion.LookRotation(lookDirection);
+            }
+            else {
+                windowObject.transform.position = ray.origin + alternativePlacementDistance * ray.direction;
+            }
+        }
+
+        /// <summary>
+        /// Keeps the point within the contraints defined SphericalWindowScreen component using the inspector.
+        /// </summary>
+        /// <param name="point"></param>
+        /// <param name="screenComponent"></param>
+        /// <returns></returns>
+        private Vector3 FitIntoScreen(Vector3 point, SphericalWindowScreen screenComponent) {
+            GameObject sphereScreen = screenComponent.gameObject;
+
+            SphericalCoordinates sphericalIntersectPoint = PositionOnSphere.CartesianToSpherical(point, sphereScreen.transform.position);
+
+            float radius = sphereScreen.GetComponent<SphereCollider>().radius * sphereScreen.transform.lossyScale.x;
+            float polar = sphericalIntersectPoint.polar;
+            float elevation = sphericalIntersectPoint.elevation;            
+
+            elevation = Mathf.Clamp(elevation, screenComponent.MinElevationAngleInRadians, screenComponent.MaxElevationAngleInRadians);
+            polar = Mathf.Clamp(polar, screenComponent.MinPolarAngleInRadians, screenComponent.MaxPolarAngleInRadians);
+
+            point = PositionOnSphere.SphericalToCartesian(radius, polar, elevation, sphereScreen.transform.position);
+            
+            return point;
         }
 
 

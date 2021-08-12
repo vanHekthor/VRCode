@@ -4,14 +4,21 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using VRVis.IO;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
+using VRVis.UI.Helper;
 
-public class CodeWindowLinkButton : MonoBehaviour, IPointerClickHandler {
+public class CodeWindowLinkButton : MonoBehaviour, IPointerClickHandler, IPointerDownHandler, IPointerUpHandler {
 
     public string TargetFilePath { get; set; }
     public CodeFile TargetFile { get; set; }
+    public GameObject AnchorObject { get; set; }
 
     private bool windowSpawning = false;
     private bool windowSpawned = false;
+
+    private Vector3 spawnPosition; 
+
+    
 
     // Start is called before the first frame update
     void Start() {
@@ -26,8 +33,22 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerClickHandler {
     public void OnPointerClick(PointerEventData eventData) {
         Debug.Log("Link to " + TargetFilePath + " was clicked!");
 
+        GridElement gridElement = AnchorObject.GetComponent<GridElement>();
+
+
         StartCoroutine(SpawnFileCoroutine());
     }
+    
+    public void OnPointerDown(PointerEventData eventData) {
+        
+        
+    }
+
+    public void OnPointerUp(PointerEventData eventData) {
+        
+    }
+
+
 
     private IEnumerator SpawnFileCoroutine() {
 
@@ -41,8 +62,14 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerClickHandler {
         windowSpawning = true;
 
         FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-        if (fs) { fs.SpawnFile(TargetFile.GetNode(), gameObject.transform.position, gameObject.transform.rotation, WindowSpawnedCallback); }
-        else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
+        if (fs) {
+            // fs.SpawnFile(TargetFile.GetNode(), gameObject.transform.position, gameObject.transform.rotation, WindowSpawnedCallback);
+            fs.SpawnFileNextTo(TargetFile, AnchorObject.GetComponent<CodeFileReferences>(), WindowSpawnedCallback);
+
+        }
+        else {
+            WindowSpawnedCallback(false, null, "Missing FileSpawner!");
+        }
 
         // wait until spawning is finished
         yield return new WaitUntil(() => windowSpawning == false);
@@ -62,7 +89,5 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerClickHandler {
             Debug.LogError("Failed to place window! " + name + msg);
             return;
         }
-    }
-
-
+    }    
 }
