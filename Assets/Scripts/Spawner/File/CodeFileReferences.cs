@@ -81,9 +81,11 @@ namespace VRVis.Spawner.File {
             public Transform bottomRight;
             
             [Header("Attachment Points Left/Right:")]
-            [Tooltip("Tells where to connect the anchor points")]
+            [Tooltip("Anchor position where control flow edges can be connectet to")]
             public float left;
             public float right;
+            [Tooltip("Anchor position relative to the anchor container for control flow links")]
+            public float linkOffset;
 
             public float GetLeftRightDistance() { return right-left; }
 

@@ -11,6 +11,8 @@ using VRVis.RegionProperties;
 using VRVis.Settings;
 using VRVis.Spawner.File;
 using VRVis.Spawner.Regions;
+using VRVis.UI.Helper;
+using VRVis.Utilities;
 
 namespace VRVis.Spawner {
 
@@ -40,6 +42,14 @@ namespace VRVis.Spawner {
         [Tooltip("Instance of the according edge spawner")]
         public CodeWindowEdgeSpawner edgeSpawner;
 
+        [Tooltip("Whether the code windows shall be spawned onto the spherical screen")]
+        public bool spawnOntoSphericalScreen;
+
+        [Tooltip("Sphere where code windows can be spawned onto")]
+        public GameObject sphereScreen;
+
+        public float SphereScreenRadius { get; set; }
+
         // callbacks for when the file was spawned (e.g. used by content overview)
         [HideInInspector]
         public CodeFileEvent onFileSpawned = new CodeFileEvent();
@@ -61,6 +71,8 @@ namespace VRVis.Spawner {
         private Quaternion spawn_rotation;
         private GameObject spawn_window;
 
+        private SphereGridPoint gridPoint;
+
 
         // "Constructor"
         void Awake() {
@@ -77,7 +89,17 @@ namespace VRVis.Spawner {
             }
 
             if (!edgeSpawner) { Debug.LogError("Missing edge spawner!"); }
-            if (!regionSpawner) { Debug.LogError("Missing region spawner!"); }
+            if (!regionSpawner) { Debug.LogError("Missing region spawner!"); }                      
+        }
+
+        private void Start() {
+            if (!sphereScreen) {
+                Debug.LogError("Missing sphere screen!");
+            }
+            else {
+                SphereScreenRadius = sphereScreen.GetComponent<SphereCollider>().radius * sphereScreen.transform.lossyScale.x;
+                Debug.Log("Sphere screen radius: " + SphereScreenRadius);
+            }
         }
 
 
@@ -104,6 +126,14 @@ namespace VRVis.Spawner {
         /// <summary>Returns the spawned code files.</summary>
         public IEnumerable<CodeFile> GetSpawnedFiles() {
             return spawnedFiles.Values;
+        }
+
+        public GameObject WindowScreen { get => sphereScreen; }
+
+        public Transform WindowScreenTransform => sphereScreen.transform;
+
+        public bool SpawnOntoSphericalScreen {
+            get => spawnOntoSphericalScreen;
         }
 
 
@@ -140,7 +170,6 @@ namespace VRVis.Spawner {
             return null;
         }
 
-
         /// <summary>
         /// Spawn a code window showing the file content.<para/>
         /// A file is unique and can not be spawned multiple times.<para/>
@@ -157,30 +186,81 @@ namespace VRVis.Spawner {
             // DONE: Spawn the file regions for the current selection
             // DONE: Color the file regions according to their visual attributes
 
-            if (spawning) {
-                callback(false, null, "Currently spawning a file...");
+            if (!InitSpawning(fileNode, callback)) {
                 return;
             }
 
-            // prevent spawning the same file multiple times
-            if (IsFileSpawned(fileNode.GetFullPath())) {
-                callback(false, null, "File already spawned: " + fileNode.GetName());
+            if (!spawnOntoSphericalScreen) {
+                spawn_position = position;
+                spawn_rotation = rotation;
+            }
+            else {
+                SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
+                if (windowGrid) {
+                    gridPoint = windowGrid.GetClosestGridPoint(position);
+
+                    if (!windowGrid.IsOccupied(gridPoint.LayerIdx, gridPoint.ColumnIdx)) {
+
+                        spawn_position = position;
+                        spawn_rotation = rotation;
+                        
+                    } else {
+                        callback(false, null, "Failed to spawn " + fileNode.GetFullPath()
+                            + "! Position is already occupied by another element!");
+                        return;
+                    }
+                }
+            }
+                       
+            // start the spawn coroutine
+            StartCoroutine(SpawnCoroutine(callback));
+        }
+
+        public void SpawnFileNextTo(CodeFile fileToSpawn, CodeFileReferences baseFileRef, Action<bool, CodeFile, string> callback) {
+
+            if (!InitSpawning(fileToSpawn.GetNode(), callback)) {
                 return;
             }
 
-            // get according and required code file instance
-            CodeFile codeFile = fileNode.GetCodeFile();
-            if (codeFile == null) {
-                callback(false, null, "Failed to get CodeFile instance for file: " + fileNode.GetFullPath());
-                return;
-            }
+            GameObject baseFileGameObject = baseFileRef.gameObject;
 
-            // assign required information
-            spawn_file = codeFile;
-            spawn_node = fileNode;
-            spawn_position = position;
-            spawn_rotation = rotation;
-            spawning = true;
+            if (!spawnOntoSphericalScreen) {
+                spawn_position = baseFileGameObject.transform.position + 1.25f * (baseFileRef.GetEdgePoints().bottomLeft.position - baseFileRef.GetEdgePoints().bottomRight.position);
+                spawn_rotation = baseFileGameObject.transform.rotation;
+            }
+            else {
+                SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
+                if (windowGrid) {
+
+                    GridElement gridElement = baseFileRef.gameObject.GetComponent<GridElement>();
+                    int layerIdx = (int) gridElement.GridPositionLayer;
+                    int columnIdx = (int) gridElement.GridPositionColumn;
+
+                    SphereGridPoint neighbor = windowGrid.GetLeftNeighbor(layerIdx, columnIdx);
+                    if (neighbor != null) {
+                        if (!windowGrid.IsOccupied(neighbor.LayerIdx, neighbor.ColumnIdx)) {
+                            spawn_position = neighbor.AttachmentPoint;
+
+                            Vector3 lookDirection = spawn_position - sphereScreen.transform.position;
+                            spawn_rotation = Quaternion.LookRotation(lookDirection);
+
+                            gridPoint = neighbor;
+                        }
+                        else {
+                            spawning = false;
+                            callback(false, null, "Failed to spawn " + fileToSpawn.GetNode()
+                                + "! Position is already occupied by another element!");
+                            return;
+                        }
+                    }
+                    else {
+                        spawning = false;
+                        callback(false, null, "Failed to spawn " + fileToSpawn.GetNode()
+                                + "! Neighboring spawn position does not exist.");
+                        return;
+                    }
+                }
+            }
 
             // start the spawn coroutine
             StartCoroutine(SpawnCoroutine(callback));
@@ -229,6 +309,33 @@ namespace VRVis.Spawner {
             onFileSpawned.Invoke(spawn_file);
         }
 
+        private bool InitSpawning(SNode fileNode, Action<bool, CodeFile, string> callback) {
+            if (spawning) {
+                callback(false, null, "Currently spawning a file...");
+                return false;
+            }
+
+            // prevent spawning the same file multiple times
+            if (IsFileSpawned(fileNode.GetFullPath())) {
+                callback(false, null, "File already spawned: " + fileNode.GetName());
+                return false;
+            }
+
+            // get according and required code file instance
+            CodeFile codeFile = fileNode.GetCodeFile();
+            if (codeFile == null) {
+                callback(false, null, "Failed to get CodeFile instance for file: " + fileNode.GetFullPath());
+                return false;
+            }
+
+            // assign required information
+            spawn_file = codeFile;
+            spawn_node = fileNode;
+            spawning = true;
+
+            return true;
+        }
+
 
         /// <summary>
         /// Spawns the code window.
@@ -265,8 +372,17 @@ namespace VRVis.Spawner {
                 return "Failed to load content of file: " + spawn_node.GetFullPath();
             }
 
+            // if grid for windows exists attach the code window to the grid point that was determined in
+            // the SpawnFile method
+            SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
+            GridElement gridElement = spawn_window.GetComponent<GridElement>();
+            if (windowGrid) {
+                windowGrid.AttachGridElement(ref gridElement, gridPoint.LayerIdx, gridPoint.ColumnIdx);
+            }
+
             // register this file as spawned using its full path as the key
             spawnedFiles.Add(spawn_node.GetFullPath(), spawn_file);
+
             return null;
         }
 
@@ -494,6 +610,13 @@ namespace VRVis.Spawner {
 
             // unregister the file from "spawned" list
             spawnedFiles.Remove(codeFile.GetNode().GetFullPath());
+
+            // detach code window from grid
+            SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
+            GridElement gridElement = codeFile.GetReferences().gameObject.GetComponent<GridElement>();
+            if (windowGrid) {
+                windowGrid.DetachGridElement(ref gridElement);
+            }
 
             // destroy code file references
             Destroy(codeFile.GetReferences().gameObject);

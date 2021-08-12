@@ -384,7 +384,8 @@ namespace VRVis.Spawner.Edges {
             float pxErr = curLinePos * ((float) fileRefs.GetTextElements().Count-1) * ERROR_PER_ELEMENT;
             float yPosOffset = lineHeight * 0.5f; // to get correct position ("middle of line")
             float yPos = (startLine - 1) * lineHeight + yPosOffset - pxErr;
-            float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
+            //float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
+            float xPos = fileRefs.GetEdgePoints().linkOffset;
             point.anchoredPosition = new Vector2(xPos, -yPos); // yPos needs to be a negative value!
             return true;
         }
@@ -409,12 +410,12 @@ namespace VRVis.Spawner.Edges {
 
             // get position left and right next to the "from" window
             Vector3 from_ea_left = fromWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 from_leftPos = new Vector3(from_ea_left.x, startPoint.position.y, from_ea_left.z);
+            Vector3 from_leftPos = new Vector3(startPoint.position.x, startPoint.position.y, startPoint.position.z);
             Vector3 from_rightPos = from_leftPos + startPoint.right * from_leftRightDist;
 
             // get position left and right next to the "to" window [UPDATE: no longer affected by hor. scroll]
             Vector3 to_ea_left = toWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 to_leftPos = new Vector3(to_ea_left.x, endPoint.position.y, to_ea_left.z);
+            Vector3 to_leftPos = new Vector3(endPoint.position.x, endPoint.position.y, endPoint.position.z);
             Vector3 to_rightPos = to_leftPos + endPoint.right * to_leftRightDist;
 
 
@@ -609,11 +610,13 @@ namespace VRVis.Spawner.Edges {
 
             // check if out of viewport bounds
             outOfBounds = false;
-            if (curPos.y > winRefs.GetViewportTop().y) {
+            //if (curPos.y > winRefs.GetViewportTop().y) {
+            if (curPos.y > winTop.y) { 
                 posOut = winTop;
                 outOfBounds = true;
             }
-            else if (curPos.y < winRefs.GetViewportBottom().y) {
+            //else if (curPos.y < winRefs.GetViewportBottom().y) {
+            else if (curPos.y < winBottom.y) {
                 posOut = winBottom;
                 outOfBounds = true;
             }
@@ -641,8 +644,10 @@ namespace VRVis.Spawner.Edges {
             Vector3 posOut = curPos;
 
             // get viewport bounds
-            Vector3 viewportTop = winRefs.GetViewportTop();
-            Vector3 viewportBtm = winRefs.GetViewportBottom();
+            //Vector3 viewportTop = winRefs.GetViewportTop();
+            Vector3 viewportTop = winTop;
+            //Vector3 viewportBtm = winRefs.GetViewportBottom();
+            Vector3 viewportBtm = winBottom;
 
 
             // [DEBUG]

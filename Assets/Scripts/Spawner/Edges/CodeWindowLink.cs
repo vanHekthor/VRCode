@@ -102,6 +102,7 @@ namespace VRVis.Spawner.Edges {
 
             linkButton.name = name;
             linkButtonComponent.TargetFilePath = targetFile;
+            linkButtonComponent.AnchorObject = BaseFile.GetReferences().gameObject;
 
             // attach to this GameObject instance
             linkButton.transform.SetParent(transform);
@@ -112,9 +113,9 @@ namespace VRVis.Spawner.Edges {
             return linkButton;
         }
 
-        public bool InitLink(Edge edge, CodeFile baseFile, CodeFile targetFile) {
-            Prepare(edge);
+        public bool InitLink(Edge edge, CodeFile baseFile, CodeFile targetFile) {            
             BaseFile = baseFile;
+            Prepare(edge);
 
             updateLink = true;
             successfulAttached = false;
@@ -178,7 +179,7 @@ namespace VRVis.Spawner.Edges {
 
             // attach to parent container and take its position and scale factor
             Transform anchorContainer = fileRefs.GetEdgePoints().anchorContainer;
-            if (!anchorContainer) { return false; }
+            if (!anchorContainer) { return false; }            
             point.SetParent(anchorContainer, false);
 
             // prepare rect transform
@@ -191,7 +192,8 @@ namespace VRVis.Spawner.Edges {
             float pixelError = currentLinePos * ((float)fileRefs.GetTextElements().Count - 1) * ERROR_PER_ELEMENT;
             float yPosOffset = LineHeight * 0.5f; // to get correct position ("middle of line")
             float yPos = (startLine - 1) * LineHeight + yPosOffset - pixelError;
-            float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
+            //float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
+            float xPos = fileRefs.GetEdgePoints().linkOffset;
             point.anchoredPosition = new Vector2(xPos, -yPos); // yPos needs to be a negative value!
 
             return true;
@@ -203,8 +205,8 @@ namespace VRVis.Spawner.Edges {
             if (!IsUpdateRequired()) { return; }
 
             // get position left and right next to the "base" window
-            Vector3 baseWindowAttachmentLeft = baseWindowReferences.GetLeftEdgeConnection(); // link attachment left
-            Vector3 baseWindowLeftPosition = new Vector3(baseWindowAttachmentLeft.x, anchorPoint.position.y, baseWindowAttachmentLeft.z);
+            Vector3 baseWindowAttachmentLeft = baseWindowReferences.GetLeftEdgeConnection(); // edge attachment left
+            Vector3 baseWindowLeftPosition = new Vector3(anchorPoint.position.x, anchorPoint.position.y, anchorPoint.position.z);
             Vector3 basewindowRightPosition = baseWindowLeftPosition + anchorPoint.right * baseWindowLeftRightDistance;
 
             bool attachToLeftSide = true;
@@ -244,11 +246,13 @@ namespace VRVis.Spawner.Edges {
 
             // check if out of viewport bounds
             outOfBounds = false;
-            if (curPos.y > winRefs.GetViewportTop().y) {
+            //if (curPos.y > winRefs.GetViewportTop().y) {
+            if (curPos.y > winTop.y) { 
                 posOut = winTop;
                 outOfBounds = true;
             }
-            else if (curPos.y < winRefs.GetViewportBottom().y) {
+            //else if (curPos.y < winRefs.GetViewportBottom().y) {
+            else if (curPos.y < winBottom.y) { 
                 posOut = winBottom;
                 outOfBounds = true;
             }
@@ -275,9 +279,10 @@ namespace VRVis.Spawner.Edges {
             Vector3 posOut = curPos;
 
             // get viewport bounds
-            Vector3 viewportTop = winRefs.GetViewportTop();
-            Vector3 viewportBtm = winRefs.GetViewportBottom();
-
+            //Vector3 viewportTop = winRefs.GetViewportTop();
+            Vector3 viewportTop = winTop;
+            //Vector3 viewportBtm = winRefs.GetViewportBottom();
+            Vector3 viewportBtm = winBottom;
 
             // [DEBUG]
             if (showRegionDebugGizmos) { debug_pos = posOut; }
@@ -376,13 +381,13 @@ namespace VRVis.Spawner.Edges {
                 linkButton.SetActive(true);
             }
         }
-
+        
         /// <summary>
         /// Tells if an link update is required by checking
         /// attributes of the two windows like position, rotation and scroll.
         /// </summary>
-        private bool IsUpdateRequired() {
-
+        private bool IsUpdateRequired() {            
+            
             // check if start- and endpoint position changed
             // (if so, position, rotation or scroll changed)
             if (anchorPoint.position != previousAnchorPointPos) {
