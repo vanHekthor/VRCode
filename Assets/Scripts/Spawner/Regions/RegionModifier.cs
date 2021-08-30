@@ -198,8 +198,15 @@ namespace VRVis.Spawner.Regions {
                 }
 
                 // get color method and method min/max
-                AColorMethod colMethod = setting.GetColorMethod(info.GetNFPVisType());
                 MinMaxValue minMax = GetMinMaxValues(info.GetProperty().GetName(), info.GetCodeFile(), setting.GetMinMaxValue());
+                AColorMethod colMethod;
+                if (ApplicationLoader.GetInstance().GetAppSettings().ComparisonMode) {
+                    colMethod = setting.GetMinMaxColorMethod(info.GetNFPVisType(), minMax.GetMinValue(), minMax.GetMaxValue());
+                }
+                else {
+                    colMethod = setting.GetColorMethod(info.GetNFPVisType());
+                }           
+                
 
                 if (minMax == null) {
                     Debug.LogError("Failed to apply NFP mapping (" + nfpProperty.GetName() +  ") - Missing min/max!");

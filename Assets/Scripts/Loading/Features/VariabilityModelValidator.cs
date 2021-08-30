@@ -102,6 +102,31 @@ namespace VRVis.IO.Features {
             return solverStatus == Status.SATISFIABLE;
         }
 
+        //private bool CheckConfigurationSAT(Configuration config, bool partialConfiguration = false) {
+
+        //    List<Expr> variables;
+        //    Dictionary<Expr, AFeature> termToOption;
+        //    Dictionary<AFeature, Expr> optionToTerm;
+        //    Tuple<Context, BoolExpr> z3Tuple = GetInitializedSolverSystem(out variables, out optionToTerm, out termToOption, vm);
+        //    Context z3Context = z3Tuple.Item1;
+        //    BoolExpr z3Constraints = z3Tuple.Item2;
+
+        //    //List<Expr> constraints = new List<Expr>(); // WHY? not used at all
+        //    Solver solver = z3Context.MkSolver();
+        //    solver.Assert(z3Constraints);
+
+        //    List<Feature_Boolean> selectedBinaryOptions = GetSelectedBinaryOptions(vm);
+        //    Dictionary<Feature_Range, float> numOptionsDictionary = GetNumericOptionDict(vm);
+        //    solver.Assert(ConvertConfiguration(z3Context, selectedBinaryOptions, optionToTerm, vm, partialConfiguration, numOptionsDictionary));
+
+        //    Status solverStatus = solver.Check();
+        //    Debug.LogWarning("Solver status: " + solverStatus);
+        //    //Debug.LogWarning("Solver unsat core length: " + solver.UnsatCore.Length);
+        //    if (solverStatus == Status.UNKNOWN) { Debug.LogWarning("Solver reason unknown: " + solver.ReasonUnknown); }
+        //    //Debug.LogWarning("Solver proof: " + solver.Proof);
+        //    return solverStatus == Status.SATISFIABLE;
+        //}
+
 
         /// <summary>
         /// Converts the given configuration into a <see cref="BoolExpr"/>.

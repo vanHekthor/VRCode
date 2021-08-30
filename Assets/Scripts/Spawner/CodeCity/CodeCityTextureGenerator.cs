@@ -159,9 +159,15 @@ namespace VRVis.Spawner.CodeCity {
                 RProperty_NFP nfpProp = info.region.GetProperty(ARProperty.TYPE.NFP, activeNFP) as RProperty_NFP;
                 if (nfpProp == null || !nfpProp.GotValue()) { continue; }
 
-                // get color method and method min/max
-                AColorMethod colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.NONE);
+                // get color method and method min/max                
                 MinMaxValue minMax = RegionModifier.GetMinMaxValues(nfpProp.GetName(), codeFile, setting.GetMinMaxValue());
+                AColorMethod colMethod;
+                if (ApplicationLoader.GetApplicationSettings().ComparisonMode) {
+                    colMethod = setting.GetMinMaxColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_CITY, minMax.GetMinValue(), minMax.GetMaxValue());
+                }
+                else {
+                    colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_CITY);
+                }
 
                 if (minMax == null) {
                     Debug.LogError("Failed to apply NFP mapping (" + nfpProp.GetName() +  ") - Missing min/max!");

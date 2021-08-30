@@ -68,6 +68,10 @@ namespace VRVis.Testing.Interaction {
             ApplicationLoader.GetApplicationSettings().ToggleNFPVis();
         }
 
+        public void ToggleComparisonMode() {
+            ApplicationLoader.GetApplicationSettings().ToggleComparisonMode();
+        }
+
         public void SetNFPsRelative(bool relative) {
             if (ApplicationLoader.GetApplicationSettings().SetApplyLocalMinMaxValues(relative)) {
                 Debug.Log("User set values " + (relative ? "relative" : "global"));

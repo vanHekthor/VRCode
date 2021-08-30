@@ -17,7 +17,7 @@ namespace VRVis.Settings {
     public class ApplicationSettings {
 
         /// <summary>Types of non functional property visualizations.</summary>
-        public enum NFP_VIS { NONE, CODE_MARKING, HEIGHTMAP };
+        public enum NFP_VIS { NONE, CODE_MARKING, HEIGHTMAP, CODE_CITY };
 
 
         /// <summary>Tells how many features can be active at the same time for "focus" (shown left next to code window)</summary>
@@ -38,6 +38,7 @@ namespace VRVis.Settings {
         /// <summary>Dictionary to store new visualization visibility states</summary>
         public Dictionary<string, bool> visualizationVisibility = new Dictionary<string, bool>();
 
+        public bool ComparisonMode { get; set; }
 
         /// <summary>Holds the active features selected by the user</summary>
         private List<string> activeFeatures = new List<string>();
@@ -74,6 +75,8 @@ namespace VRVis.Settings {
                     NFPVisTypes++;
                 }
             }
+
+            ComparisonMode = true;
 
             // only enable code marking as the default visualization
             //nfpVisualizationActive[NFP_VIS.CODE_MARKING] = true;
@@ -209,6 +212,11 @@ namespace VRVis.Settings {
             if (allSameState) { toggleNFPVisActive = !toggleNFPVisActive; }
 
             NFPSettingsChanged(true);
+        }
+
+        public bool ToggleComparisonMode() {
+            ComparisonMode = !ComparisonMode;
+            return ComparisonMode;
         }
 
 

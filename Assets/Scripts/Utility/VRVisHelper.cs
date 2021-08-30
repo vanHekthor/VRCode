@@ -84,9 +84,15 @@ namespace VRVis.Utilities {
                 RProperty_NFP nfpProp = region.GetProperty(ARProperty.TYPE.NFP, nfp) as RProperty_NFP;
                 if (nfpProp == null || !nfpProp.GotValue()) { colors.Add(defaultColor); continue; }
 
-                // get color method and method min/max
-                AColorMethod colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.NONE);
+                // get color method and method min/max                
                 MinMaxValue minMax = RegionModifier.GetMinMaxValues(nfpProp.GetName(), codeFile, setting.GetMinMaxValue());
+                AColorMethod colMethod;
+                if (ApplicationLoader.GetApplicationSettings().ComparisonMode) {
+                    colMethod = setting.GetMinMaxColorMethod(Settings.ApplicationSettings.NFP_VIS.NONE, minMax.GetMaxValue(), minMax.GetMaxValue());
+                }
+                else {
+                    colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.NONE);
+                }
 
                 if (minMax == null) {
                     Debug.LogError("Failed to apply NFP mapping (" + nfpProp.GetName() +  ") - Missing min/max!");
