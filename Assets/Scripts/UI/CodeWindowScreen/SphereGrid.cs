@@ -147,7 +147,7 @@ namespace VRVis.UI.Helper {
         }
 
         public SphereGridPoint GetRightNeighbor(int layerIdx, int columnIdx) {
-            return GetGridPoint(layerIdx, (columnIdx - 1 + columnIdx) % GridPointsPerLayer);
+            return GetGridPoint(layerIdx, (columnIdx - 1 + GridPointsPerLayer) % GridPointsPerLayer);
         }
 
         public SphereGridPoint GetRightNeighbor(SphereGridPoint gridPoint) {

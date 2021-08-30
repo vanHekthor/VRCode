@@ -216,7 +216,21 @@ namespace VRVis.Spawner {
             StartCoroutine(SpawnCoroutine(callback));
         }
 
-        public void SpawnFileNextTo(CodeFile fileToSpawn, CodeFileReferences baseFileRef, Action<bool, CodeFile, string> callback) {
+        /// <summary>
+        /// <para>Similarly to the SpawnFile method this method spawn a file. It is intended for cases where one would want to spawn a file
+        /// next to another file.</para>
+        /// <para>For example when pressing a link button in a code file and wanting to display the linked code file right
+        /// next to the current base file.</para>
+        /// <para>When a window grid exists a neighboring place in the grid to the left/right is chosen otherwise the new window is
+        /// simply placed a certain distance away to the left/right of the base file.</para>
+        /// <para>If there is no non-occupied, neighboring place in the window grid to the side the file should be spawned
+        /// a callback with an error message gets called.</para>
+        /// </summary>
+        /// <param name="fileToSpawn"></param>
+        /// <param name="baseFileRef"></param>
+        /// <param name="leftSide">True if the file should be spawned to the left.</param>
+        /// <param name="callback"></param>
+        public void SpawnFileNextTo(CodeFile fileToSpawn, CodeFileReferences baseFileRef, bool leftSide, Action<bool, CodeFile, string> callback) {
 
             if (!InitSpawning(fileToSpawn.GetNode(), callback)) {
                 return;
@@ -236,7 +250,23 @@ namespace VRVis.Spawner {
                     int layerIdx = (int) gridElement.GridPositionLayer;
                     int columnIdx = (int) gridElement.GridPositionColumn;
 
-                    SphereGridPoint neighbor = windowGrid.GetLeftNeighbor(layerIdx, columnIdx);
+                    SphereGridPoint neighbor;
+                    if (leftSide) {
+                        neighbor = windowGrid.GetLeftNeighbor(layerIdx, columnIdx);                        
+                    }
+                    else {
+                        neighbor = windowGrid.GetRightNeighbor(layerIdx, columnIdx);
+                    }
+
+                    if (windowGrid.IsOccupied(neighbor.LayerIdx, neighbor.ColumnIdx)) {
+                        if (neighbor.LayerIdx == 0) {
+                            neighbor = windowGrid.GetTopNeighbor(neighbor.LayerIdx, neighbor.ColumnIdx);
+                        }
+                        else {
+                            neighbor = windowGrid.GetBottomNeighbor(neighbor.LayerIdx, neighbor.ColumnIdx);
+                        }
+                    }
+
                     if (neighbor != null) {
                         if (!windowGrid.IsOccupied(neighbor.LayerIdx, neighbor.ColumnIdx)) {
                             spawn_position = neighbor.AttachmentPoint;
