@@ -511,21 +511,62 @@ namespace VRVis.IO.Features {
         /// <param name="id">ID of the region</param>
         /// <returns>Region property values</returns>
         public Dictionary<string, double> CalculateRegionPropertyValues(string id) {
-            Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
-            Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
+            bool calcConfigDifferences = ApplicationLoader.GetInstance().GetAppSettings().ComparisonMode;
 
-            foreach (KeyValuePair<string, AFeature> option in options) {
-                if (option.Value is Feature_Boolean) {
-                    binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
+            if (!calcConfigDifferences) {
+                Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
+                Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
+
+                foreach (KeyValuePair<string, AFeature> option in options) {
+                    if (option.Value is Feature_Boolean) {
+                        binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
+                    }
+                    else if (option.Value is Feature_Range) {
+                        numericOptionConfig.Add(option.Key, option.Value.GetValue());
+                    }
                 }
-                else if (option.Value is Feature_Range) {
-                    numericOptionConfig.Add(option.Key, option.Value.GetValue());
+
+                Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+                //config.BinaryOptionList = GetBinaryOptions();
+                //config.NumericOptionList = GetNumericOptions();
+
+                var result = ApplicationLoader.GetInstance().GetInfluenceModel().EvaluateConfiguration(config, id);
+
+                foreach (KeyValuePair<string, double> pair in result) {
+                    Debug.Log("Region ID: " + id + " Prop: " + pair.Key + " Value: " + pair.Value);
                 }
+
+                return result;
+            }
+            else {
+                ConfigManager configManager = ConfigManager.GetInstance();
+                return CalculateConfigDifferenceByRegion(id, configManager.Config1, configManager.Config2);
             }
 
-            Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+        }
 
-            return ApplicationLoader.GetInstance().GetInfluenceModel().EvaluateConfiguration(config, id);
+        /// <summary>
+        /// Calculates the the region property value difference between two configurations.
+        /// </summary>
+        /// <param name="id">Region ID</param>
+        /// <param name="config1"></param>
+        /// <param name="config2"></param>
+        /// <returns></returns>
+        private Dictionary<string, double> CalculateConfigDifferenceByRegion(string id, Configuration config1, Configuration config2) {
+            var influenceModel = ApplicationLoader.GetInstance().GetInfluenceModel();
+            var config1Values = influenceModel.EvaluateConfiguration(config1, id);
+            var config2Values = influenceModel.EvaluateConfiguration(config2, id);
+
+            var configDeltas = new Dictionary<string, double>(); 
+            foreach (string option in config1Values.Keys) {
+                //Debug.Log("Region ID: " + id + "\n Config1 | " + option + ": " + config1Values[option] +
+                //    "\n Config2 |" + option + ": " + config2Values[option] +
+                //    "\n Delta |" + option + ": " + (config2Values[option] - config1Values[option]));
+
+                configDeltas.Add(option, config2Values[option] - config1Values[option]);
+            }
+
+            return configDeltas;
         }
 
 
@@ -564,6 +605,21 @@ namespace VRVis.IO.Features {
             foreach (Spawner.UISpawner s in ApplicationLoader.GetInstance().GetAttachedUISpawners()) {
                 s.VariabilityModelValidated(prev_valid, valid);
             }
+
+            Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
+            Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
+
+            foreach (KeyValuePair<string, AFeature> option in options) {
+                if (option.Value is Feature_Boolean) {
+                    binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
+                }
+                else if (option.Value is Feature_Range) {
+                    numericOptionConfig.Add(option.Key, option.Value.GetValue());
+                }
+            }
+
+            Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+            config.SaveAsJson("Configurations/config.json");            
         }
 
     }

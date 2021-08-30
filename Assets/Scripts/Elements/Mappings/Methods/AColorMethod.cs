@@ -9,9 +9,7 @@ namespace VRVis.Mappings.Methods {
     /// A color mapping method.<para/>
     /// Evaluates a color value at a specific time "t".<para/>
     /// Between the "from-color" and "to-color" will be interpolated.<para/>
-    /// 
-    /// Recently added:<para/>
-    /// - continuous or stepwise interpolation
+    /// Optionally 
     /// </summary>
     public abstract class AColorMethod : IMappingMethod {
 
@@ -19,6 +17,11 @@ namespace VRVis.Mappings.Methods {
 
 	    private Color fromColor;
         private Color toColor;
+        private Color midColor;
+
+        public bool HasNeutralColor { get; private set; }
+        private float neutralValue;
+        private float ratio = 0.5f;
 
         // gradient steps enabled when this is greater than 1
         private uint steps = 0;
@@ -29,10 +32,27 @@ namespace VRVis.Mappings.Methods {
 
         // CONSTRUCTOR
 
+        public AColorMethod(string methodName, Color fromColor, Color toColor, Color midColor, float neutralValue, float ratio) {
+            this.methodName = methodName;
+            this.fromColor = fromColor;
+            this.toColor = toColor;
+            this.midColor = midColor;
+            HasNeutralColor = true;
+            this.ratio = ratio;
+            this.neutralValue = neutralValue;
+        }
+
+        public AColorMethod(string methodName, Color fromColor, Color toColor, Color midColor, float neutralValue) 
+            : this(methodName, fromColor, toColor, midColor, neutralValue, 0.5f) {}
+
+        public AColorMethod(string methodName, Color fromColor, Color toColor, Color midColor) 
+            : this(methodName, fromColor, toColor, midColor, 0.0f) {}
+
         public AColorMethod(string methodName, Color fromColor, Color toColor) {
             this.methodName = methodName;
             this.fromColor = fromColor;
             this.toColor = toColor;
+            HasNeutralColor = false;
         }
 
         protected AColorMethod(string methodName)
@@ -49,6 +69,12 @@ namespace VRVis.Mappings.Methods {
         public Color GetToColor() { return toColor; }
         public void SetToColor(Color color) { toColor = color; }
 
+        public Color GetNeutralColor() { return midColor; }
+        public void SetNeutralColor(Color color) { midColor = color; }
+
+        public float GetNeutralValue() { return neutralValue; }
+        public void SetNeutralValue(float value) { neutralValue = value; }
+
         public uint GetSteps() { return steps; }
 
         /// <summary>Set steps > 1 to enable gradient steps.</summary>
@@ -63,6 +89,54 @@ namespace VRVis.Mappings.Methods {
         /// Values out of bounds [0, 1] will be cropped.
         /// </summary>
         public Color Evaluate(float t) {
+
+            // validate bounds of t
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            t = ApplyGradientSteps(t);
+
+            Gradient gradient;
+            GradientColorKey[] colorKey;
+            GradientAlphaKey[] alphaKey;
+
+
+            gradient = new Gradient();
+
+            // Populate the color keys at the relative time 0 and 1 (0 and 100%)
+            if (!HasNeutralColor) {
+                colorKey = new GradientColorKey[2];
+                colorKey[0].color = fromColor;
+                colorKey[0].time = 0.0f;
+                colorKey[1].color = toColor;
+                colorKey[1].time = 1.0f;
+
+                // Populate the alpha  keys at relative time 0 and 1  (0 and 100%)
+                alphaKey = new GradientAlphaKey[2];
+                alphaKey[0].alpha = fromColor.a;
+                alphaKey[0].time = 0.0f;
+                alphaKey[1].alpha = toColor.a;
+                alphaKey[1].time = 1.0f;
+            } else {
+                colorKey = new GradientColorKey[3];
+                colorKey[0].color = fromColor;
+                colorKey[0].time = 0.0f;
+                colorKey[1].color = midColor;
+                colorKey[1].time = ratio;
+                colorKey[2].color = toColor;
+                colorKey[2].time = 1.0f;
+
+                // Populate the alpha  keys at relative time 0 and 1  (0 and 100%)
+                alphaKey = new GradientAlphaKey[3];
+                alphaKey[0].alpha = fromColor.a;
+                alphaKey[0].time = 0.0f;
+                alphaKey[1].alpha = midColor.a;
+                alphaKey[1].time = ratio;
+                alphaKey[2].alpha = toColor.a;
+                alphaKey[2].time = 1.0f;
+            }
+
+            gradient.SetKeys(colorKey, alphaKey);
+
+            return gradient.Evaluate(t);
 
             // validate bounds of t
             t = t < 0 ? 0 : t > 1 ? 1 : t;

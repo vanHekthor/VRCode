@@ -402,7 +402,7 @@ namespace VRVis.Elements {
 
             foreach (RProperty_NFP property in NFPs) {
                 property.ResetValue();
-                property.SetValue((float) calculatedPropertyValues[property.GetName()]);
+                property.SetValue((float)calculatedPropertyValues[property.GetName()]);
 
                 // Debug.Log("New: " + GetID() + "; " + property.GetName() + " = " + property.GetValue());
 

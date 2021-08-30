@@ -53,16 +53,31 @@ namespace VRVis.Mappings.Methods {
             // default colors
             Color fromColor = Color.black;
             Color toColor = Color.black;
+            Color neutralColor = Color.black;
+
+            float neutralValue = 0.5f;
 
             // create the color using the input string (values separated by comma)
             if (o["from"] != null) { fromColor = Utility.ColorFromString((string) o["from"], ',', 0.5f); }
             if (o["to"] != null) { toColor = Utility.ColorFromString((string) o["to"], ',', 0.5f); }
+            if (o["neutral"] != null) { neutralColor = Utility.ColorFromString((string) o["neutral"], ',', 0.0f); }
+            if (o["neutral_value"] != null) { neutralValue = (float) o["neutral_value"]; }
 
             // create instance
-            Color_Scale color_scale = new Color_Scale(methodName, fromColor, toColor);
-
+            Color_Scale color_scale;
+            if (o["neutral"] == null) {
+                color_scale = new Color_Scale(methodName, fromColor, toColor);
+            }
+            else {
+                if (o["neutral_value"] == null) {
+                    color_scale = new Color_Scale(methodName, fromColor, toColor, neutralColor);
+                }
+                else { 
+                    color_scale = new Color_Scale(methodName, fromColor, toColor, neutralColor, neutralValue);
+                }
+            }
             // gradient steps
-            uint steps = 0;
+                uint steps = 0;
             if (o["steps"] != null) { if (uint.TryParse((string) o["steps"], out steps)) { color_scale.SetSteps(steps); } }
 
             return color_scale;
