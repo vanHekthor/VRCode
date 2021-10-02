@@ -73,6 +73,8 @@ namespace VRVis.UI.Helper {
 
                 Grid[layerIdx][columnIdx].AttachedElement = element;
 
+                element.Grid = this;
+
                 // This does not work as expected. Becomes null after a while for unknown reasons.
                 // Better use the indices for referencing the grid point this grid element is attached to. 
                 element.AttachedTo = Grid[layerIdx][columnIdx]; 
