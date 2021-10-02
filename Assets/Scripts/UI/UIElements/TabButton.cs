@@ -15,17 +15,11 @@ namespace VRVis.UI.UIElements {
 
         public Image backgroundImage;
 
-        // Start is called before the first frame update
         void Start() {
             backgroundImage = GetComponent<Image>();
             tabGroup.Subscribe(this);
         }
-
-        // Update is called once per frame
-        void Update() {
-
-        }
-
+        
         protected override void OnHandHoverBegin(Hand hand) {
             base.OnHandHoverBegin(hand);
             tabGroup.OnTabEnter(this);

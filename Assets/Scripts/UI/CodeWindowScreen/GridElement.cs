@@ -11,6 +11,8 @@ namespace VRVis.UI.Helper {
 
         public SphereGridPoint AttachedTo { get; set; }
 
+        public SphereGrid Grid { get; set; }
+
         public int GridPositionLayer { get; set; }
         public int GridPositionColumn { get; set; }
 
