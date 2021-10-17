@@ -1,6 +1,7 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using VRVis.Spawner.File;
@@ -12,6 +13,10 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
 
     public Sprite ZoomIn;
     public Sprite ZoomOut;
+
+    public static CodeWindowZoomEvent zoomInEvent = new CodeWindowZoomEvent();
+    public static CodeWindowZoomEvent zoomOutEvent = new CodeWindowZoomEvent();
+    public class CodeWindowZoomEvent : UnityEvent<CodeFileReferences> {};
 
     private bool zoomed = false;
     private bool zooming = false;
@@ -42,7 +47,6 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
 
     void Update() {
         float step = speed * Time.deltaTime;
-        
         if (zooming) {
             if (!zoomed) {
                 codeWindow.transform.position = Vector3.MoveTowards(codeWindow.transform.position, zoomedPosition, step);
@@ -51,6 +55,8 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
                     zooming = false;
                     zoomed = true;
                     backgroundImage.sprite = ZoomOut;
+
+                    zoomInEvent.Invoke(gameObject.GetComponent<CodeFileReferences>());
                 }
             } 
             else {
@@ -60,6 +66,8 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
                     zooming = false;
                     zoomed = false;
                     backgroundImage.sprite = ZoomIn;
+
+                    zoomOutEvent.Invoke(gameObject.GetComponent<CodeFileReferences>());
                 }
             }                    
         } else {

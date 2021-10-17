@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
+using UnityEngine.Events;
 
 /// <summary>
 /// Hint:<para/>
@@ -17,6 +18,8 @@ namespace VRVis.Interaction.LaserPointer {
 
         public static LaserPointerInputModule instance { get { return _instance; } }
         private static LaserPointerInputModule _instance = null;
+
+        public UnityEvent attachedController;
 
         public LayerMask layerMask;
 
@@ -84,6 +87,9 @@ namespace VRVis.Interaction.LaserPointer {
         public void AddController(IUILaserPointer controller) {
             if (controller.syncLayerMaskInputModule) { controller.rayLayerMask = layerMask; } // synchronize/override layermasks
             _controllerData.Add(controller, new ControllerData());
+
+            attachedController.Invoke();
+
             Debug.Log("Laser pointer registered");
         }
 

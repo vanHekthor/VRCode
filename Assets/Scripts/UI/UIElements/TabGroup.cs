@@ -1,6 +1,8 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UI;
 
 namespace VRVis.UI.UIElements {
@@ -11,6 +13,9 @@ namespace VRVis.UI.UIElements {
         public Sprite tabHovered;
         public Sprite tabActive;
         public GameObject tabPanelArea;
+
+        public TabSelected tabSelected = new TabSelected();
+        public class TabSelected : UnityEvent<string> { }
 
         private List<GameObject> tabPanels;
         private TabButton selectedTab;
@@ -56,14 +61,20 @@ namespace VRVis.UI.UIElements {
             button.backgroundImage.sprite = tabActive;
 
             int index = button.transform.GetSiblingIndex();
+            string tabTitle = "";
             for (int i = 0; i < tabPanels.Count; i++) {
                 if (i == index) {
                     tabPanels[i].SetActive(true);
+
+                    tabTitle = tabPanels[i].transform.Find("Header").GetComponentInChildren<TextMeshProUGUI>().text;
                 }
                 else {
                     tabPanels[i].SetActive(false);
                 }
             }
+
+            
+            tabSelected.Invoke(tabTitle);
         }
 
         private void ResetTabs() {

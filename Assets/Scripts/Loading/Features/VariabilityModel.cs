@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Xml;
@@ -149,6 +150,10 @@ namespace VRVis.IO.Features {
 
         public IEnumerable<string> GetOptions() {
             return options.Keys;
+        }
+
+        public Dictionary<string, AFeature> GetOptionDict() {
+            return options;
         }
 
         /// <summary>Get index position for this option. Returns "-1" if not found!</summary>
@@ -526,7 +531,7 @@ namespace VRVis.IO.Features {
                     }
                 }
 
-                Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+                Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
                 //config.BinaryOptionList = GetBinaryOptions();
                 //config.NumericOptionList = GetNumericOptions();
 
@@ -618,7 +623,7 @@ namespace VRVis.IO.Features {
                 }
             }
 
-            Configuration config = new Configuration(binaryOptionConfig, numericOptionConfig);
+            Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
             config.SaveAsJson("Configurations/config.json");            
         }
 

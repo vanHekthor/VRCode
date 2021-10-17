@@ -1,5 +1,6 @@
 ﻿using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Dynamic;
@@ -13,6 +14,8 @@ namespace VRVis.IO.Features {
     /// Represents a software configuration containing binary and numery options. It can be evaluated by the Influence Model.   
     /// </summary>
     public class Configuration {
+        private string configID;        
+
         private Dictionary<string, bool> binaryOptions;
         private Dictionary<string, float> numericOptions;
 
@@ -32,9 +35,18 @@ namespace VRVis.IO.Features {
         //    }
         //}
 
-        public Configuration(Dictionary<string, bool> binaryOptions, Dictionary<string, float> numericOptions) {
+        public Configuration(string configID, Dictionary<string, bool> binaryOptions, Dictionary<string, float> numericOptions) {
+            this.configID = configID;
             this.binaryOptions = binaryOptions;
             this.numericOptions = numericOptions;
+        }
+
+        public string GetConfigID() {
+            return configID;
+        }
+
+        private void SetConfigID(string value) {
+            configID = value;
         }
 
         public HashSet<string> GetActiveBinaryOptions() {
@@ -51,8 +63,23 @@ namespace VRVis.IO.Features {
             return numericOptions;
         }
 
+        public float GetOptionValue(string optionName, out bool optionExists) {
+            optionExists = false;
+            if (binaryOptions.ContainsKey(optionName)) {
+                optionExists = true;
+                return binaryOptions[optionName] ? 1 : 0;
+            }
+            if (numericOptions.ContainsKey(optionName)) {
+                optionExists = true;
+                return numericOptions[optionName];
+            }
+
+            Debug.LogError("Invalid option name! The configuration does not have an option called: " + optionName);
+            return 0;
+        }
+
         public void SaveAsJson(string filePath) {
-            Debug.LogError("Starting to save config file as json!...");
+            Debug.LogWarning("Starting to save config file as json!...");
 
             dynamic configObj = new ExpandoObject();
 
@@ -72,6 +99,7 @@ namespace VRVis.IO.Features {
                 numericDict.Add(numericOption.Key, numericOption.Value);
             }
 
+            configObj.configID = GetConfigID();
             configObj.binaryOptions = binaryDict;
             configObj.numericOptions = numericDict;
 
@@ -86,6 +114,8 @@ namespace VRVis.IO.Features {
             var result = JsonConvert.DeserializeObject<Configuration>(jsonString); 
             Debug.Log(result.binaryOptions);
 
+            Debug.Log("ID: " + result.configID);
+
             foreach (KeyValuePair<string, bool> binOption in result.binaryOptions) {
                 Debug.Log("Key: " + binOption.Key + " Value: " + binOption.Value);
             }
@@ -96,6 +126,7 @@ namespace VRVis.IO.Features {
 
             return result;
         }
+
     }
 
 }
