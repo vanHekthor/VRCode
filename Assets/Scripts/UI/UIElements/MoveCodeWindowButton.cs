@@ -1,11 +1,17 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
+using VRVis.IO;
 using VRVis.Spawner.File;
 using VRVis.UI.Helper;
 
 public class MoveCodeWindowButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IDragHandler {
+
+    public static CodeWindowMoveEvent moveEvent = new CodeWindowMoveEvent();
+
+    public class CodeWindowMoveEvent : UnityEvent<CodeFileReferences> { }
 
     private GameObject codeWindow;
 
@@ -55,12 +61,15 @@ public class MoveCodeWindowButton : MonoBehaviour, IPointerDownHandler, IPointer
                     Vector3 lookDirection = previewPos - grid.screenSphere.transform.position;
                     Quaternion previewRot = Quaternion.LookRotation(lookDirection);
 
-                    codeWindow.transform.position = previewPos;
-                    codeWindow.transform.rotation = previewRot;
+                    if ((codeWindow.transform.position - previewPos).magnitude > 0.1f) {
+                        codeWindow.transform.position = previewPos;
+                        codeWindow.transform.rotation = previewRot;
+
+                        moveEvent.Invoke(codeWindow.GetComponent<CodeFileReferences>());
+                    }
                 }
             }
         }
-
     }
 
     

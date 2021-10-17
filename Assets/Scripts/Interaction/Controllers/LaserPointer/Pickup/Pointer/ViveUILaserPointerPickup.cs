@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using Valve.VR;
 using Valve.VR.InteractionSystem;
+using Valve.VR.InteractionSystem.Sample;
 using VRVis.Interaction.Controller;
 using VRVis.Interaction.ControllerSelectionSystem;
 using VRVis.IO.Features;
@@ -73,6 +74,12 @@ namespace VRVis.Interaction.LaserPointer {
         private Vector2 scrollChange;
         private Vector2 lastScrollChange;
         private float lastFeedback = 0;
+
+        //void Start() {
+            
+        //    gameObject.transform.position = gameObject.GetComponent<LockToPoint>().snapTo.transform.position;
+        //    gameObject.transform.rotation = gameObject.GetComponent<LockToPoint>().snapTo.transform.rotation;
+        //}
 
 
         /// <summary>Get the last hovered game object.</summary>
@@ -238,6 +245,17 @@ namespace VRVis.Interaction.LaserPointer {
             return true;
         }
 
+        public void ToggleVisibility() {
+            if (!gameObject.activeSelf) {
+                gameObject.transform.position = gameObject.GetComponent<LockToPoint>().snapTo.transform.position;
+                gameObject.transform.rotation = gameObject.GetComponent<LockToPoint>().snapTo.transform.rotation;
+                gameObject.SetActive(true);
+            }
+            else {
+                gameObject.SetActive(false);
+            }
+        }
+
         /// <summary>Takes care of hiding the scroll wheel after a while.</summary>
         private IEnumerator HideScrollWheelAfter(float hideAfterSeconds) {
             yield return new WaitForSecondsRealtime(hideAfterSeconds);
@@ -255,8 +273,11 @@ namespace VRVis.Interaction.LaserPointer {
         private void OnAttachedToHand(Hand attachedHand) {
 
             controller = attachedHand;
-            transform.localPosition = Vector3.zero;
-            transform.localRotation = Quaternion.identity;
+            // transform.localPosition = Vector3.zero;
+            // transform.localRotation = Quaternion.identity;
+
+            ShowLaser();
+
             Debug.Log("Pickup Laser Pointer attached to hand: " + attachedHand.name);
 	    }
 
@@ -298,9 +319,12 @@ namespace VRVis.Interaction.LaserPointer {
                 //lastHovered.SendMessage("PointerDetached", hand, SendMessageOptions.DontRequireReceiver);
             }
 
+            HideLaser();
+
             Debug.Log("Pickup Laser Pointer detached from hand!");
-		    Destroy(gameObject);
-	    }
+            // Destroy(gameObject);
+            // remove the controller from the input module
+        }
 
 
 	    //-------------------------------------------------
@@ -376,18 +400,31 @@ namespace VRVis.Interaction.LaserPointer {
                     }
 
                     // attach CWMoverController
-                    ControllerSelection.SelectableController cwMoverCtrl = selectionScript.GetController(cwMoverIndex);
-                    if (cwMoverCtrl == null) {
-                        Debug.LogError("Could not find controller definition for CodeWindowMover! Ensure it exists.");
-                        return;
-                    }
 
-                    // if attached, try to pass the node info to the cw mover instance
-                    bool attached = selectionScript.AttachController(cwMoverCtrl);
-                    if (!attached) { return; }
+                    // OLD VERSION
+                    // There were multiple different laser pointers for interaction / moving windows / deleting windows.
+                    // Here the blue laser would have been switched out with the yellow laser that has the CodeWindowMover script.
+                    // Not needed anymore after updated CodeWindow design with and draggable title bar and close button.
+                    // Also the laser pointer is now a real physical object that can be grabbed
+                    //
+                    // ControllerSelection.SelectableController cwMoverCtrl = selectionScript.GetController(cwMoverIndex);
+                    //
+                    //
+                    // ControllerSelection.SelectableController cwMoverCtrl = selectionScript.GetController(cwMoverIndex);
+                    // if (cwMoverCtrl == null) {
+                    //     Debug.LogError("Could not find controller definition for CodeWindowMover! Ensure it exists.");
+                    //     return;
+                    // }
+                    //
+                    //// if attached, try to pass the node info to the cw mover instance
+                    // bool attached = selectionScript.AttachController(cwMoverCtrl);
+                    // if (!attached) { return; }
 
+                    // NEW VERSION
+                    // blue laser also has the CodeWindowMover script and does not get replaced
                     GameObject attachedObject = controller.currentAttachedObject;
                     CodeWindowMover cwm = attachedObject.GetComponent<CodeWindowMover>();
+                    cwm.isActive = true;
                     if (cwm) { cwm.SelectNode(node, true, clickedAt); }
                 }
                 else {

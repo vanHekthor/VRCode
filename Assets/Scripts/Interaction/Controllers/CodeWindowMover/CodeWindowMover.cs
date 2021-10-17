@@ -24,6 +24,8 @@ namespace VRVis.Interaction.Controller {
     /// - player can change distance of laser using touchpad
     [RequireComponent(typeof(Interactable))]
     public class CodeWindowMover : MonoBehaviour {
+
+        public bool isActive = false;
         
         public SteamVR_Action_Boolean triggerButton;
         public SteamVR_Action_Vector2 trackpadPosition;
@@ -143,27 +145,27 @@ namespace VRVis.Interaction.Controller {
         private void CreatePointer() {
 
             // create laser pointer
-            if (!pointerObject) {
-                pointerObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                pointerObject.transform.SetParent(transform, false);
-                pointerObject.transform.localScale = new Vector3(laserThickness, laserThickness, 100.0f);
-                pointerObject.transform.localPosition = new Vector3(0.0f, 0.0f, 50.0f);
-                pointerObject.SetActive(true);
+            //if (!pointerObject) {
+            //    pointerObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            //    pointerObject.transform.SetParent(transform, false);
+            //    pointerObject.transform.localScale = new Vector3(laserThickness, laserThickness, 100.0f);
+            //    pointerObject.transform.localPosition = new Vector3(0.0f, 0.0f, 50.0f);
+            //    pointerObject.SetActive(true);
 
-                // destroy collider
-                DestroyImmediate(pointerObject.GetComponent<BoxCollider>());
+            //    // destroy collider
+            //    DestroyImmediate(pointerObject.GetComponent<BoxCollider>());
 
-                // create pointer material
-                if (!ptrMaterial) {
-                    ptrMaterial = new Material(Shader.Find("VRVis/LaserPointer"));
-                    ptrMaterial.SetColor("_Color", Color.white); // set default color
-                }
+            //    // create pointer material
+            //    if (!ptrMaterial) {
+            //        ptrMaterial = new Material(Shader.Find("VRVis/LaserPointer"));
+            //        ptrMaterial.SetColor("_Color", Color.white); // set default color
+            //    }
 
-                // get mesh renderer components and apply default color
-                laser_mr = pointerObject.GetComponent<MeshRenderer>();
-                if (laser_mr) { laser_mr.material = ptrMaterial; }
-                SetLaserColor(laserColor);
-            }
+            //    // get mesh renderer components and apply default color
+            //    laser_mr = pointerObject.GetComponent<MeshRenderer>();
+            //    if (laser_mr) { laser_mr.material = ptrMaterial; }
+            //    SetLaserColor(laserColor);
+            //}
 
             // create placement preview
             if (!placementObject) {
@@ -237,15 +239,6 @@ namespace VRVis.Interaction.Controller {
 
             // selecting the position of where to spawn a code window
             if (selectedNode != null) { WindowPlacementUpdate(placementDistance); }
-            else if (selectedObject == null) { // selected node cleanup
-
-                // hide placement preview if shown
-                if (placementObject) {  
-                    placementObject.SetActive(false);
-                    placementObject.transform.rotation = Quaternion.identity; // reset rotation
-                }
-            }
-
 
             // moving a selected object (e.g. a code window)
             if (selectedObject != null) { WindowMovementUpdate(placementDistance); }
@@ -287,8 +280,9 @@ namespace VRVis.Interaction.Controller {
             if (!IsSomethingSelected()) { return; }
 
             // handle locked teleport button (unlock if user releases the button)
-            if (TeleportButtonPressed() && teleportButtonLocked) { return; }
-            else if (!TeleportButtonPressed() && teleportButtonLocked) { teleportButtonLocked = false; }
+            // !! temporaryly commented out before CodeWindowMover gets removed completely !!
+            // if (TeleportButtonPressed() && teleportButtonLocked) { return; }
+            // else if (!TeleportButtonPressed() && teleportButtonLocked) { teleportButtonLocked = false; }
 
             // get where the users finger is
             Vector2 fingerPos = GetTrackpadPosition();
@@ -341,8 +335,9 @@ namespace VRVis.Interaction.Controller {
         private void ChangeLaserDistance(float value) {
 
             float laserThreshold = laserSettings.laserDistanceThreshold;
-            if (Mathf.Abs(value) < laserThreshold) { return; }
-            
+            // !! temporaryly commented out before CodeWindowMover gets removed completely !!
+            //if (Mathf.Abs(value) < laserThreshold) { return; }
+
             // start from this distance if the last hit distance was closer
             if (lastRayHitDistance < laserSettings.defaultLaserDistance) {
                 laserSettings.defaultLaserDistance = lastRayHitDistance;
@@ -364,7 +359,8 @@ namespace VRVis.Interaction.Controller {
 
             // get distance change
             float distanceChange = speedPerc * distanceChangeSpeed * Time.deltaTime;
-            if (distanceChange == 0) { return; }
+            // !! temporaryly commented out before CodeWindowMover gets removed completely !!
+            // if (distanceChange == 0) { return; }
 
             // move further away or closer depending on the distance change value
             float curLaserDist = laserSettings.defaultLaserDistance;
@@ -376,6 +372,9 @@ namespace VRVis.Interaction.Controller {
             if (newDist > maxDist) { laserSettings.defaultLaserDistance = maxDist; return; }
             else if (newDist < minDist) { laserSettings.defaultLaserDistance = minDist; return; }
             laserSettings.defaultLaserDistance = newDist;
+
+            // !! temporary change before CodeWindowMover gets removed completely !!
+            laserSettings.defaultLaserDistance = 20;
         }
                 
         /// <summary>
@@ -664,6 +663,13 @@ namespace VRVis.Interaction.Controller {
 
             // unselect node
             selectedNode = null;
+            isActive = false;
+
+            // hide placement preview if shown
+            if (placementObject) {
+                placementObject.SetActive(false);
+                placementObject.transform.rotation = Quaternion.identity; // reset rotation
+            }
         }
 
 
@@ -754,8 +760,7 @@ namespace VRVis.Interaction.Controller {
 
 
         /// <summary>Reset the modified laser distance and rotation.</summary>
-        private void ResetSettings() {
-        
+        private void ResetSettings() {        
             laserSettings.defaultLaserDistance = laserSettings.maxLaserDistance;
             rotationModified = false;
         }
@@ -806,8 +811,8 @@ namespace VRVis.Interaction.Controller {
 	    private void OnAttachedToHand(Hand attachedHand) {
 
             controller = attachedHand;
-            transform.localPosition = Vector3.zero;
-            transform.localRotation = Quaternion.identity;
+            // transform.localPosition = Vector3.zero;
+            // transform.localRotation = Quaternion.identity;
             Debug.Log("CodeWindowMover attached to hand: " + attachedHand.name);
 	    }
 
@@ -817,12 +822,14 @@ namespace VRVis.Interaction.Controller {
         // Only called by the hand that this object is attached to!
 	    private void HandAttachedUpdate(Hand hand) {
 
-		    // Reset transform since we cheated it right after getting poses on previous frame
-		    //transform.localPosition = Vector3.zero;
-		    //transform.localRotation = Quaternion.identity;
+            // Reset transform since we cheated it right after getting poses on previous frame
+            //transform.localPosition = Vector3.zero;
+            //transform.localRotation = Quaternion.identity;
 
-            // perform a laser update call
-            HandUpdateCall();
+            // perform a laser update call#
+            if (isActive) {
+                HandUpdateCall();
+            }
         }
 
 	    //-------------------------------------------------
@@ -840,7 +847,8 @@ namespace VRVis.Interaction.Controller {
         /// <summary>Important so that the controller and its components get deleted after detach.</summary>
 	    private void OnDetachedFromHand(Hand hand) {
             Debug.Log("CodeWindowMover detached from hand!");
-		    Destroy(gameObject);
+            isActive = false;
+		    // Destroy(gameObject);
 	    }
 
         // =========================== STEAM VR REQUIRED METHODS END =========================== //

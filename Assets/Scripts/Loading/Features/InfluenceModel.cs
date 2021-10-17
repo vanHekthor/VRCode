@@ -61,7 +61,6 @@ namespace VRVis.IO.Features {
                     }
                 }
             }
-            Debug.LogWarning("Method EvaluateConfiguration() not implemented yet!");
 
             return evaluation;
         }

@@ -337,7 +337,8 @@ namespace VRVis.Interaction.ControllerSelectionSystem {
             // instantiate controller preview in radial layout around spawn position
             float arcLength = Mathf.PI;
             float radius = radialRadius; // how far away controllers are from the center
-            int steps = controllers.Length + 1; // because controllers should be centered
+            //int steps = controllers.Length + 1; // because controllers should be centered
+            int steps = 2;
             int i = 0;
 
             // possible optimization (if required):
@@ -347,6 +348,9 @@ namespace VRVis.Interaction.ControllerSelectionSystem {
             // - so instead of calculating the positions on the left side,
             //   use the previously calculated ones and negate the x-value to mirror them
             foreach (SelectableController controller in controllers) {
+                if (controller.name != "Laser Pointer") {
+                    continue;
+                }
 
                 // check that item package exists
                 if (!controller.itemPackage && controller.attachToHand) {

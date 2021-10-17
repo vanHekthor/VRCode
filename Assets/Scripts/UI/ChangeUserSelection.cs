@@ -25,11 +25,14 @@ namespace VRVis.Testing.Interaction {
 
 
 	    void Start() {
-		
+
             // get property names
             //InitializeNameArray(ARProperty.TYPE.NFP, out nfpNames);
             //InitializeNameArray(ARProperty.TYPE.FEATURE, out featureNames);
-	    }
+
+            ToggleCodeCityVisualization(true);
+
+        }
 
 
         /// <summary>Get property names of specified type.</summary>
