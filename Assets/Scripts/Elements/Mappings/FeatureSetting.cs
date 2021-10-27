@@ -13,6 +13,8 @@ namespace VRVis.Mappings {
     /// </summary>
     public class FeatureSetting : AMappingEntry {
 
+        private static Color DEFAULT_COLOR = new Color(0.6933f, 0.9471f, 1f);
+
         private static FeatureSetting DEFAULT_INSTANCE = null;
 
         private Color color;
@@ -43,7 +45,7 @@ namespace VRVis.Mappings {
         /// Should only be used for the default setting instance!
         /// </summary>
         private void LoadDefaults() {
-            color = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+            color = DEFAULT_COLOR;
         }
 
         /// <summary>Initialize this instance from JSON.</summary>

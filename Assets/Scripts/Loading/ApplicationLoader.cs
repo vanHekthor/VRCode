@@ -5,6 +5,7 @@ using UnityEngine;
 using VRVis.IO.Features;
 using VRVis.Settings;
 using VRVis.Spawner;
+using VRVis.Testing.Interaction;
 using VRVis.Utilities;
 
 namespace VRVis.IO {
@@ -53,6 +54,7 @@ namespace VRVis.IO {
         [Tooltip("A list of public registered spawners. Do not add \"sub-spawners\" to it.")]
         public SpawnerEntry[] spawners;
 
+        public ChangeUserSelection terminalInputController;
 
         // --------------------------------------------------------------------
         // Loaders to get resources from disk, required for visualizations.
@@ -187,8 +189,13 @@ namespace VRVis.IO {
             foreach (UISpawner spawner in uiSpawner) { spawner.InitialSpawn(this); }
 
 
-            // update the nfp values for the first time (initial update)
+            // update the nfp values for the first time (initial update)            
             UpdateNFPValues(true);
+
+            if (GetApplicationSettings().IsFeatureModelValid()) {
+                terminalInputController.ApplyVariabilityModelConfiguration(null);
+            }
+
         }
 
         
