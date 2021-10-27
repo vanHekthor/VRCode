@@ -186,11 +186,18 @@ namespace VRVis.Spawner {
 
             // the message will be used by the "ChangeTextHelper" component if it exists
             entry.SendMessage("ChangeText", text, SendMessageOptions.DontRequireReceiver);
-            entry.GetComponentInChildren<TextMeshProUGUI>().SetText(text);
+            entry.GetComponentInChildren<TextMeshProUGUI>().SetText(text);            
 
             // find toggle script
             Toggle toggle = entry.GetComponent<Toggle>();
             if (!toggle) { DestroyImmediate(entry); return null; }
+
+            // set checkmark color according to value mapping
+            ValueMappingsLoader mLoader = loader.GetMappingsLoader();
+            if (!mLoader.LoadedSuccessful()) { return null; } // nothing to do
+            Color color = mLoader.GetFeatureSetting(text).GetColor();
+            toggle.graphic.color = color;
+
 
             // add toggle to group if there is one
             //ToggleGroup group = groupParent.GetComponent<ToggleGroup>();

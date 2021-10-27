@@ -35,6 +35,16 @@ namespace VRVis.UI.UIElements {
             if (!_boxCollider) _boxCollider = gameObject.AddComponent<BoxCollider>();
 
             _boxCollider.size = _rectTransform.rect.size;
+
+            // Centering BoxCollider.
+            // The actual center of the RectTransform should be the center of the collider and not the pivot.
+            var boxCenter = new Vector2();
+
+            boxCenter = new Vector2(
+                (0.5f - _rectTransform.pivot.x) * _rectTransform.rect.width, 
+                (0.5f - _rectTransform.pivot.y) * _rectTransform.rect.height);
+
+            _boxCollider.center = new Vector3(boxCenter.x, boxCenter.y);
         }
     }
 }

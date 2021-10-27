@@ -250,7 +250,9 @@ namespace VRVis.Testing.Interaction {
             // do not apply if invalid
             bool isValid = model.GetLastValidationStatus();
             Color color = isValid ? VariabilityModel.COLOR_VALID : VariabilityModel.COLOR_INVALID;
-            applyUI.SendMessage("ChangeImageColor", color, SendMessageOptions.DontRequireReceiver);
+            if (applyUI != null) {
+                applyUI.SendMessage("ChangeImageColor", color, SendMessageOptions.DontRequireReceiver);
+            }
             ApplyVMConfig(isValid);
         }
 
