@@ -25,6 +25,8 @@ namespace VRVis.Spawner.Edges {
         public CodeFile BaseFile { get; private set; }
         private CodeFileReferences baseWindowReferences;
 
+        public CodeFile TargetFile { get; private set; }
+
         // distance between left and right next to the windows (converted to world units)
         private float baseWindowLeftRightDistance;
 
@@ -66,56 +68,15 @@ namespace VRVis.Spawner.Edges {
             if (linkButton) { Destroy(linkButton); }
         }
 
-        /// <summary>
-        /// Prepare the initialization of the edge that is linked to this button.<para/>
-        /// This will set the edge.
-        /// </summary>
-        public void Prepare(Edge edge) {
+        public bool InitLink(Edge edge, CodeFile baseFile, CodeFile targetFile) {            
+            BaseFile = baseFile;
 
             // set the edge this connection represents
             EdgeLink = edge;
 
             // the span of the enclosed connection region
             baseRegionSpan = edge.GetFrom().lines.to - edge.GetFrom().lines.from;
-            //endSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;
-
-            // create attachment spheres
-            string targetFile = EdgeLink.GetTo().file.ToLower();
-            linkButton = CreatePhysicalButton("LinkButton", targetFile);
-            if (!linkButton) {
-                Debug.LogError("Not able to properly instantiate the LinkButton targeting the file '" + targetFile + "'!");
-            }
-        }
-
-        /// <summary>
-        /// Creates physical link button and returns it.
-        /// </summary>
-        private GameObject CreatePhysicalButton(string name, string targetFile) {
-            
-            // create link button
-            GameObject linkButton = Instantiate(linkButtonPrefab);
-            CodeWindowLinkButton linkButtonComponent = linkButton.GetComponent<CodeWindowLinkButton>();
-            if (!linkButtonComponent) {
-                DestroyImmediate(linkButton);
-                return null;
-            }
-
-            linkButton.name = name;
-            linkButtonComponent.TargetFilePath = targetFile;
-            linkButtonComponent.AnchorObject = BaseFile.GetReferences().gameObject;
-
-            // attach to this GameObject instance
-            linkButton.transform.SetParent(transform);
-            linkButton.transform.rotation = transform.rotation;
-
-            linkButton.SetActive(false);
-
-            return linkButton;
-        }
-
-        public bool InitLink(Edge edge, CodeFile baseFile, CodeFile targetFile) {            
-            BaseFile = baseFile;
-            Prepare(edge);
+            //endSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;            
 
             updateLink = true;
             successfulAttached = false;
@@ -142,8 +103,14 @@ namespace VRVis.Spawner.Edges {
             GameObject anchor = new GameObject("LinkAnchor", typeof(RectTransform));
             anchorPoint = anchor.transform;
 
-            CodeWindowLinkButton linkButtonComponent = linkButton.GetComponent<CodeWindowLinkButton>();
-            linkButtonComponent.TargetFile = targetFile;
+            // set target file
+            TargetFile = targetFile;
+
+            // create attachment spheres
+            linkButton = CreatePhysicalButton("LinkButton");
+            if (!linkButton) {
+                Debug.LogError("Not able to properly instantiate the LinkButton targeting the file '" + targetFile + "'!");
+            }            
 
             // attach them to the code window canvas to automatically update
             // the world positions based on rotation, movement and scroll
@@ -156,6 +123,33 @@ namespace VRVis.Spawner.Edges {
             updateLink = true;
             successfulAttached = true;
             return true;
+        }
+
+        /// <summary>
+        /// Creates physical link button and returns it.
+        /// </summary>
+        private GameObject CreatePhysicalButton(string name) {
+
+            // create physical link button
+            GameObject linkButton = Instantiate(linkButtonPrefab);
+            CodeWindowLinkButton linkButtonComponent = linkButton.GetComponent<CodeWindowLinkButton>();
+            if (!linkButtonComponent) {
+                DestroyImmediate(linkButton);
+                return null;
+            }
+
+            // attach this CodeWindowLink to the physical button
+            linkButton.name = name;
+            linkButtonComponent.Link = this;
+            linkButtonComponent.BaseCodeWindowObject = BaseFile.GetReferences().gameObject;
+
+            // attach to this GameObject instance
+            linkButton.transform.SetParent(transform);
+            linkButton.transform.rotation = transform.rotation;
+
+            linkButton.SetActive(false);
+
+            return linkButton;
         }
 
         private bool AttachPoint(RectTransform point, int startLine, CodeFileReferences fileRefs) {

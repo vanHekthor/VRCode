@@ -21,7 +21,7 @@ namespace VRVis.IO {
     /// Instances of this class are created and stored by the "StructureLoader".
     /// </summary>
     public class CodeFile {
-        
+
         /// <summary>
         /// According node in the software system structure.
         /// Keeps all the important information about that file using references.
@@ -71,9 +71,7 @@ namespace VRVis.IO {
 
         // stores line count for access to this information without opening the file
         private long lineCountQuick = -1;
-        private bool lineCountQuick_set = false;
-
-
+        private bool lineCountQuick_set = false;        
 
         // CONSTRUCTORS
 
@@ -82,8 +80,6 @@ namespace VRVis.IO {
             readContentInfo.Clear();
             lineInfo.Clear();
         }
-
-
 
         // GETTER AND SETTER
 
@@ -185,6 +181,39 @@ namespace VRVis.IO {
             lineInfo.lineHeight = lineHeight > 0 ? lineHeight : 0;
             lineInfo.lineWidth = lineWidth > 0 ? lineWidth : 0;
             lineInfo.isSet = true;
+        }
+
+        /// <summary>
+        /// Highlights a region in the code.
+        /// </summary>
+        /// <param name="start">start line number</param>
+        /// <param name="end">end line number</param>
+        /// <returns>line highlight component attached to instantiated object</returns>
+        public LineHighlight HighlightLines(int start, int end) {
+
+            float lineHeight = lineInfo.lineHeight;
+            float totalWidth_codeMarking = lineInfo.lineWidth;
+
+            // check height and width values
+            if (lineHeight == 0) {
+                Debug.LogWarning("Failed to spawn regions! Line height is zero!");
+                return null;
+            }
+
+            if (totalWidth_codeMarking == 0) {
+                Debug.LogWarning("Failed to spawn regions! Code marking width is zero!");
+                return null;
+            }
+
+            // get region width for code marking visualization (might change in future)
+            RectTransform scrollRectRT = references.GetScrollRect().GetComponent<RectTransform>();
+            RectTransform textContainerRT = references.textContainer.GetComponent<RectTransform>();
+            RectTransform vertScrollbarRT = references.GetVerticalScrollbarRect();
+            if (scrollRectRT && textContainerRT && vertScrollbarRT) {
+                totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
+            }
+
+            return references.spawnLineHighlight(start, end, totalWidth_codeMarking, lineHeight);
         }
 
 

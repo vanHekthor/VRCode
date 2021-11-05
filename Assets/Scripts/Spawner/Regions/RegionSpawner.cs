@@ -87,10 +87,10 @@ namespace VRVis.Spawner {
         /// This is to use the same calculation and ensure same positions.
         /// Returns false on errors (e.g. if RectTransform is missing).
         /// </summary>
-        /// <param name="height">Height of a single line</param>
+        /// <param name="lineHeight">Height of a single line</param>
         /// <param name="width">Maximum width</param>
         /// <param name="scaleX">Heightmap scale</param>
-        private bool SetRegionPositionAndSize(GameObject regionObject, CodeFileReferences fileRefs, Region.Section section, float height, float width, float xPos, float scaleX) {
+        private bool SetRegionPositionAndSize(GameObject regionObject, CodeFileReferences fileRefs, Region.Section section, float lineHeight, float width, float xPos, float scaleX) {
             
             // pixel error calculation (caused by multiple text-elements)
             float curLinePos = section.start / (float) fileRefs.GetLinesTotal();
@@ -98,9 +98,9 @@ namespace VRVis.Spawner {
 
             // scale and position region
             float x = xPos;
-            float y = (section.start - 1) * -height + pxErr; // lineHeight needs to be a negative value!
+            float y = (section.start - 1) * -lineHeight + pxErr; // lineHeight needs to be a negative value!
             float finalWidth = width;
-            float finalHeight = (section.end - section.start + 1) * height;
+            float finalHeight = (section.end - section.start + 1) * lineHeight;
                     
             RectTransform rt = regionObject.GetComponent<RectTransform>();
             if (!rt) { Debug.LogWarning("Could not find rect transform on region instance!"); return false; }

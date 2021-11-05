@@ -60,6 +60,8 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show bezier curve control points in editor")]
         public bool showControlPointGizmos = false;
 
+        public LineHighlight LineHighlight { get; set; }
+
         private Transform startPoint;
         private Transform endPoint;
 
@@ -111,8 +113,6 @@ namespace VRVis.Spawner.Edges {
         // mainly for debug (gizmos)
         private Vector3 controlPoint1;
         private Vector3 controlPoint2;
-
-
 
         // GETTER AND SETTER
 
@@ -223,6 +223,10 @@ namespace VRVis.Spawner.Edges {
             // take care of cleaning up the start and endpoint spheres
             if (startSphere) { Destroy(startSphere); }
             if (endSphere) { Destroy(endSphere); }
+
+            if (LineHighlight != null) {
+                Destroy(LineHighlight.gameObject);
+            }
         }
 
 
