@@ -35,6 +35,9 @@ namespace VRVis.IO {
         [Tooltip("Add the first x found feature regions to the selected list on startup")]
         public bool addFeatureRegions = false;
 
+        public bool validateAndEvaluateOnStartUp;
+        public bool activateAllEdgeLinksOnStartUp;
+
 
         // --------------------------------------------------------------------
         // The path is currently based on the enumeration selection.
@@ -189,11 +192,21 @@ namespace VRVis.IO {
             foreach (UISpawner spawner in uiSpawner) { spawner.InitialSpawn(this); }
 
 
-            // update the nfp values for the first time (initial update)            
-            UpdateNFPValues(true);
+            // update the nfp values for the first time (initial update)
+            if (validateAndEvaluateOnStartUp) {
+                UpdateNFPValues(true);
 
-            if (GetApplicationSettings().IsFeatureModelValid()) {
-                terminalInputController.ApplyVariabilityModelConfiguration(null);
+                if (GetApplicationSettings().IsFeatureModelValid()) {
+                    terminalInputController.ApplyVariabilityModelConfiguration(null);
+                }
+            }
+
+            // activate all edge types which means each edge gets indicated and can be displayed
+            // by a link button inside the code windows at the corresponding code lines
+            if (activateAllEdgeLinksOnStartUp) {
+                foreach (string edgeType in edgeLoader.GetEdgeTypes()) {
+                    GetApplicationSettings().AddActiveEdgeType(edgeType);
+                }
             }
 
         }

@@ -2,13 +2,16 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using VRVis.Elements;
 using VRVis.IO;
 using VRVis.Spawner;
+using VRVis.Spawner.Edges;
 using VRVis.Spawner.File;
 using VRVis.UI.Helper;
 
-public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IDragHandler {
+public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IDragHandler, IPointerClickHandler {
 
     public GameObject SpawnPanel;
     public GameObject WindowPreview;
@@ -16,9 +19,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     public Sprite HighlightSprite;
     public Sprite DefaultSprite;
 
-    public string TargetFilePath { get; set; }
-    public CodeFile TargetFile { get; set; }
-    public GameObject AnchorObject { get; set; }
+    public string TargetFilePath { get; private set; }
+    public CodeFile TargetFile { get; private set; }
+    public GameObject BaseCodeWindowObject { get; set; }
+    public CodeWindowLink Link { get; set; }
 
     private const int SpawnLeft = 0;
     private const int SpawnRight = 1;
@@ -47,6 +51,7 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     private Image spawnLeftImage;
     private Image spawnRightImage;
 
+    private string sceneName;
 
     void Awake() {
         spawnSide = SpawnLeft;        
@@ -60,6 +65,19 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         toggleCenter = transform.Find("Center");
         toggleLeft = transform.Find("ToggleLeft");
         toggleRight = transform.Find("ToggleRight");
+        
+        // Create a temporary reference to the current scene.
+        Scene currentScene = SceneManager.GetActiveScene();
+
+        // Retrieve the name of this scene.
+        sceneName = currentScene.name;
+        
+    }
+
+    void Start() {
+        // get target file path and target code file from CodeWindowLink reference
+        TargetFilePath = Link.EdgeLink.GetTo().file.ToLower();
+        TargetFile = Link.TargetFile;
     }
     
     /// <summary>
@@ -70,7 +88,7 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     public void OnPointerDown(PointerEventData eventData) {
         pressed = true;
 
-        gridElement = AnchorObject.GetComponent<GridElement>();
+        gridElement = BaseCodeWindowObject.GetComponent<GridElement>();
 
         if (!spawnPanelVisible) {
             spawnPanelVisible = true;
@@ -160,13 +178,18 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
                         }
 
                         spawnSide = SpawnFartherAway;
-
                     }
                 }
             }
         }
     }
 
+    public void OnPointerClick(PointerEventData eventData) {
+        if (sceneName == "ExampleScene_Catena_NoVR") {
+            Debug.Log("LinkButton was clicked!");
+            OnPointerUp(eventData);
+        }
+    }
 
 
     private IEnumerator SpawnFileCoroutine() {
@@ -183,27 +206,26 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         if (fs) {
 
             if (spawnSide == SpawnLeft) {
-                fs.SpawnFileNextTo(TargetFile, AnchorObject.GetComponent<CodeFileReferences>(), true, WindowSpawnedCallback);
+                fs.SpawnFileNextTo(TargetFile, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), true, FileSpawnCallback);
             }
             else if (spawnSide == SpawnRight) {
-                fs.SpawnFileNextTo(TargetFile, AnchorObject.GetComponent<CodeFileReferences>(), false, WindowSpawnedCallback);
+                fs.SpawnFileNextTo(TargetFile, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), false, FileSpawnCallback);
             }
             else if (spawnSide == SpawnFartherAway) {
                 fs.SpawnFile(
                     TargetFile.GetNode(), 
                     instantiatedPreview.transform.position, 
                     instantiatedPreview.transform.rotation, 
-                    WindowSpawnedCallback);
+                    FileSpawnCallback);
                 
                 if (instantiatedPreview) {
                     DestroyImmediate(instantiatedPreview);
                 }
             }
-
-        
+            
         }
         else {
-            WindowSpawnedCallback(false, null, "Missing FileSpawner!");
+            FileSpawnCallback(false, null, "Missing FileSpawner!");
         }
 
         // wait until spawning is finished
@@ -213,17 +235,39 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// <summary>
     /// Called after the window placement finished.
     /// </summary>
-    private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+    private void FileSpawnCallback(bool success, CodeFile file, string msg) {
 
         windowSpawned = success;
         windowSpawning = false;
+
+        var edgeConnection = spawnEdgeConnection();        
+
+        edgeConnection.LineHighlight = highlightCodeAreaInTargetfile();
 
         if (!success) {
             string name = "";
             if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
             Debug.LogError("Failed to place window! " + name + msg);
             return;
+        }        
+    }
+
+    private CodeWindowEdgeConnection spawnEdgeConnection() {
+        var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
+
+        return edgeConnection;
+    }
+
+    private LineHighlight highlightCodeAreaInTargetfile() {
+        int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
+        int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
+        var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
+        if (highlight == null) {
+            Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
+                endLineToHighlight + " inside code window for " + TargetFile.GetNode().GetName());
         }
+
+        return highlight;
     }
     
 }

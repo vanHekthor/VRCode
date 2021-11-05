@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using VRVis.Elements;
 using VRVis.IO;
 
 
@@ -37,8 +38,14 @@ namespace VRVis.Spawner.File {
         [Tooltip("Holds region prefab instances")]
         public Transform regionContainer;
 
+        [Tooltip("Holds highlighted line instances")]
+        public Transform highlighedLinesContainer;
+
         [Tooltip("Holds regions of features")]
         public Transform featureContainer;
+
+        [Tooltip("Holds regions of height map")]
+        public Transform heightmapRegionContainer;
 
         [Tooltip("The heightmap element of this code window")]
         public GameObject heightMap;
@@ -46,8 +53,8 @@ namespace VRVis.Spawner.File {
         [Tooltip("The active feature visualization of this code window")]
         public GameObject activeFeatureVis;
 
-        [Tooltip("Holds regions of height map")]
-        public Transform heightmapRegionContainer;
+        [Tooltip("The prefab that is used for highlighting code lines")]
+        public GameObject lineHighlightPrefab;
 
         [Tooltip("Points required for successful edge creation")]
         public EdgeAnchors edgePoints;
@@ -192,6 +199,47 @@ namespace VRVis.Spawner.File {
             }
             
             lineNumbers.SetText(strb);
+        }
+
+        /// <summary>
+        /// Spawns a highlighted area for the passed paramaters.
+        /// </summary>
+        /// <param name="start"></param>
+        /// <param name="end"></param>
+        /// <param name="width"></param>
+        /// <param name="lineHeight">height of a single line</param>
+        /// <returns>line highlight component of the instantiated highlight object</returns>
+        public LineHighlight spawnLineHighlight(int start, int end, float width, float lineHeight) {
+            GameObject lineHighlightObject = Instantiate(lineHighlightPrefab);
+            var lineHighlight = lineHighlightObject.GetComponent<LineHighlight>();
+            if (lineHighlight == null) {
+                Debug.LogError("Failed to highlight line in code - Prefab is missing LineHighlight component!");
+                return null;
+            }
+
+            if (highlighedLinesContainer == null) {
+                Debug.LogError("Failed to highlight line because highlighted line container is missing!" +
+                    " Probably needs to be set in Unity Editor.");
+                return null;
+            }
+
+            lineHighlightObject.transform.SetParent(highlighedLinesContainer, false);
+
+            // pixel error calculation (caused by multiple text-elements)
+            float curLinePos = start / (float)linesTotal;
+            float pxErr = curLinePos * ((float)textElements.Count - 1) 
+                * FileSpawner.GetInstance().regionSpawner.ERROR_PER_ELEMENT;
+
+            // scale and position highlight
+            float x = 0f;
+            float y = (start - 1) * -lineHeight + pxErr; // lineHeight needs to be a negative value!
+            float height = (end - start + 1) * lineHeight;
+
+            RectTransform rt = lineHighlightObject.GetComponent<RectTransform>();
+            rt.anchoredPosition = new Vector2(x, y);
+            rt.sizeDelta = new Vector2(width, height);
+
+            return lineHighlight;
         }
 
 

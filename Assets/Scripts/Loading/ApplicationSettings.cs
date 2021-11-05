@@ -379,7 +379,7 @@ namespace VRVis.Settings {
             uint edgesRemoved = 0;
             uint linksAdded = 0;
             uint linksRemoved = 0;
-            if (eSpawner.UpdateSpawnedEdges(out edgesAdded, out edgesRemoved, out linksAdded, out linksRemoved)) {
+            if (eSpawner.UpdateSpawnedLinksAndEdges(out edgesAdded, out edgesRemoved, out linksAdded, out linksRemoved)) {
                 Debug.Log("Edges updated: " + edgesAdded + " added, " + edgesRemoved + " removed");
                 Debug.Log("Links updated: " + linksAdded + " added, " + linksRemoved + " removed");
             }
