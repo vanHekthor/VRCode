@@ -30,10 +30,10 @@ namespace VRVis.UI.Helper {
 
         public List<List<SphereGridPoint>> Grid { get; private set; } 
 
-        private const float PolarOrigin = Mathf.PI;
+        private const float PolarOrigin = 9.0f / 8.0f * Mathf.PI;
         private const float ElevationOrigin = 0f;
 
-        private const int LayerCount = 2;        
+        private const int LayerCount = 5;        
 
         private Vector3 sphereOrigin;
         private float sphereRadius;
@@ -127,7 +127,7 @@ namespace VRVis.UI.Helper {
             foreach (List<SphereGridPoint> layer in Grid) {
                 foreach (SphereGridPoint gridPoint in layer) {
                     if (!gridPoint.Occupied) {
-                        float distance = (gridPoint.Position - point).sqrMagnitude;
+                        float distance = (gridPoint.AttachmentPointObject.transform.position - point).sqrMagnitude;
 
                         if (distance < minDistance) {
                             minDistance = distance;
@@ -192,11 +192,20 @@ namespace VRVis.UI.Helper {
         private void InstantiateGrid(List<List<SphereGridPoint>> grid) {
             foreach (List<SphereGridPoint> layer in grid) {
                 foreach (SphereGridPoint gridPoint in layer) {
-                    Vector3 lookDirection = screenSphere.transform.position - gridPoint.Position;
+                    Vector3 lookDirection = gridPoint.Position - screenSphere.transform.position;
 
                     Quaternion rotation = Quaternion.LookRotation(lookDirection);
 
-                    Instantiate(gridPointObject, gridPoint.Position, rotation);
+                    GameObject gridObject = Instantiate(gridPointObject, gridPoint.Position, rotation);
+
+                    GameObject attachmentObject = new GameObject("AttachmentPoint");
+                    attachmentObject.transform.position = gridPoint.AttachmentPoint;
+                    attachmentObject.transform.rotation = rotation;
+
+                    attachmentObject.transform.SetParent(gridObject.transform, true);
+                    gridPoint.AttachmentPointObject = attachmentObject;
+
+                    gridObject.transform.SetParent(transform, true);
                 }
             }
         }
@@ -212,7 +221,10 @@ namespace VRVis.UI.Helper {
             float gridHeightAngle = (LayerCount - 1) * elevationSpacing * Mathf.PI / 180f;
 
             float radius = sphereRadius + distanceToSphereSurface;
-            
+
+            float localPolarOrigin = PolarOrigin;
+            float localElevationOrigin = ElevationOrigin - gridHeightAngle / 2;
+
             for (int layerNum = 0; layerNum < LayerCount; layerNum++) {
 
                 List<SphereGridPoint> layer = new List<SphereGridPoint>();
@@ -223,10 +235,10 @@ namespace VRVis.UI.Helper {
 
                     Vector3 gridPointPos = PositionOnSphere.SphericalToCartesian(
                             radius,
-                            PolarOrigin + polarOffset,
-                            ElevationOrigin + elevationOffset,
+                            localPolarOrigin + polarOffset,
+                            localElevationOrigin + elevationOffset,
                             screenSphere.transform.position);
-
+                        
                     Vector3 lookDirection = (sphereOrigin - gridPointPos).normalized;
                     Vector3 attachmentPos = gridPointPos + distanceToSphereSurface * lookDirection;
 

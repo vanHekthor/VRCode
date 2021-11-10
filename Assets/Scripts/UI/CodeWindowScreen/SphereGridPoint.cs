@@ -21,6 +21,8 @@ namespace VRVis.UI.Helper {
 
         public GridElement AttachedElement { get; set; }
 
+        public GameObject AttachmentPointObject { get; set; }
+
         public SphereGridPoint(int layerIdx, int columnIdx, Vector3 position) {
             ColumnIdx = columnIdx;
             LayerIdx = layerIdx;
