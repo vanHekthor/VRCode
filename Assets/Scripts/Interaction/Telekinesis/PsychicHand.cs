@@ -4,7 +4,7 @@ using Valve.VR;
 using Valve.VR.InteractionSystem;
 using VRVis.Interaction.LaserPointer;
 
-namespace VRVis.Interaction.PsychicHand {
+namespace VRVis.Interaction.Telekinesis {
 
     /// <summary>
     /// Component that can control telekinesables.
@@ -48,7 +48,7 @@ namespace VRVis.Interaction.PsychicHand {
 
         public GameObject TelekinesisAttachmentPoint { get; private set; }
 
-        public bool IsActive { get; set; }
+        public bool IsActive { get; private set; }
         public ITelekinesable GrabbedTelekinesable { get; private set; }
         public ITelekinesable FocusedTelekinesable { get; private set; }
 
@@ -91,7 +91,7 @@ namespace VRVis.Interaction.PsychicHand {
             
             IsActive = true;
 
-            if (GrabbedTelekinesable == null) {
+            if (FocusedTelekinesable == null && GrabbedTelekinesable == null) {
                 if (!CheckHeadAndHandAlignment()) {
                     IsActive = false;
                     return;

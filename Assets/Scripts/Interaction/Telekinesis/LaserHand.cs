@@ -81,7 +81,7 @@ namespace VRVis.Interaction.LaserHand {
         private float lastFeedback = 0;
 
         // Psychic Hand Reference
-        private PsychicHand.PsychicHand psychicHand;
+        private Telekinesis.PsychicHand psychicHand;
 
         private bool gripping;
 
@@ -97,7 +97,7 @@ namespace VRVis.Interaction.LaserHand {
         protected override void Initialize() {
             base.Initialize();
             ShowLaser();
-            psychicHand = hand.GetComponentInChildren<PsychicHand.PsychicHand>();
+            psychicHand = hand.GetComponentInChildren<Telekinesis.PsychicHand>();
             
             Debug.Log("Initialize LaserHand");
         }
