@@ -5,6 +5,7 @@ using System.IO;
 using System.Xml;
 using UnityEngine;
 using VRVis.RegionProperties;
+using VRVis.Settings;
 
 namespace VRVis.IO.Features {
 
@@ -624,7 +625,7 @@ namespace VRVis.IO.Features {
             }
 
             Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
-            config.SaveAsJson("Configurations/config.json");            
+            config.SaveAsJson($"{ApplicationLoader.GetInstance().example_folder}/configs/config.json");            
         }
 
     }
