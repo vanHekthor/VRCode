@@ -76,7 +76,7 @@ namespace VRVis.Settings {
                 }
             }
 
-            ComparisonMode = false;
+            ComparisonMode = true;
 
             // only enable code marking as the default visualization
             //nfpVisualizationActive[NFP_VIS.CODE_MARKING] = true;
