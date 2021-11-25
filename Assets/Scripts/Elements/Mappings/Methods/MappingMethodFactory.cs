@@ -58,9 +58,9 @@ namespace VRVis.Mappings.Methods {
             float neutralValue = 0.5f;
 
             // create the color using the input string (values separated by comma)
-            if (o["from"] != null) { fromColor = Utility.ColorFromString((string) o["from"], ',', 0.5f); }
-            if (o["to"] != null) { toColor = Utility.ColorFromString((string) o["to"], ',', 0.5f); }
-            if (o["neutral"] != null) { neutralColor = Utility.ColorFromString((string) o["neutral"], ',', 0.0f); }
+            if (o["from"] != null) { fromColor = Utility.ColorFromString((string) o["from"], ',', 0.16f); }
+            if (o["to"] != null) { toColor = Utility.ColorFromString((string) o["to"], ',', 0.16f); }
+            if (o["neutral"] != null) { neutralColor = Utility.ColorFromString((string) o["neutral"], ',', 0.16f); }
             if (o["neutral_value"] != null) { neutralValue = (float) o["neutral_value"]; }
 
             // create instance
