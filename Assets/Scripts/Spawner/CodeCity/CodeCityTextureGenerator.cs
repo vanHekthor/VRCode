@@ -163,7 +163,7 @@ namespace VRVis.Spawner.CodeCity {
                 MinMaxValue minMax = RegionModifier.GetMinMaxValues(nfpProp.GetName(), codeFile, setting.GetMinMaxValue());
                 AColorMethod colMethod;
                 if (ApplicationLoader.GetApplicationSettings().ComparisonMode) {
-                    colMethod = setting.GetMinMaxColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_CITY, minMax.GetMinValue(), minMax.GetMaxValue());
+                    colMethod = setting.GetMinMaxColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_CITY, minMax.GetMinValue(), minMax.GetMaxValue(), regionDefaultColor);
                 }
                 else {
                     colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_CITY);

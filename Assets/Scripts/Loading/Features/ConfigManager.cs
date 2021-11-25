@@ -12,6 +12,7 @@ namespace VRVis.IO.Features {
 
         private static ConfigManager INSTANCE;
 
+        public bool isActive;
         public string defaultConfigPath;
         public string configPath1;
         public string configPath2;
@@ -27,6 +28,8 @@ namespace VRVis.IO.Features {
         public Configuration Config2 { get; private set; }
 
         void Awake() {
+            if (!isActive) { return; }
+
             if (!INSTANCE) { INSTANCE = this; }
             else {
                 Debug.LogError("There can only be one instance of the ConfigManager!");

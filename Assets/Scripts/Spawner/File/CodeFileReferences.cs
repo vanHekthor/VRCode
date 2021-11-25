@@ -29,6 +29,9 @@ namespace VRVis.Spawner.File {
         [Tooltip("A feature not supported by previous version of the code window prefab")]
         public bool showLineNumbers = false;
 
+        [Tooltip("Background image that defines the background color of the code window")]
+        public Image codeBackground;
+
         [Tooltip("Scroll rect for scroll view main window")]
         public ScrollRect scrollRect;
 
