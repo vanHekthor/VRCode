@@ -78,6 +78,45 @@ namespace VRVis.Mappings {
         }
 
         /// <summary>
+        /// Returns a color method according to the passed visualization type that is adjusted to the min and max value and neutral color.
+        /// </summary>
+        /// <param name="nfpVisType"></param>
+        /// <param name="min"></param>
+        /// <param name="max"></param>
+        /// /// <param name="neutralColor"></param>
+        /// <returns></returns>
+        public AColorMethod GetMinMaxColorMethod(ApplicationSettings.NFP_VIS nfpVisType, float min, float max, Color neutralColor) {
+
+            if (nfpVisType == ApplicationSettings.NFP_VIS.CODE_MARKING || nfpVisType == ApplicationSettings.NFP_VIS.NONE) {
+                if (defaultColorDeltaMethod.HasNeutralColor) {
+                    return AdjustColorMethod(defaultColorDeltaMethod, min, max, neutralColor);
+                }
+                else {
+                    return GetDefaultColorDeltaMethod();
+                }
+            }
+            else if (nfpVisType == ApplicationSettings.NFP_VIS.HEIGHTMAP) {
+                if (heightMapColorDeltaMethod.HasNeutralColor) {
+                    return AdjustColorMethod(heightMapColorDeltaMethod, min, max, neutralColor);
+                }
+                else {
+                    return GetHeightMapColorDeltaMethod();
+                }
+            }
+            else if (nfpVisType == ApplicationSettings.NFP_VIS.CODE_CITY) {
+                if (codeCityColorDeltaMethod.HasNeutralColor) {
+                    return AdjustColorMethod(codeCityColorDeltaMethod, min, max, neutralColor);
+                }
+                else {
+                    return GetCodeCityColorDeltaMethod();
+                }
+            }
+            else {
+                return GetDefaultColorDeltaMethod();
+            }
+        }
+
+        /// <summary>
         /// Returns a color method according to the passed visualization type that is adjusted to the min and max value.
         /// </summary>
         /// <param name="nfpVisType"></param>
@@ -324,17 +363,17 @@ namespace VRVis.Mappings {
         }
 
         /// <summary>
-        /// Adjusts an existing color method to new min and max values while considering the
-        /// the neutral value with its neutral color<para/>
+        /// Adjusts an existing color method to new min and max values and new neutral color 
+        /// while considering the position of the neutral value relative to the new min and max values.<para/>
         /// Different adjustments depending on the position of the neutral value 
         /// in comparison to the min-max interval (below | inside | above).<para/> 
         /// </summary>
         /// <param name="method"></param>
         /// <param name="min"></param>
         /// <param name="max"></param>
+        /// <param name="neutralColor"></param>
         /// <returns></returns>
-        private AColorMethod AdjustColorMethod(AColorMethod method, float min, float max) {
-
+        private AColorMethod AdjustColorMethod(AColorMethod method, float min, float max, Color neutralColor) {
             float neutralValue = method.GetNeutralValue();
             Color_Scale adjustedScale = null;
 
@@ -348,7 +387,7 @@ namespace VRVis.Mappings {
                     method.GetMethodName(),
                     method.GetFromColor(),
                     method.GetToColor(),
-                    method.GetNeutralColor(),
+                    neutralColor,
                     neutralValue,
                     ratio);
 
@@ -363,7 +402,7 @@ namespace VRVis.Mappings {
                 // NeutralColor to ToColor, for example Transparent to Red
                 var helperScale = new Color_Scale(
                     method.GetMethodName(),
-                    method.GetNeutralColor(),
+                    neutralColor,
                     method.GetToColor());
 
                 Color newMinColor = helperScale.Evaluate(relativeMinPosition);
@@ -389,7 +428,7 @@ namespace VRVis.Mappings {
                 var helperScale = new Color_Scale(
                     method.GetMethodName(),
                     method.GetFromColor(),
-                    method.GetNeutralColor());
+                    neutralColor);
 
                 Color newMaxColor = helperScale.Evaluate(relativeMaxPosition);
 
@@ -405,6 +444,20 @@ namespace VRVis.Mappings {
             }
 
             return adjustedScale;
+        }
+
+        /// <summary>
+        /// Adjusts an existing color method to new min and max values while considering the
+        /// position of the neutral value relative to the new min and max values.<para/>
+        /// Different adjustments depending on the position of the neutral value 
+        /// in comparison to the min-max interval (below | inside | above).<para/>
+        /// </summary>
+        /// <param name="method"></param>
+        /// <param name="min"></param>
+        /// <param name="max"></param>
+        /// <returns></returns>
+        private AColorMethod AdjustColorMethod(AColorMethod method, float min, float max) {
+            return AdjustColorMethod(method, min, max, method.GetNeutralColor());
         }
 
     }

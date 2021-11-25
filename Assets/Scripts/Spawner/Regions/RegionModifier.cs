@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 using VRVis.Elements;
 using VRVis.IO;
 using VRVis.Mappings;
@@ -199,12 +200,31 @@ namespace VRVis.Spawner.Regions {
 
                 // get color method and method min/max
                 MinMaxValue minMax = GetMinMaxValues(info.GetProperty().GetName(), info.GetCodeFile(), setting.GetMinMaxValue());
-                AColorMethod colMethod;
-                if (ApplicationLoader.GetInstance().GetAppSettings().ComparisonMode) {
-                    colMethod = setting.GetMinMaxColorMethod(info.GetNFPVisType(), minMax.GetMinValue(), minMax.GetMaxValue());
+                AColorMethod colMethod = null;
+                Color neutralColor = new Color();
+
+                if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.CODE_MARKING) {
+                    neutralColor = file.GetReferences().codeBackground.color;
+                }            
+                else if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.HEIGHTMAP) {
+                    var heightmapInfo = obj.GetComponent<HeightmapRegionInfo>();
+                    neutralColor = heightmapInfo.backgroundPanel.GetComponent<Image>().color;
                 }
                 else {
-                    colMethod = setting.GetColorMethod(info.GetNFPVisType());
+                    colMethod = setting.GetMinMaxColorMethod(
+                        info.GetNFPVisType(), minMax.GetMinValue(), minMax.GetMaxValue());
+                }
+
+                if (colMethod == null) {
+                    if (ApplicationLoader.GetInstance().GetAppSettings().ComparisonMode) {
+                        colMethod = setting.GetMinMaxColorMethod(
+                            info.GetNFPVisType(), minMax.GetMinValue(),
+                            minMax.GetMaxValue(),
+                            neutralColor);
+                    }
+                    else {
+                        colMethod = setting.GetColorMethod(info.GetNFPVisType());
+                    }
                 }           
                 
 
