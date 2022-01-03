@@ -160,7 +160,9 @@ namespace VRVis.IO {
                     if (text != null) {
                         lineHeight = text.fontScale * text.font.faceInfo.lineHeight;
                     }
-                    else { Debug.LogError("TextInfo textComponent is null!"); }
+                    else {
+                        Debug.LogError("TextInfo textComponent is null!");
+                    }
                 }
 
                 /*
