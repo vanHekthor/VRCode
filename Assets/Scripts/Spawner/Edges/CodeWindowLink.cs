@@ -19,7 +19,7 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show debug points used for region positioning and rescaling in editor")]
         public bool showRegionDebugGizmos = false;
 
-        private Transform anchorPoint;
+        private Transform linkAnchorTransform;
         private Vector3 previousAnchorPointPos;
 
         public CodeFile BaseFile { get; private set; }
@@ -100,25 +100,29 @@ namespace VRVis.Spawner.Edges {
             baseWindowReferences = baseFile.GetReferences();
 
             // create point transforms telling where the link button should be placed
-            GameObject anchor = new GameObject("LinkAnchor", typeof(RectTransform));
-            anchorPoint = anchor.transform;
+            GameObject linkAnchor = new GameObject("LinkAnchor", typeof(RectTransform));
+            linkAnchorTransform = linkAnchor.transform;
 
             // set target file
             TargetFile = targetFile;
 
             // create attachment spheres
-            linkButton = CreatePhysicalButton("LinkButton");
+            linkButton = CreatePhysicalButton("Button");
             if (!linkButton) {
                 Debug.LogError("Not able to properly instantiate the LinkButton targeting the file '" + targetFile + "'!");
             }            
 
             // attach them to the code window canvas to automatically update
             // the world positions based on rotation, movement and scroll
-            AttachPoint(anchor.GetComponent<RectTransform>(), EdgeLink.GetFrom().lines.from, baseWindowReferences);
+            PositionLinkAnchors(
+                linkAnchor.GetComponent<RectTransform>(), 
+                EdgeLink.GetFrom().lines.from, 
+                EdgeLink.GetFrom().columns.from, 
+                baseWindowReferences);
 
             // get distances between left and right next to each window
             // and convert them from canvas units in world units (mult with scale)
-            baseWindowLeftRightDistance = baseWindowReferences.GetEdgePoints().GetLeftRightDistance() * anchorPoint.lossyScale.x;
+            baseWindowLeftRightDistance = baseWindowReferences.GetEdgePoints().GetLeftRightDistance() * linkAnchorTransform.lossyScale.x;
 
             updateLink = true;
             successfulAttached = true;
@@ -152,7 +156,14 @@ namespace VRVis.Spawner.Edges {
             return linkButton;
         }
 
-        private bool AttachPoint(RectTransform point, int startLine, CodeFileReferences fileRefs) {
+        /// <summary>
+        /// Positions the link anchors at the location of the corresponding method call inside the displayed code.
+        /// </summary>
+        /// <param name="anchorRectTransform"></param>
+        /// <param name="startLine"></param>
+        /// <param name="fileRefs"></param>
+        /// <returns></returns>
+        private bool PositionLinkAnchors(RectTransform anchorRectTransform, int startLine, int startColumn, CodeFileReferences fileRefs) {
 
             // get code file and line information
             CodeFile codeFile = fileRefs.GetCodeFile();
@@ -174,12 +185,12 @@ namespace VRVis.Spawner.Edges {
             // attach to parent container and take its position and scale factor
             Transform anchorContainer = fileRefs.GetEdgePoints().anchorContainer;
             if (!anchorContainer) { return false; }            
-            point.SetParent(anchorContainer, false);
+            anchorRectTransform.SetParent(anchorContainer, false);
 
             // prepare rect transform
-            point.anchorMin = new Vector2(0, 1);
-            point.anchorMax = new Vector2(0, 1);
-            point.sizeDelta = new Vector2(5, 5);
+            anchorRectTransform.anchorMin = new Vector2(0, 1);
+            anchorRectTransform.anchorMax = new Vector2(0, 1);
+            anchorRectTransform.sizeDelta = new Vector2(5, 5);
 
             // set position according to the line number (node)
             float currentLinePos = startLine / (float)lineCount;
@@ -187,8 +198,8 @@ namespace VRVis.Spawner.Edges {
             float yPosOffset = LineHeight * 0.5f; // to get correct position ("middle of line")
             float yPos = (startLine - 1) * LineHeight + yPosOffset - pixelError;
             //float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
-            float xPos = fileRefs.GetEdgePoints().linkOffset;
-            point.anchoredPosition = new Vector2(xPos, -yPos); // yPos needs to be a negative value!
+            float xPos = startColumn * fileRefs.GetCodeFile().GetLineInfo().characterWidth + 30;
+            anchorRectTransform.anchoredPosition = new Vector2(xPos, -yPos); // yPos needs to be a negative value!
 
             return true;
         }
@@ -200,8 +211,8 @@ namespace VRVis.Spawner.Edges {
 
             // get position left and right next to the "base" window
             Vector3 baseWindowAttachmentLeft = baseWindowReferences.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 baseWindowLeftPosition = new Vector3(anchorPoint.position.x, anchorPoint.position.y, anchorPoint.position.z);
-            Vector3 basewindowRightPosition = baseWindowLeftPosition + anchorPoint.right * baseWindowLeftRightDistance;
+            Vector3 baseWindowLeftPosition = new Vector3(linkAnchorTransform.position.x, linkAnchorTransform.position.y, linkAnchorTransform.position.z);
+            Vector3 basewindowRightPosition = baseWindowLeftPosition + linkAnchorTransform.right * baseWindowLeftRightDistance;
 
             bool attachToLeftSide = true;
 
@@ -384,8 +395,8 @@ namespace VRVis.Spawner.Edges {
             
             // check if start- and endpoint position changed
             // (if so, position, rotation or scroll changed)
-            if (anchorPoint.position != previousAnchorPointPos) {
-                previousAnchorPointPos = anchorPoint.position;
+            if (linkAnchorTransform.position != previousAnchorPointPos) {
+                previousAnchorPointPos = linkAnchorTransform.position;
                 return true;
             }
 

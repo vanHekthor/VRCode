@@ -52,6 +52,7 @@ namespace VRVis.IO {
             public int lineCount;
             public float lineHeight;
             public float lineWidth;
+            internal float characterWidth;
 
             public void Clear() {
                 isSet = false;
@@ -148,6 +149,8 @@ namespace VRVis.IO {
             float lineHeight = -1;
             float lineWidth = -1;
             //int textNo = 0;
+            float characterWidth = -1; // monospace character
+
             foreach (TMP_TextInfo textInfo in GetReferences().GetTextElements()) {
 
                 // force a mesh update before reading the properties
@@ -179,11 +182,16 @@ namespace VRVis.IO {
                 if (lineWidth <= 0 || thisWidth > lineWidth) {
                     lineWidth = thisWidth;
                 }
+
+                if (characterWidth <= 0) {
+                    characterWidth = textInfo.characterInfo[0].xAdvance;
+                }
             }
 
             lineInfo.lineCount = totalLineCount;
             lineInfo.lineHeight = lineHeight > 0 ? lineHeight : 0;
             lineInfo.lineWidth = lineWidth > 0 ? lineWidth : 0;
+            lineInfo.characterWidth = characterWidth;
             lineInfo.isSet = true;
         }
 

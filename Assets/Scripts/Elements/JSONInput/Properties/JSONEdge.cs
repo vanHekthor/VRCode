@@ -14,7 +14,7 @@ namespace VRVis.JSON.Serialization {
     public class JSONEdge {
 
         [System.Serializable]
-        public class EdgeLines {
+        public class Range {
             public int from;
             public int to;
         }
@@ -22,7 +22,8 @@ namespace VRVis.JSON.Serialization {
         [System.Serializable]
         public class NodeLocation {
             public string file;
-            public EdgeLines lines;
+            public Range lines;
+            public Range columns;            
         }
 
         public string type;
