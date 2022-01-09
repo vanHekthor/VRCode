@@ -198,7 +198,7 @@ namespace VRVis.Spawner.Edges {
             float yPosOffset = LineHeight * 0.5f; // to get correct position ("middle of line")
             float yPos = (startLine - 1) * LineHeight + yPosOffset - pixelError;
             //float xPos = fileRefs.GetEdgePoints().left; // if left or right will be decided on update
-            float xPos = startColumn * fileRefs.GetCodeFile().GetLineInfo().characterWidth + 30;
+            float xPos = startColumn * fileRefs.GetCodeFile().GetLineInfo().characterWidth + 25;
             anchorRectTransform.anchoredPosition = new Vector2(xPos, -yPos); // yPos needs to be a negative value!
 
             return true;

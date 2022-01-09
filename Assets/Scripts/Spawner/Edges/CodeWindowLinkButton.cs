@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -18,6 +19,9 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
 
     public Sprite HighlightSprite;
     public Sprite DefaultSprite;
+
+    public class LinkClickedEvent : UnityEvent<List<CodeWindowLink>> { };
+    public static LinkClickedEvent LinkClicked = new LinkClickedEvent();
 
     public string TargetFilePath { get; private set; }
     public CodeFile TargetFile { get; private set; }
@@ -187,7 +191,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     public void OnPointerClick(PointerEventData eventData) {
         if (sceneName == "ExampleScene_Catena_NoVR") {
             Debug.Log("LinkButton was clicked!");
-            OnPointerUp(eventData);
+            // OnPointerUp(eventData);
+            var links = new List<CodeWindowLink>();
+            links.Add(Link);
+            LinkClicked.Invoke(links);
         }
     }
 
