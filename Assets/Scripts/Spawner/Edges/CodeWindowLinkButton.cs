@@ -247,9 +247,9 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         windowSpawned = success;
         windowSpawning = false;
 
-        var edgeConnection = spawnEdgeConnection();        
+        var edgeConnection = SpawnEdgeConnection();        
 
-        edgeConnection.LineHighlight = highlightCodeAreaInTargetfile();
+        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
 
         if (!success) {
             string name = "";
@@ -259,13 +259,13 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         }        
     }
 
-    private CodeWindowEdgeConnection spawnEdgeConnection() {
+    private CodeWindowEdgeConnection SpawnEdgeConnection() {
         var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
 
         return edgeConnection;
     }
 
-    private LineHighlight highlightCodeAreaInTargetfile() {
+    private LineHighlight HighlightCodeAreaInTargetfile() {
         int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
         int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
         var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
