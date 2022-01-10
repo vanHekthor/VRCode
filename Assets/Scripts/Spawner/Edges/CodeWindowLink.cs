@@ -106,8 +106,13 @@ namespace VRVis.Spawner.Edges {
             // set target file
             TargetFile = targetFile;
 
-            // create attachment spheres
-            linkButton = CreatePhysicalButton("Button");
+            // create link buttons
+            linkButton = CreatePhysicalButton(
+                "Button", 
+                EdgeLink.GetFrom().columns.from, 
+                EdgeLink.GetFrom().columns.to,
+                baseWindowReferences.GetCodeFile().GetLineInfo().characterWidth);
+
             if (!linkButton) {
                 Debug.LogError("Not able to properly instantiate the LinkButton targeting the file '" + targetFile + "'!");
             }            
@@ -132,7 +137,7 @@ namespace VRVis.Spawner.Edges {
         /// <summary>
         /// Creates physical link button and returns it.
         /// </summary>
-        private GameObject CreatePhysicalButton(string name) {
+        private GameObject CreatePhysicalButton(string name, int startColumn, int endColumn, float columnWidth) {
 
             // create physical link button
             GameObject linkButton = Instantiate(linkButtonPrefab);
@@ -150,6 +155,18 @@ namespace VRVis.Spawner.Edges {
             // attach to this GameObject instance
             linkButton.transform.SetParent(transform);
             linkButton.transform.rotation = transform.rotation;
+
+            // stretch physical link button to width of method call expression
+
+            // 1. convert column width to corresponding x-scale value for the link button
+            float columnWidthToScale = columnWidth / 100;
+            // 2. scale button to column width
+            linkButton.transform.localScale = 
+                new Vector3(columnWidthToScale, linkButton.transform.localScale.y, linkButton.transform.localScale.z);
+            // 3. stretch button to method call width
+            float stretchVal = linkButton.transform.localScale.x * (endColumn + 1 - startColumn);
+            linkButton.transform.localScale = 
+                new Vector3(stretchVal, linkButton.transform.localScale.y, linkButton.transform.localScale.z); 
 
             linkButton.SetActive(false);
 

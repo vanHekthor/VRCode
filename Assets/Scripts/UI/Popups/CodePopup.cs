@@ -2,9 +2,10 @@
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using VRVis.Spawner.Edges;
 
-public class CodePopup : MonoBehaviour {
+public class CodePopup : MonoBehaviour, IPointerDownHandler {
 
     public Transform classNameTransform;
     public Transform methodDeclarationTransform;
@@ -37,5 +38,13 @@ public class CodePopup : MonoBehaviour {
 
         tmproClassName.text = link.EdgeLink.GetTo().file;
         tmproMethodDec.text = "Displayling method declaration not supported yet!";
+    }
+
+    public void ClickOnPopup() {
+        Debug.Log("Code Popup was clicked!");
+    }
+
+    public void OnPointerDown(PointerEventData eventData) {
+        ClickOnPopup();
     }
 }

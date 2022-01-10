@@ -275,6 +275,5 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         }
 
         return highlight;
-    }
-    
+    }    
 }
