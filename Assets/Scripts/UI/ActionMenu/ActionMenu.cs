@@ -24,10 +24,7 @@ public class ActionMenu : MonoBehaviour {
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
-        Destroy(codePopupHolder.gameObject);
-        var newCodePopupsObject = new GameObject("CodePopups");
-        newCodePopupsObject.transform.SetParent(transform, false);
-        codePopupHolder = newCodePopupsObject.transform;
+        DeleteCodePopups();
 
         foreach (var link in links) {
             AddCodePopup(link);
@@ -39,6 +36,11 @@ public class ActionMenu : MonoBehaviour {
         var codePopup = codePopupObject.GetComponent<CodePopup>();
         codePopupObject.transform.SetParent(codePopupHolder, false);
         codePopup.UpdateContent(link);
-        
+    }
+
+    private void DeleteCodePopups() {
+        for (int i = codePopupHolder.childCount - 1; i >= 0; i--) {
+            Destroy(codePopupHolder.GetChild(i).gameObject);
+        }
     }
 }
