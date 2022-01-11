@@ -1,10 +1,12 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using VRVis.Elements;
 using VRVis.IO;
+using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.Edges;
 
@@ -52,7 +54,8 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
             var tmproMethodDec = methodDeclarationTransform.GetComponent<TextMeshProUGUI>();
 
             tmproClassName.text = link.EdgeLink.GetTo().file;
-            tmproMethodDec.text = "Displayling method declaration not supported yet!";
+            tmproMethodDec.text = 
+                LoadLineFromFile(link.TargetFile.GetNode(), link.EdgeLink.GetTo().lines.from);
 
             Link = link;
         }
@@ -126,4 +129,43 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
 
             return highlight;
         }
+
+    /// <summary>
+    /// Loads the highlighted source code from the file.<para/>
+    /// Returns true on success and false otherwise.
+    /// </summary>
+    public string LoadLineFromFile(SNode fileNode, int lineIdx) {
+
+        // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.-ctor?view=netframework-4.7.2
+        string filePath = fileNode.GetFullPath();
+        FileInfo fi = new FileInfo(filePath);
+
+        if (!fi.Exists) {
+            Debug.LogError("File does not exist! (" + filePath + ")");
+            return null;
+        }
+
+        Debug.Log("Reading file contents...");
+        // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.opentext?view=netframework-4.7.2
+        using (StreamReader sr = fi.OpenText()) {
+            // local and temp. information
+            string curLine = "";
+            // string sourceCode = "";
+            int linesRead = 0;
+
+            while ((curLine = sr.ReadLine()) != null) {
+
+                // update counts and source code
+                // sourceCode += curLine + "\n";
+                linesRead++;
+                if (linesRead == lineIdx) {
+                    return curLine;
+                }
+
+                
+            }
+        }
+
+        return null;
+    }
 }
