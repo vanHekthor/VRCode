@@ -159,14 +159,19 @@ namespace VRVis.Spawner.Edges {
             // stretch physical link button to width of method call expression
 
             // 1. convert column width to corresponding x-scale value for the link button
-            float columnWidthToScale = columnWidth / 100;
+            float columnWidthToScale = columnWidth / 10;
             // 2. scale button to column width
-            linkButton.transform.localScale = 
-                new Vector3(columnWidthToScale, linkButton.transform.localScale.y, linkButton.transform.localScale.z);
+            linkButtonComponent.ButtonBody.localScale = 
+                new Vector3(columnWidthToScale, linkButtonComponent.ButtonBody.localScale.y, linkButtonComponent.ButtonBody.localScale.z);
             // 3. stretch button to method call width
-            float stretchVal = linkButton.transform.localScale.x * (endColumn + 1 - startColumn);
-            linkButton.transform.localScale = 
-                new Vector3(stretchVal, linkButton.transform.localScale.y, linkButton.transform.localScale.z); 
+            float stretchVal = linkButtonComponent.ButtonBody.localScale.x * (endColumn + 1 - startColumn);
+            linkButtonComponent.ButtonBody.localScale = 
+                new Vector3(stretchVal, linkButtonComponent.ButtonBody.localScale.y, linkButtonComponent.ButtonBody.localScale.z);
+
+            // set button text to match method call name
+            var splitLabel = EdgeLink.GetLabel().Split('.');
+            string methodCallName = splitLabel.Length == 1 ? splitLabel[0] : splitLabel[splitLabel.Length - 1];
+            linkButtonComponent.ChangeLinkText(methodCallName);
 
             linkButton.SetActive(false);
 

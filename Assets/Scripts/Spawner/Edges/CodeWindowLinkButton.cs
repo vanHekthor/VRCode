@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
@@ -19,6 +20,9 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
 
     public Sprite HighlightSprite;
     public Sprite DefaultSprite;
+
+    public Transform ButtonBody;
+    public TextMeshProUGUI LinkTextElement;
 
     public class LinkClickedEvent : UnityEvent<List<CodeWindowLink>> { };
     public static LinkClickedEvent LinkClicked = new LinkClickedEvent();
@@ -82,6 +86,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         // get target file path and target code file from CodeWindowLink reference
         TargetFilePath = Link.EdgeLink.GetTo().file.ToLower();
         TargetFile = Link.TargetFile;
+    }
+
+    public void ChangeLinkText(string text) {
+        LinkTextElement.SetText(text);
     }
     
     /// <summary>
