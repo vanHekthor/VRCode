@@ -9,18 +9,21 @@ public class ActionMenu : MonoBehaviour {
 
     private Transform codePopupHolder;
 
-    // Start is called before the first frame update
-    void Start() {
+    void Awake() {
         codePopupHolder = transform.Find("CodePopups");
         if (codePopupHolder == null) {
             Debug.LogError("ActionMenu is missing a code popup holder called 'CodePopups'!");
         }
 
-        CodeWindowLinkButton.LinkClicked.AddListener(UpdatePopups);
+        CodeWindowLinkButton.LinkClicked.AddListener(LinkWasClicked);
+        CodePopup.ClickEvent.AddListener(CodePopupWasClicked);
+
+        gameObject.SetActive(false);
     }
 
-    // Update is called once per frame
-    void Update() {
+    public void LinkWasClicked(List<CodeWindowLink> links) {
+        gameObject.SetActive(true);
+        UpdatePopups(links);
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
@@ -29,6 +32,10 @@ public class ActionMenu : MonoBehaviour {
         foreach (var link in links) {
             AddCodePopup(link);
         }
+    }
+
+    public void CodePopupWasClicked() {
+        gameObject.SetActive(false);
     }
 
     private void AddCodePopup(CodeWindowLink link) {

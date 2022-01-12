@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using VRVis.Elements;
 using VRVis.IO;
@@ -16,6 +17,9 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
 
     public Transform classNameTransform;
     public Transform methodDeclarationTransform;
+
+    public class CodePopupClickEvent : UnityEvent {}
+    public static CodePopupClickEvent ClickEvent = new CodePopupClickEvent();
 
     public CodeWindowLink Link { get; set; }
 
@@ -71,7 +75,7 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
     }
 
     public void OnPointerDown(PointerEventData eventData) {
-        ClickOnPopup();
+        ClickOnPopup();        
         StartCoroutine(SpawnFileAndEdge());
     }
 
@@ -111,8 +115,10 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
                 string name = "";
                 if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
-            }            
-        }
+            }
+
+            ClickEvent.Invoke();
+    }
 
         private CodeWindowEdgeConnection SpawnEdgeConnection() {
             var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
