@@ -1,6 +1,8 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -150,16 +152,39 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
         using (StreamReader sr = fi.OpenText()) {
             // local and temp. information
             string curLine = "";
+            string output = "";
             // string sourceCode = "";
             int linesRead = 0;
-
+            
             while ((curLine = sr.ReadLine()) != null) {
 
                 // update counts and source code
                 // sourceCode += curLine + "\n";
                 linesRead++;
                 if (linesRead == lineIdx) {
-                    return curLine;
+                    // check for '{' at the end
+                    if (IsDeclarationEndLine(curLine)) {
+                        return curLine.Trim();
+                    }
+                    
+                    // count leading whitespace
+                    int leadingSpaceCount = curLine.TakeWhile(Char.IsWhiteSpace).Count();
+                    output = curLine.TrimStart();
+
+                    //01public
+                    //0123wegwj
+
+                    int declarationLines = 1;
+                    while ((curLine = sr.ReadLine()) != null) {
+                        declarationLines++;
+                        output += '\n' + curLine.Substring(leadingSpaceCount).TrimEnd();
+                        
+                        if (IsDeclarationEndLine(curLine) || declarationLines > 10) {
+                            return output;
+                        }
+                    }
+
+                    return output;
                 }
 
                 
@@ -167,5 +192,12 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
         }
 
         return null;
+    }
+
+    private bool IsDeclarationEndLine(string line) {
+        if (line.LastIndexOf('{') == -1) {
+            return false;
+        }
+        return line.TrimEnd().Substring(line.LastIndexOf('{')).Equals("{</color>");
     }
 }
