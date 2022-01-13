@@ -206,6 +206,11 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         //}
         Debug.Log("LinkButton was clicked!");
         // OnPointerUp(eventData);
+        
+        WasClicked();
+    }
+
+    public void WasClicked() {
         var links = new List<CodeWindowLink>();
         links.Add(Link);
         LinkClicked.Invoke(links);
