@@ -4,7 +4,7 @@ using UnityEngine;
 using VRVis.Elements;
 using VRVis.Spawner.Edges;
 
-public class ActionMenu : MonoBehaviour {
+public class InteractionScreen : MonoBehaviour {
     public GameObject codePopupPrefab;
 
     private Transform codePopupHolder;
@@ -12,7 +12,7 @@ public class ActionMenu : MonoBehaviour {
     void Awake() {
         codePopupHolder = transform.Find("CodePopups");
         if (codePopupHolder == null) {
-            Debug.LogError("ActionMenu is missing a code popup holder called 'CodePopups'!");
+            Debug.LogError("InteractionScreen is missing a code popup holder called 'CodePopups'!");
         }
 
         CodeWindowLinkButton.LinkClicked.AddListener(LinkWasClicked);
