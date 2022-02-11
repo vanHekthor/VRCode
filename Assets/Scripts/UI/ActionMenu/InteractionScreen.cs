@@ -22,6 +22,7 @@ public class InteractionScreen : MonoBehaviour {
     }
 
     public void LinkWasClicked(List<CodeWindowLink> links) {
+        Debug.Log("LinkWasClicked() was invoked by CodeWindowLinkButton.LinkClicked!");
         gameObject.SetActive(true);
         UpdatePopups(links);
     }
@@ -35,6 +36,7 @@ public class InteractionScreen : MonoBehaviour {
     }
 
     public void CodePopupWasClicked() {
+        Debug.Log("CodePopupWasClicked() was invoked by CodePopup.ClickEvent!");
         gameObject.SetActive(false);
     }
 

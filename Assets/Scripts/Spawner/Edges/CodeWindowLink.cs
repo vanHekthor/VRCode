@@ -32,7 +32,7 @@ namespace VRVis.Spawner.Edges {
 
         public Edge EdgeLink { get; private set; }
         private bool updateLink;
-        private bool successfulAttached = false;
+        private bool successfullyAttached = false;
 
         /// <summary>represent the attachment points as spheres</summaryr>
         private GameObject linkButton;
@@ -55,7 +55,7 @@ namespace VRVis.Spawner.Edges {
 
         // Update is called once per frame
         void Update() {
-            if (successfulAttached && updateLink) {
+            if (successfullyAttached && updateLink) {
                 UpdateLinePosition();
             }
         }
@@ -79,7 +79,7 @@ namespace VRVis.Spawner.Edges {
             //endSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;            
 
             updateLink = true;
-            successfulAttached = false;
+            successfullyAttached = false;
 
             string base_err = "Failed to spawn link button";
             if (EdgeLink == null) {
@@ -130,7 +130,7 @@ namespace VRVis.Spawner.Edges {
             baseWindowLeftRightDistance = baseWindowReferences.GetEdgePoints().GetLeftRightDistance() * linkAnchorTransform.lossyScale.x;
 
             updateLink = true;
-            successfulAttached = true;
+            successfullyAttached = true;
             return true;
         }
 
