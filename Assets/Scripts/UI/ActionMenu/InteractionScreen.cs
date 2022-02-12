@@ -48,6 +48,11 @@ public class InteractionScreen : MonoBehaviour {
 
     public void CodePopupWasClicked() {
         Debug.Log("CodePopupWasClicked() was invoked by CodePopup.ClickEvent!");
+        CloseInteractionScreen();
+    }
+
+    public void CloseInteractionScreen() {
+        Debug.Log("Interaction screen was closed!");
         gameObject.SetActive(false);
     }
 
