@@ -131,7 +131,9 @@ namespace VRVis.Spawner.CodeCity {
             LaserPointerEventData d = eventData as LaserPointerEventData;
             if (d != null) {
                 ViveUILaserPointerPickup p = d.controller.GetComponent<ViveUILaserPointerPickup>();
-                if (p) { p.StructureNodeClicked(GetSNode(), transform); }
+                if (p) {
+                    p.StartCodeWindowPlacement(GetSNode(), transform);
+                }
             }
             
         }

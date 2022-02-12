@@ -33,8 +33,8 @@ namespace VRVis.Elements {
             this.to = to;
             this.value = value;
 
-            ValidateLinesRange(this.from.lines);
-            ValidateLinesRange(this.to.lines);
+            ValidateRange(this.from.lines);
+            ValidateRange(this.to.lines);
         }
 
         public Edge(uint id, JSONEdge jsonEdge)
@@ -53,14 +53,14 @@ namespace VRVis.Elements {
         public JSONEdge.NodeLocation GetFrom() { return from; }
         public void SetFrom(JSONEdge.NodeLocation from) {
             this.from = from;
-            ValidateLinesRange(this.from.lines);
+            ValidateRange(this.from.lines);
         }
 
         /// <summary>Holds e.g. relative file path of end file.</summary>
         public JSONEdge.NodeLocation GetTo() { return to; }
         public void SetTo(JSONEdge.NodeLocation to) {
             this.to = to;
-            ValidateLinesRange(this.from.lines);
+            ValidateRange(this.from.lines);
         }
 
         public float GetValue() { return value; }
@@ -72,9 +72,9 @@ namespace VRVis.Elements {
         /// Ensures that the range "to" is not less than "from"
         /// and that "from" is at least 0
         /// </summary>
-        private void ValidateLinesRange(JSONEdge.EdgeLines lines) {
-            if (lines.from < 0) { lines.from = 0; }
-            if (lines.to < lines.from) { lines.to = lines.from; }
+        private void ValidateRange(JSONEdge.Range range) {
+            if (range.from < 0) { range.from = 0; }
+            if (range.to < range.from) { range.to = range.from; }
         }
 
     }

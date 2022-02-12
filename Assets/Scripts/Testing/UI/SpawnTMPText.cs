@@ -70,10 +70,10 @@ namespace VRVis.Testing {
                 TMP_fontSize = tmpgui.fontSize;
                 
                 fontName = tmpgui.font.name;
-                fontLineHeight = tmpgui.font.fontInfo.LineHeight;
-                fontPointSize = tmpgui.font.fontInfo.PointSize;
-                fontBaseline = tmpgui.font.fontInfo.Baseline;
-                fontScale = tmpgui.font.fontInfo.Scale;
+                fontLineHeight = tmpgui.font.faceInfo.lineHeight;
+                fontPointSize = tmpgui.font.faceInfo.pointSize;
+                fontBaseline = tmpgui.font.faceInfo.baseline;
+                fontScale = tmpgui.font.faceInfo.scale;
                 fontSubSize = tmpgui.font.fontInfo.SubSize;
 
                 lineHeight_calculated = TMP_fontScale * fontLineHeight;

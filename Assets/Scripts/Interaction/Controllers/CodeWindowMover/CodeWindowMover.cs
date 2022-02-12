@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using Valve.VR;
@@ -107,6 +108,8 @@ namespace VRVis.Interaction.Controller {
         private bool teleportButtonLocked = false;
 
         private bool placeOntoSphereScreen = false;
+
+        private Action nodePlacedCallback;
 
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
@@ -238,7 +241,9 @@ namespace VRVis.Interaction.Controller {
 
 
             // selecting the position of where to spawn a code window
-            if (selectedNode != null) { WindowPlacementUpdate(placementDistance); }
+            if (selectedNode != null) {
+                WindowPlacementUpdate(placementDistance);
+            }
 
             // moving a selected object (e.g. a code window)
             if (selectedObject != null) { WindowMovementUpdate(placementDistance); }
@@ -439,6 +444,7 @@ namespace VRVis.Interaction.Controller {
         /// Called after the window placement finished.
         /// </summary>
         private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+            nodePlacedCallback?.Invoke();
 
             if (!success) {
                 string name = "";
@@ -669,14 +675,15 @@ namespace VRVis.Interaction.Controller {
             if (placementObject) {
                 placementObject.SetActive(false);
                 placementObject.transform.rotation = Quaternion.identity; // reset rotation
-            }
+            }            
         }
-
 
         /// <summary>Set selected node that is currently moved.</summary>
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
         /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null) {
+        /// <param name="callback">Method that will be called after the node was placed</param>
+        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action callback = null) {
+            nodePlacedCallback = callback;
 
             if (IsSomethingSelected()) { return false; }
             if (node == null) { return false; }
@@ -699,7 +706,6 @@ namespace VRVis.Interaction.Controller {
             pressed = TriggerButtonDown();
             return true;
         }
-
 
         /// <summary>Set the object that should be moved.</summary>
         /// <param name="movable">The Movable script of the object that should be moved</param>

@@ -444,7 +444,7 @@ namespace VRVis.Spawner {
 
                 // add instance to the according container
                 Transform linkContainer = fromCodeFile.GetReferences().GetEdgePoints().connectionContainer;
-                linkInstance.transform.SetParent(linkContainer);
+                linkInstance.transform.SetParent(linkContainer, false);
                 linkInstance.transform.rotation = linkContainer.rotation;
 
                 if (!edgeCon.InitLink(edge, fromCodeFile, targetFile)) {
