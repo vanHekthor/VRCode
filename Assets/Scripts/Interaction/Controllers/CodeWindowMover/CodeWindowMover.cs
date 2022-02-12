@@ -241,7 +241,9 @@ namespace VRVis.Interaction.Controller {
 
 
             // selecting the position of where to spawn a code window
-            if (selectedNode != null) { WindowPlacementUpdate(placementDistance); }
+            if (selectedNode != null) {
+                WindowPlacementUpdate(placementDistance);
+            }
 
             // moving a selected object (e.g. a code window)
             if (selectedObject != null) { WindowMovementUpdate(placementDistance); }

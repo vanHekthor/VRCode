@@ -1,11 +1,14 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using Valve.VR.InteractionSystem;
 using VRVis.Elements;
 using VRVis.Spawner.Edges;
 
 public class InteractionScreen : MonoBehaviour {
     public GameObject codePopupPrefab;
+    public float distanceToPlayer = 1.8f;
+    public float horizontalOffset = -0.1f;
 
     private Transform codePopupHolder;
 
@@ -25,6 +28,14 @@ public class InteractionScreen : MonoBehaviour {
         Debug.Log("LinkWasClicked() was invoked by CodeWindowLinkButton.LinkClicked!");
         gameObject.SetActive(true);
         UpdatePopups(links);
+
+        Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
+        Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
+        transform.position = screenPos;        
+        Vector3 direction = screenPos - Player.instance.hmdTransform.position;
+        transform.rotation = Quaternion.LookRotation(direction);
+        transform.position += horizontalOffset * transform.right;
+
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
