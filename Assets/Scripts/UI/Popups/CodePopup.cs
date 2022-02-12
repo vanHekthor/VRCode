@@ -8,6 +8,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using VRVis.Elements;
+using VRVis.Interaction.LaserPointer;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
@@ -72,11 +73,30 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
 
     public void ClickOnPopup() {
         Debug.Log("Code Popup was clicked!");
+        StartCoroutine(SpawnFileAndEdge());
     }
 
     public void OnPointerDown(PointerEventData eventData) {
-        ClickOnPopup();        
-        StartCoroutine(SpawnFileAndEdge());
+        //ClickOnPopup();
+
+        // called from laser pointer controller
+        LaserPointerEventData d = eventData as LaserPointerEventData;
+        if (d != null) {
+            ViveUILaserPointerPickup p = d.controller.GetComponent<ViveUILaserPointerPickup>();
+            if (p) {
+                p.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+            }
+        }
+
+        ClickEvent.Invoke();
+    }
+
+    private void ToDoAfterCodeWindowPlacement() {
+        var edgeConnection = SpawnEdgeConnection();
+
+        if (edgeConnection != null) {
+            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
+        }
     }
 
     private IEnumerator SpawnFileAndEdge() {
@@ -106,10 +126,7 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
         /// </summary>
         private void FileSpawnCallback(bool success, CodeFile file, string msg) {
             windowSpawned = success;
-            windowSpawning = false;
-
-            var edgeConnection = SpawnEdgeConnection();
-            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
+            windowSpawning = false;            
 
             if (!success) {
                 string name = "";
