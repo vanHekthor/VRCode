@@ -400,11 +400,11 @@ namespace VRVis.Interaction.LaserHand {
 
             // check if click reached a structure node
             StructureNodeInfo nodeInf = go.GetComponent<StructureNodeInfo>();
-            if (nodeInf != null) { StructureNodeClicked(nodeInf.GetSNode(), go.transform); }
+            if (nodeInf != null) { StartCodeWindowPlacement(nodeInf.GetSNode(), go.transform); }
 
             // check if click reached a structure node of structure version 2
             StructureNodeInfoV2 nodeInfV2 = go.GetComponent<StructureNodeInfoV2>();
-            if (nodeInfV2 != null) { StructureNodeClicked(nodeInfV2.GetSNode(), go.transform); }
+            if (nodeInfV2 != null) { StartCodeWindowPlacement(nodeInfV2.GetSNode(), go.transform); }
 
             // ToDo: cleanup
             // BELOW CODE IS DISCARDED: pointer click is now handled by VariabilityModelInteraction.cs
@@ -417,7 +417,7 @@ namespace VRVis.Interaction.LaserHand {
 
         /// <summary>Called when clicked on a structure node.</summary>
         /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
-        public void StructureNodeClicked(SNode node, Transform clickedAt = null) {
+        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null) {
 
             if (node == null) { return; }
 
