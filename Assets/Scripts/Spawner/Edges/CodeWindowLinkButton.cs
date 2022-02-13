@@ -1,6 +1,8 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
@@ -18,6 +20,12 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
 
     public Sprite HighlightSprite;
     public Sprite DefaultSprite;
+
+    public Transform ButtonBody;
+    public TextMeshProUGUI LinkTextElement;
+
+    public class LinkClickedEvent : UnityEvent<List<CodeWindowLink>> { };
+    public static LinkClickedEvent LinkClicked = new LinkClickedEvent();
 
     public string TargetFilePath { get; private set; }
     public CodeFile TargetFile { get; private set; }
@@ -79,6 +87,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         TargetFilePath = Link.EdgeLink.GetTo().file.ToLower();
         TargetFile = Link.TargetFile;
     }
+
+    public void ChangeLinkText(string text) {
+        LinkTextElement.SetText(text);
+    }
     
     /// <summary>
     /// Shows a spawn panel in front of the link button for indicating the side to which the user wants to spawn a linked code file.
@@ -86,17 +98,17 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// </summary>
     /// <param name="eventData"></param>
     public void OnPointerDown(PointerEventData eventData) {
-        pressed = true;
+        //pressed = true;
 
-        gridElement = BaseCodeWindowObject.GetComponent<GridElement>();
+        //gridElement = BaseCodeWindowObject.GetComponent<GridElement>();
 
-        if (!spawnPanelVisible) {
-            spawnPanelVisible = true;
-            instantiatedSpawnPanel = Instantiate(SpawnPanel, toggleCenter);
-        }
+        //if (!spawnPanelVisible) {
+        //    spawnPanelVisible = true;
+        //    instantiatedSpawnPanel = Instantiate(SpawnPanel, toggleCenter);
+        //}
 
-        spawnLeftImage = instantiatedSpawnPanel.transform.Find("Container/LeftButton").GetComponent<Image>();
-        spawnRightImage = instantiatedSpawnPanel.transform.Find("Container/RightButton").GetComponent<Image>();
+        //spawnLeftImage = instantiatedSpawnPanel.transform.Find("Container/LeftButton").GetComponent<Image>();
+        //spawnRightImage = instantiatedSpawnPanel.transform.Find("Container/RightButton").GetComponent<Image>();
     }
 
     /// <summary>
@@ -104,14 +116,14 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// </summary>
     /// <param name="eventData"></param>
     public void OnPointerUp(PointerEventData eventData) {
-        pressed = false;
+        //pressed = false;
 
-        if (spawnPanelVisible) {
-            spawnPanelVisible = false;
-            DestroyImmediate(instantiatedSpawnPanel);            
-        }        
+        //if (spawnPanelVisible) {
+        //    spawnPanelVisible = false;
+        //    DestroyImmediate(instantiatedSpawnPanel);            
+        //}        
         
-        StartCoroutine(SpawnFileCoroutine());
+        //StartCoroutine(SpawnFileCoroutine());
     }
 
     /// <summary>
@@ -122,73 +134,86 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// </summary>
     /// <param name="eventData"></param>
     public void OnDrag(PointerEventData eventData) {
-        if (pressed) {
-            // Debug.Log("Currently dragging...");
+        //if (pressed) {
+        //    // Debug.Log("Currently dragging...");
 
-            if (spawnWindowOntoSphere) {               
+        //    if (spawnWindowOntoSphere) {               
 
-                Vector3 pointerPos = eventData.pointerCurrentRaycast.worldPosition;
+        //        Vector3 pointerPos = eventData.pointerCurrentRaycast.worldPosition;
 
-                if (Vector3.Distance(pointerPos, Vector3.zero) >= 0.001f) {
+        //        if (Vector3.Distance(pointerPos, Vector3.zero) >= 0.001f) {
 
-                    Vector3 spawnVector = pointerPos - toggleCenter.position;
-                    Vector3 baseFileToPointer = pointerPos
-                        - grid.GetGridPoint(gridElement.GridPositionLayer, gridElement.GridPositionColumn).Position;
+        //            Vector3 spawnVector = pointerPos - toggleCenter.position;
+        //            Vector3 baseFileToPointer = pointerPos
+        //                - grid.GetGridPoint(gridElement.GridPositionLayer, gridElement.GridPositionColumn).Position;
 
-                    float distanceToLeft = (pointerPos - toggleLeft.position).magnitude;
-                    float distanceToRight = (pointerPos - toggleRight.position).magnitude;
+        //            float distanceToLeft = (pointerPos - toggleLeft.position).magnitude;
+        //            float distanceToRight = (pointerPos - toggleRight.position).magnitude;
 
-                    if (baseFileToPointer.magnitude <= 17.0) {
+        //            if (baseFileToPointer.magnitude <= 17.0) {
 
-                        if (spawnSide == SpawnFartherAway) {
-                            if (instantiatedPreview) {
-                                // DestroyImmediate(instantiatedPreview);
-                                instantiatedPreview.SetActive(false);
-                            }
-                        }
+        //                if (spawnSide == SpawnFartherAway) {
+        //                    if (instantiatedPreview) {
+        //                        // DestroyImmediate(instantiatedPreview);
+        //                        instantiatedPreview.SetActive(false);
+        //                    }
+        //                }
 
-                        if (distanceToLeft <= distanceToRight) {
-                            spawnSide = SpawnLeft;
-                            spawnLeftImage.sprite = HighlightSprite;
-                            spawnRightImage.sprite = DefaultSprite;
-                        }
-                        else {
-                            spawnSide = SpawnRight;
-                            spawnLeftImage.sprite = DefaultSprite;
-                            spawnRightImage.sprite = HighlightSprite;
-                        }
-                    }
-                    else {
-                        if (spawnSide != SpawnFartherAway) {
-                            if (instantiatedPreview) {
-                                instantiatedPreview.SetActive(true);
-                            }
-                        }
+        //                if (distanceToLeft <= distanceToRight) {
+        //                    spawnSide = SpawnLeft;
+        //                    spawnLeftImage.sprite = HighlightSprite;
+        //                    spawnRightImage.sprite = DefaultSprite;
+        //                }
+        //                else {
+        //                    spawnSide = SpawnRight;
+        //                    spawnLeftImage.sprite = DefaultSprite;
+        //                    spawnRightImage.sprite = HighlightSprite;
+        //                }
+        //            }
+        //            else {
+        //                if (spawnSide != SpawnFartherAway) {
+        //                    if (instantiatedPreview) {
+        //                        instantiatedPreview.SetActive(true);
+        //                    }
+        //                }
 
-                        Vector3 previewPos = grid.GetClosestGridPoint(pointerPos).AttachmentPoint;
-                        Vector3 lookDirection = previewPos - fs.WindowScreenTransform.position;
-                        Quaternion previewRot = Quaternion.LookRotation(lookDirection);
+        //                Vector3 previewPos = grid.GetClosestGridPoint(pointerPos).AttachmentPoint;
+        //                Vector3 lookDirection = previewPos - fs.WindowScreenTransform.position;
+        //                Quaternion previewRot = Quaternion.LookRotation(lookDirection);
 
-                        if (!instantiatedPreview) {
-                            instantiatedPreview = Instantiate(WindowPreview, previewPos, Quaternion.LookRotation(lookDirection));
-                        }
-                        else {
-                            instantiatedPreview.transform.position = previewPos;
-                            instantiatedPreview.transform.rotation = previewRot;
-                        }
+        //                if (!instantiatedPreview) {
+        //                    instantiatedPreview = Instantiate(WindowPreview, previewPos, Quaternion.LookRotation(lookDirection));
+        //                }
+        //                else {
+        //                    instantiatedPreview.transform.position = previewPos;
+        //                    instantiatedPreview.transform.rotation = previewRot;
+        //                }
 
-                        spawnSide = SpawnFartherAway;
-                    }
-                }
-            }
-        }
+        //                spawnSide = SpawnFartherAway;
+        //            }
+        //        }
+        //    }
+        //}
     }
 
     public void OnPointerClick(PointerEventData eventData) {
-        if (sceneName == "ExampleScene_Catena_NoVR") {
-            Debug.Log("LinkButton was clicked!");
-            OnPointerUp(eventData);
-        }
+        //if (sceneName == "ExampleScene_Catena_NoVR") {
+        //    Debug.Log("LinkButton was clicked!");
+        //    // OnPointerUp(eventData);
+        //    var links = new List<CodeWindowLink>();
+        //    links.Add(Link);
+        //    LinkClicked.Invoke(links);
+        //}
+        Debug.Log("LinkButton was clicked!");
+        // OnPointerUp(eventData);
+        
+        WasClicked();
+    }
+
+    public void WasClicked() {
+        var links = new List<CodeWindowLink>();
+        links.Add(Link);
+        LinkClicked.Invoke(links);
     }
 
 
@@ -240,9 +265,9 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         windowSpawned = success;
         windowSpawning = false;
 
-        var edgeConnection = spawnEdgeConnection();        
+        var edgeConnection = SpawnEdgeConnection();        
 
-        edgeConnection.LineHighlight = highlightCodeAreaInTargetfile();
+        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
 
         if (!success) {
             string name = "";
@@ -252,13 +277,13 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         }        
     }
 
-    private CodeWindowEdgeConnection spawnEdgeConnection() {
+    private CodeWindowEdgeConnection SpawnEdgeConnection() {
         var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
 
         return edgeConnection;
     }
 
-    private LineHighlight highlightCodeAreaInTargetfile() {
+    private LineHighlight HighlightCodeAreaInTargetfile() {
         int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
         int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
         var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
@@ -268,6 +293,5 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         }
 
         return highlight;
-    }
-    
+    }    
 }

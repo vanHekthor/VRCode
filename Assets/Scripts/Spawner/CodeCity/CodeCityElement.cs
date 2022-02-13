@@ -132,17 +132,16 @@ namespace VRVis.Spawner.CodeCity {
             // called from laser pointer controller
             LaserPointerEventData d = eventData as LaserPointerEventData;
             if (d != null) {
-
                 var laserPointer = d.controller.GetComponent<ViveUILaserPointerPickup>();
                 var laserHand = d.controller.GetComponent<LaserHand>();
 
                 if (laserPointer) {
-                    laserPointer.StructureNodeClicked(GetSNode(), transform);
+                    laserPointer.StartCodeWindowPlacement(GetSNode(), transform);
                 }
 
                 if (laserPointer == null) {
                     if (laserHand != null) {
-                        laserHand.StructureNodeClicked(GetSNode(), transform);
+                        laserHand.StartCodeWindowPlacement(GetSNode(), transform);
                     }
                 }
             }
