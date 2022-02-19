@@ -8,13 +8,14 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using VRVis.Elements;
+using VRVis.Fallback;
 using VRVis.Interaction.LaserPointer;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.Edges;
 
-public class CodePopup : MonoBehaviour, IPointerDownHandler {
+public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
     public Transform classNameTransform;
     public Transform methodDeclarationTransform;
@@ -76,8 +77,17 @@ public class CodePopup : MonoBehaviour, IPointerDownHandler {
         StartCoroutine(SpawnFileAndEdge());
     }
 
-    public void OnPointerDown(PointerEventData eventData) {
+    public void OnPointerClick(PointerEventData eventData) {
         //ClickOnPopup();
+
+        // called from fallback camera (mouse click)
+        MouseNodePickup.MousePickupEventData e = eventData as MouseNodePickup.MousePickupEventData;
+        if (e != null) {
+            MouseNodePickup mnp = e.GetMNP();
+            if (e.button.Equals(PointerEventData.InputButton.Left)) {
+                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
+            }
+        }
 
         // called from laser pointer controller
         LaserPointerEventData d = eventData as LaserPointerEventData;

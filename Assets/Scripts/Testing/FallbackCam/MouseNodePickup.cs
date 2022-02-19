@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -35,6 +36,8 @@ namespace VRVis.Fallback {
 	    private GameObject placeHolderInstance;
         private float curRayDist = 0;
         private float placeHolderDist = 0;
+
+        private Action nodePlacedCallback;
 
 
         public class MousePickupEventData : PointerEventData {
@@ -160,6 +163,7 @@ namespace VRVis.Fallback {
         /// Called after the window placement finished.
         /// </summary>
         private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+            nodePlacedCallback?.Invoke();
 
             if (!success) {
                 string name = "";
@@ -216,7 +220,9 @@ namespace VRVis.Fallback {
         /// Attach the previous so that user can select position to spawn file at.
         /// </summary>
         /// <param name="initPos">Position to initialize place holder instance at</param>
-        public bool AttachFileToSpawn(SNode node, Vector3 initPos) {
+        public bool AttachFileToSpawn(SNode node, Vector3 initPos, Action callback = null) {
+
+            nodePlacedCallback = callback;
 
             if (node == null) { return false; }
             attachedNode = node;
