@@ -43,6 +43,8 @@ namespace VRVis.Spawner.Edges {
 
         private Vector3[] dirs; // for segments directions
 
+        public bool useCustomScaleDirection = false;
+        public Vector3 customScaleDirection;
 
 
         // CONSTRUCTOR
@@ -62,6 +64,13 @@ namespace VRVis.Spawner.Edges {
         /// <summary>Set the positions array</summary>
         public void SetPositions(Vector3[] positions) {
             this.positions = positions;
+            updateRequired = true;
+        }
+
+        /// <summary>Set the positions array</summary>
+        public void SetPositions(Vector3[] positions, Vector3 scaleDirection) {
+            this.positions = positions;
+            customScaleDirection = scaleDirection;
             updateRequired = true;
         }
 
@@ -102,10 +111,14 @@ namespace VRVis.Spawner.Edges {
             if (positions == null || positions.Length < 1) { return; }
             
             Vector3 scaleAlongAxis = Vector3.zero;
-            switch (scaleAlong) {
-                case ScaleAlong.X: scaleAlongAxis = new Vector3(1, 0, 0); break;
-                case ScaleAlong.Y: scaleAlongAxis = new Vector3(0, 1, 0); break;
-                case ScaleAlong.Z: scaleAlongAxis = new Vector3(0, 0, 1); break;
+            if (!useCustomScaleDirection) {
+                switch (scaleAlong) {
+                    case ScaleAlong.X: scaleAlongAxis = new Vector3(1, 0, 0); break;
+                    case ScaleAlong.Y: scaleAlongAxis = new Vector3(0, 1, 0); break;
+                    case ScaleAlong.Z: scaleAlongAxis = new Vector3(0, 0, 1); break;
+                }
+            } else {
+                scaleAlongAxis = customScaleDirection;
             }
 
             if (sameFileMode) {
