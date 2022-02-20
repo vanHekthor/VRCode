@@ -458,7 +458,7 @@ namespace VRVis.Spawner.Edges {
             bool endOutofBounds = false;
 
             if (startSpan > 0) {
-                float startSpanFinal = startSpan * GetLineHeight() * canvasScale;
+                float startSpanFinal = startSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 lineStart = ValidateBoundsRegion(true, lineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
             }
             else {
@@ -466,7 +466,7 @@ namespace VRVis.Spawner.Edges {
             }
 
             if (endSpan > 0) {
-                float endSpanFinal = endSpan * GetLineHeight() * canvasScale;
+                float endSpanFinal = endSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 lineEnd = ValidateBoundsRegion(false, lineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
             }
             else {
