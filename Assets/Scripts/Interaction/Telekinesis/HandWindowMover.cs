@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System;
+using UnityEngine;
 using Valve.VR;
 using Valve.VR.InteractionSystem;
 using VRVis.Interaction.Controller.Mover;
@@ -95,6 +96,8 @@ namespace VRVis.Interaction.Controller {
         private bool teleportButtonLocked = false;
 
         private bool placeOntoSphereScreen = false;
+
+        private Action nodePlacedCallback;
 
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
@@ -285,6 +288,7 @@ namespace VRVis.Interaction.Controller {
         /// Called after the window placement finished.
         /// </summary>
         private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+            nodePlacedCallback?.Invoke();
 
             if (!success) {
                 string name = "";
@@ -506,7 +510,8 @@ namespace VRVis.Interaction.Controller {
         /// <summary>Set selected node that is currently moved.</summary>
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
         /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null) {
+        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action callback = null) {
+            nodePlacedCallback = callback;
 
             if (IsSomethingSelected()) { return false; }
             if (node == null) { return false; }

@@ -9,6 +9,7 @@ using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using VRVis.Elements;
 using VRVis.Fallback;
+using VRVis.Interaction.LaserHand;
 using VRVis.Interaction.LaserPointer;
 using VRVis.IO;
 using VRVis.IO.Structure;
@@ -79,6 +80,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
     public void OnPointerClick(PointerEventData eventData) {
         //ClickOnPopup();
+        ClickEvent.Invoke();
 
         // called from fallback camera (mouse click)
         MouseNodePickup.MousePickupEventData e = eventData as MouseNodePickup.MousePickupEventData;
@@ -92,13 +94,19 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         // called from laser pointer controller
         LaserPointerEventData d = eventData as LaserPointerEventData;
         if (d != null) {
-            ViveUILaserPointerPickup p = d.controller.GetComponent<ViveUILaserPointerPickup>();
-            if (p) {
-                p.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
-            }
-        }
+            var laserPointer = d.controller.GetComponent<ViveUILaserPointerPickup>();
+            var laserHand = d.controller.GetComponent<LaserHand>();
 
-        ClickEvent.Invoke();
+            if (laserPointer) {
+                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+            }
+
+            if (laserPointer == null) {
+                if (laserHand != null) {
+                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+                }
+            }
+        }        
     }
 
     private void ToDoAfterCodeWindowPlacement() {

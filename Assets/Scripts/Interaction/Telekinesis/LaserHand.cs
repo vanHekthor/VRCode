@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -417,7 +418,7 @@ namespace VRVis.Interaction.LaserHand {
 
         /// <summary>Called when clicked on a structure node.</summary>
         /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
-        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null) {
+        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null, Action callback = null) {
 
             if (node == null) { return; }
 
@@ -463,7 +464,7 @@ namespace VRVis.Interaction.LaserHand {
                     GameObject attachedObject = hand.currentAttachedObject;
                     var cwm = gameObject.GetComponent<HandWindowMover>();
                     cwm.isActive = true;
-                    if (cwm) { cwm.SelectNode(node, true, clickedAt); }
+                    if (cwm) { cwm.SelectNode(node, true, clickedAt, callback); }
                 }
                 else {
 
@@ -471,6 +472,7 @@ namespace VRVis.Interaction.LaserHand {
                     // or make it light up for a short amount of time to show where it is?
 
                     Debug.LogWarning("File already spawned: " + node.GetName());
+                    callback();
                 }
             }
         }
