@@ -153,7 +153,7 @@ namespace VRVis.Spawner.Edges {
             linkButtonComponent.BaseCodeWindowObject = BaseFile.GetReferences().gameObject;
 
             // attach to this GameObject instance
-            linkButton.transform.SetParent(transform);
+            linkButton.transform.SetParent(transform, false);
             linkButton.transform.rotation = transform.rotation;
 
             // stretch physical link button to width of method call expression
