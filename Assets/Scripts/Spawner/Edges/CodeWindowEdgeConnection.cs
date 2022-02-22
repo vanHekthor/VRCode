@@ -414,12 +414,17 @@ namespace VRVis.Spawner.Edges {
 
             // get position left and right next to the "from" window
             Vector3 from_ea_left = fromWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 from_leftPos = new Vector3(startPoint.position.x, startPoint.position.y, startPoint.position.z);
+
+            // correction vector that is needed because of horizontal scrolling
+            Vector3 correction = Vector3.Dot(fromWindowRefs.GetEdgePoints().topLeft.position - startPoint.position, startPoint.right) * startPoint.right;
+            Vector3 from_leftPos = startPoint.position + correction;
             Vector3 from_rightPos = from_leftPos + startPoint.right * from_leftRightDist;
 
             // get position left and right next to the "to" window [UPDATE: no longer affected by hor. scroll]
             Vector3 to_ea_left = toWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 to_leftPos = new Vector3(endPoint.position.x, endPoint.position.y, endPoint.position.z);
+            
+            correction = Vector3.Dot(toWindowRefs.GetEdgePoints().topLeft.position - endPoint.position, endPoint.right) * endPoint.right;
+            Vector3 to_leftPos = endPoint.position + correction;
             Vector3 to_rightPos = to_leftPos + endPoint.right * to_leftRightDist;
 
 
@@ -448,7 +453,6 @@ namespace VRVis.Spawner.Edges {
                 attachFromLeft = false; attachToLeft = true;
             }
 
-
             // line start is position at "from-window" and end at "to-window"
             Vector3 lineStart = attachFromLeft ? from_leftPos : from_rightPos;
             Vector3 lineEnd = attachToLeft ? to_leftPos : to_rightPos;
@@ -458,7 +462,7 @@ namespace VRVis.Spawner.Edges {
             bool endOutofBounds = false;
 
             if (startSpan > 0) {
-                float startSpanFinal = startSpan * GetLineHeight() * canvasScale;
+                float startSpanFinal = startSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 lineStart = ValidateBoundsRegion(true, lineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
             }
             else {
@@ -466,7 +470,7 @@ namespace VRVis.Spawner.Edges {
             }
 
             if (endSpan > 0) {
-                float endSpanFinal = endSpan * GetLineHeight() * canvasScale;
+                float endSpanFinal = endSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 lineEnd = ValidateBoundsRegion(false, lineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
             }
             else {
@@ -567,8 +571,14 @@ namespace VRVis.Spawner.Edges {
                 if (endSpan > 0) { keys[keyCount-1].value = GetEdgeEndWidth(); }
                 zLineRenderer.widthCurve.keys = keys;
 
+                // calculate scale direction vector
+                CodeFileReferences.EdgeAnchors edgePoints = toWindowRefs.GetEdgePoints();
+                Vector3 winTop = attachFromLeft ? edgePoints.topLeft.position : edgePoints.topRight.position;
+                Vector3 winBottom = attachFromLeft ? edgePoints.bottomLeft.position : edgePoints.bottomRight.position;
+                Vector3 scaleDirection = Vector3.Normalize(winTop - winBottom);
+
                 // set new curve positions -> curve will be refreshed
-                zLineRenderer.SetPositions(curvePoints);
+                zLineRenderer.SetPositions(curvePoints, scaleDirection);
             }
         }
 
@@ -653,6 +663,7 @@ namespace VRVis.Spawner.Edges {
             //Vector3 viewportBtm = winRefs.GetViewportBottom();
             Vector3 viewportBtm = winBottom;
 
+            Vector3 top_btm_norm = Vector3.Normalize(viewportBtm - viewportTop);
 
             // [DEBUG]
             if (showRegionDebugGizmos) { debug_pos = posOut; }
@@ -660,8 +671,9 @@ namespace VRVis.Spawner.Edges {
 
             // check if region is completely out of bounds at top
             outOfBounds = false;
-            float dist_top = curPos.y - viewportTop.y;
-            if (dist_top >= span) {
+            Vector3 dist_top = curPos - viewportTop;
+            float y_dist_top = curPos.y - viewportTop.y;
+            if (y_dist_top >= span) {
 
                 PositionSphere(sphere, true, posOut); // hide sphere
 
@@ -674,8 +686,9 @@ namespace VRVis.Spawner.Edges {
             }
 
             // check if region is completely out of bounds at bottom
-            float dist_btm = curPos.y - viewportBtm.y;
-            if (dist_btm <= 0) {
+            Vector3 dist_btm = curPos - viewportBtm;
+            float y_dist_btm = curPos.y - viewportBtm.y;
+            if (y_dist_btm <= 0) {
 
                 PositionSphere(sphere, true, posOut); // hide sphere
 
@@ -690,14 +703,14 @@ namespace VRVis.Spawner.Edges {
 
             // check if part of the region is out of bounds at the top and/or btm window border
             bool region_outOfBounds_top = curPos.y > viewportTop.y;
-            bool region_outOfBounds_btm = curPos.y - span < viewportBtm.y;
+            bool region_outOfBounds_btm = curPos.y - (span * -top_btm_norm).y < viewportBtm.y;
             float newEdgeWidth = span;
 
             // part of the region covers whole content size -> edge attachment pos at middle of content
             if (region_outOfBounds_top && region_outOfBounds_btm) {
 
                 Vector3 btm_top = (viewportTop - viewportBtm);
-                posOut.y = (viewportBtm + btm_top * 0.5f).y;
+                posOut = (viewportBtm + btm_top * 0.5f);
 
                 // hide sphere
                 PositionSphere(sphere, true, posOut);
@@ -708,13 +721,12 @@ namespace VRVis.Spawner.Edges {
             // part of the region is out at the top
             else if (region_outOfBounds_top) {
 
-                float width_left = span - dist_top;
-                Vector3 top_btm_norm = Vector3.Normalize(viewportBtm - viewportTop);
-                posOut.y = (viewportTop + top_btm_norm * (width_left * 0.5f)).y;
+                float width_left = span - dist_top.magnitude;
+                posOut = (viewportTop + top_btm_norm * (width_left * 0.5f));
 
                 // sphere at end of region
                 Vector3 regionEnd = curPos;
-                regionEnd.y = (viewportTop + top_btm_norm * width_left).y;
+                regionEnd = (viewportTop + top_btm_norm * width_left);
                 PositionSphere(sphere, false, regionEnd);
 
                 newEdgeWidth = width_left;
@@ -723,9 +735,9 @@ namespace VRVis.Spawner.Edges {
             // part of the region is out at the bottom
             else if (region_outOfBounds_btm) {
 
-                float width_left = dist_btm;
+                float width_left = dist_btm.magnitude;
                 Vector3 btm_top_norm = Vector3.Normalize(viewportTop - viewportBtm);
-                posOut.y = (viewportBtm + btm_top_norm * (width_left * 0.5f)).y;
+                posOut = (viewportBtm + btm_top_norm * (width_left * 0.5f));
 
                 // sphere at start of region
                 PositionSphere(sphere, false, curPos);
@@ -735,9 +747,7 @@ namespace VRVis.Spawner.Edges {
 
             // the whole region is visible
             else {
-                
-                Vector3 top_btm_norm = Vector3.Normalize(viewportBtm - viewportTop);
-                posOut.y = (curPos + top_btm_norm * (span * 0.5f)).y;
+                posOut = (curPos + top_btm_norm * (span * 0.5f));
 
                 // hide sphere
                 PositionSphere(sphere, true, posOut);

@@ -235,7 +235,7 @@ namespace VRVis.Spawner.File {
 
             // scale and position highlight
             float x = 0f;
-            float y = (start - 1) * -lineHeight + pxErr; // lineHeight needs to be a negative value!
+            float y = (start - 1) * - lineHeight + pxErr; // lineHeight needs to be a negative value!
             float height = (end - start + 1) * lineHeight;
 
             RectTransform rt = lineHighlightObject.GetComponent<RectTransform>();

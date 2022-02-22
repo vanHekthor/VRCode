@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using VRVis.Fallback;
+using VRVis.Interaction.LaserHand;
 using VRVis.Interaction.LaserPointer;
+using VRVis.Interaction.PsychicHand;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Utilities;
@@ -130,9 +132,17 @@ namespace VRVis.Spawner.CodeCity {
             // called from laser pointer controller
             LaserPointerEventData d = eventData as LaserPointerEventData;
             if (d != null) {
-                ViveUILaserPointerPickup p = d.controller.GetComponent<ViveUILaserPointerPickup>();
-                if (p) {
-                    p.StartCodeWindowPlacement(GetSNode(), transform);
+                var laserPointer = d.controller.GetComponent<ViveUILaserPointerPickup>();
+                var laserHand = d.controller.GetComponent<LaserHand>();
+
+                if (laserPointer) {
+                    laserPointer.StartCodeWindowPlacement(GetSNode(), transform);
+                }
+
+                if (laserPointer == null) {
+                    if (laserHand != null) {
+                        laserHand.StartCodeWindowPlacement(GetSNode(), transform);
+                    }
                 }
             }
             

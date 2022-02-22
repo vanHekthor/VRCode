@@ -410,7 +410,7 @@ namespace VRVis.Spawner {
 
             // add instance to the according container
             Transform container = fromCodeFile.GetReferences().GetEdgePoints().connectionContainer;
-            edgeConInstance.transform.SetParent(container);
+            edgeConInstance.transform.SetParent(container, false);
             edgeConInstance.transform.rotation = container.rotation;
             edgeCon.Prepare(edge);
 

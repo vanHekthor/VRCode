@@ -39,8 +39,11 @@ namespace VRVis.Interaction.LaserPointer {
         [System.Serializable] public class BoolEvent : UnityEvent<bool> {}
 
 
-        private GameObject hitPoint;
-        private GameObject pointer;
+        protected GameObject hitPoint;
+        protected GameObject pointer;
+        protected RaycastHit hitInfo;
+        protected Ray ray;
+        protected bool bHit;
         
         private bool laserActive = false;
         private float _distanceLimit;
@@ -167,9 +170,8 @@ namespace VRVis.Interaction.LaserPointer {
             if (laserOrigin) { origin_pos = laserOrigin.position; }
 
             // create and cast the ray that hits colliders (does not hit UI elements)
-            Ray ray = new Ray(origin_pos, transform.forward);
-            RaycastHit hitInfo;
-            bool bHit = Physics.Raycast(ray, out hitInfo, Mathf.Infinity, rayLayerMask);
+            ray = new Ray(origin_pos, transform.forward);
+            bHit = Physics.Raycast(ray, out hitInfo, Mathf.Infinity, rayLayerMask);
 
             float distance = maxRayDistance;
             if (bHit) { distance = hitInfo.distance; }
