@@ -414,12 +414,17 @@ namespace VRVis.Spawner.Edges {
 
             // get position left and right next to the "from" window
             Vector3 from_ea_left = fromWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 from_leftPos = new Vector3(startPoint.position.x, startPoint.position.y, startPoint.position.z);
+
+            // correction vector that is needed because of horizontal scrolling
+            Vector3 correction = Vector3.Dot(fromWindowRefs.GetEdgePoints().topLeft.position - startPoint.position, startPoint.right) * startPoint.right;
+            Vector3 from_leftPos = startPoint.position + correction;
             Vector3 from_rightPos = from_leftPos + startPoint.right * from_leftRightDist;
 
             // get position left and right next to the "to" window [UPDATE: no longer affected by hor. scroll]
             Vector3 to_ea_left = toWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            Vector3 to_leftPos = new Vector3(endPoint.position.x, endPoint.position.y, endPoint.position.z);
+            
+            correction = Vector3.Dot(toWindowRefs.GetEdgePoints().topLeft.position - endPoint.position, endPoint.right) * endPoint.right;
+            Vector3 to_leftPos = endPoint.position + correction;
             Vector3 to_rightPos = to_leftPos + endPoint.right * to_leftRightDist;
 
 
