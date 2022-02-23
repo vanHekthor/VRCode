@@ -549,8 +549,13 @@ namespace VRVis.Spawner.Edges {
                 controlPoint2 = lineEnd + endSide * multiplier;
             }
             else {
-                controlPoint1 = lineStart + startPoint.up * 0.1f + startSide * (finalCurveStrength * 4);
-                controlPoint2 = lineEnd + endPoint.up * -0.1f + endSide * (finalCurveStrength * 4);
+                float windowWidth = Vector3.Distance(fromWindowRefs.GetEdgePoints().topLeft.position, 
+                    fromWindowRefs.GetEdgePoints().topRight.position);
+                float windowHeight = Vector3.Distance(fromWindowRefs.GetEdgePoints().topLeft.position,
+                    fromWindowRefs.GetEdgePoints().bottomLeft.position);
+                float min = Mathf.Min(windowWidth, windowHeight);
+                controlPoint1 = lineStart + startPoint.up * 0.025f + startSide * (finalCurveStrength * min * 0.67f);
+                controlPoint2 = lineEnd + endPoint.up * -0.025f + endSide * (finalCurveStrength * min * 0.67f);
             }
 
             Vector3[] curvePoints = bezierCurve.CalculatePoints(lineStart, controlPoint1, controlPoint2, lineEnd);
