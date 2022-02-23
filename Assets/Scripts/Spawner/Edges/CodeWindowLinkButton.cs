@@ -91,6 +91,11 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     public void ChangeLinkText(string text) {
         LinkTextElement.SetText(text);
     }
+
+    public float GetButtonWidth() {
+        // here x-scale is the width
+        return ButtonBody.lossyScale.x;
+    }
     
     /// <summary>
     /// Shows a spawn panel in front of the link button for indicating the side to which the user wants to spawn a linked code file.
