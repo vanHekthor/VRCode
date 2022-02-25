@@ -34,8 +34,9 @@ namespace VRVis.Spawner.Edges {
         private bool updateLink;
         private bool successfullyAttached = false;
 
-        /// <summary>represent the attachment points as spheres</summaryr>
+        /// <summary>represent control flow starting points as link buttons</summaryr>
         private GameObject linkButton;
+        private CodeWindowLinkButton linkButtonComponent;
         [SerializeField]
         private GameObject linkButtonPrefab;
 
@@ -141,7 +142,7 @@ namespace VRVis.Spawner.Edges {
 
             // create physical link button
             GameObject linkButton = Instantiate(linkButtonPrefab);
-            CodeWindowLinkButton linkButtonComponent = linkButton.GetComponent<CodeWindowLinkButton>();
+            linkButtonComponent = linkButton.GetComponent<CodeWindowLinkButton>();
             if (!linkButtonComponent) {
                 DestroyImmediate(linkButton);
                 return null;
@@ -264,7 +265,7 @@ namespace VRVis.Spawner.Edges {
         /// <param name="attachLeft">If the current position is left attached</param>
         /// <param name="curPos">The current position to be validated</param>
         /// <param name="outOfBounds">Tells if this check resulted in out of bounds</param>
-        private Vector3 ValidateBounds(Vector3 curPos, CodeFileReferences winRefs, bool attachLeft, out bool outOfBounds, GameObject sphere) {
+        private Vector3 ValidateBounds(Vector3 curPos, CodeFileReferences winRefs, bool attachLeft, out bool outOfBounds, GameObject linkButton) {
 
             CodeFileReferences.EdgeAnchors edgePoints = winRefs.GetEdgePoints();
             Vector3 winTop = attachLeft ? edgePoints.topLeft.position : edgePoints.topRight.position;
@@ -275,17 +276,33 @@ namespace VRVis.Spawner.Edges {
             outOfBounds = false;
             //if (curPos.y > winRefs.GetViewportTop().y) {
             if (curPos.y > winTop.y) { 
-                posOut = winTop;
+                // posOut.y = winTop.y;
                 outOfBounds = true;
             }
             //else if (curPos.y < winRefs.GetViewportBottom().y) {
             else if (curPos.y < winBottom.y) { 
-                posOut = winBottom;
+                // posOut.y = winBottom.y;
                 outOfBounds = true;
             }
 
-            // position the sphere
-            PositionLinkButton(sphere, outOfBounds, posOut);
+            float linkButtonWidthOffset = linkButtonComponent.GetButtonWidth();
+            Vector3 windowLeftDirection = (edgePoints.topLeft.position - edgePoints.topRight.position).normalized;
+            Vector3 curPosToWindowTopLeft = edgePoints.topLeft.position - (curPos - windowLeftDirection * linkButtonWidthOffset);
+            Vector3 curPosToWindowTopRight = edgePoints.topRight.position - curPos;
+            
+
+            bool outOfLeftBound = Vector3.Dot(curPosToWindowTopLeft, windowLeftDirection) < 0;
+            bool outOfRightBound = Vector3.Dot(curPosToWindowTopRight, -windowLeftDirection) < 0;
+
+            if (outOfLeftBound) {
+                outOfBounds = true;
+            }
+            else if (outOfRightBound) {
+                outOfBounds = true;
+            }
+
+            // position the link button
+            PositionLinkButton(linkButton, outOfBounds, posOut);
 
             return posOut;
         }

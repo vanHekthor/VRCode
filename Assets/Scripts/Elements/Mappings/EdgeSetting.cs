@@ -100,7 +100,7 @@ namespace VRVis.Mappings {
             Color fromColor = Color.black; //new Color(0.4f, 0.4f, 1.0f);
             Color toColor = Color.black; //new Color(0.4f, 1.0f, 0.4f);
             colorMethod = new Color_Scale("edge_dcm", fromColor, toColor);
-            widthMethod = new Width_Scale("edge_dwm", 10, 50);
+            widthMethod = new Width_Scale("edge_dwm", 1, 5);
 
             steps = 30;
             curve_strength = 0.3f;

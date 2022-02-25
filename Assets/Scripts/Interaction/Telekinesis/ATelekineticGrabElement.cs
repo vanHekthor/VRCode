@@ -46,7 +46,7 @@ namespace VRVis.Interaction.Telekinesis {
         void Start() {         
             originalScale = grabbedTransform.localScale;
 
-            vrCamera = Player.instance.gameObject.GetComponentInChildren<Camera>();
+            // vrCamera = Player.instance.gameObject.GetComponentInChildren<Camera>();
             elementCollider = gameObject.GetComponent<Collider>();
 
             Initialize();
