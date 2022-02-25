@@ -29,13 +29,15 @@ public class InteractionScreen : MonoBehaviour {
         gameObject.SetActive(true);
         UpdatePopups(links);
 
-        Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
-        Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
-        transform.position = screenPos;        
-        Vector3 direction = screenPos - Player.instance.hmdTransform.position;
-        transform.rotation = Quaternion.LookRotation(direction);
-        transform.position += horizontalOffset * transform.right;
 
+        if (Player.instance != null && Player.instance.hmdTransform != null) {
+            Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
+            Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
+            transform.position = screenPos;
+            Vector3 direction = screenPos - Player.instance.hmdTransform.position;
+            transform.rotation = Quaternion.LookRotation(direction);
+            transform.position += horizontalOffset * transform.right;
+        }
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
