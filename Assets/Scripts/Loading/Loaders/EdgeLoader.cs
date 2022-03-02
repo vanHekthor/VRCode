@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -33,7 +34,7 @@ namespace VRVis.IO {
         private Dictionary<string, EdgeTypeInfo> edgeTypes = new Dictionary<string, EdgeTypeInfo>();
 
         /// <summary>Key = code file instance, Value = list of ids of according edges</summary>
-        private Dictionary<CodeFile, HashSet<uint>> fileEdges = new Dictionary<CodeFile, HashSet<uint>>();
+        private Dictionary<Tuple<CodeFile, string>, HashSet<uint>> fileEdges = new Dictionary<Tuple<CodeFile, string>, HashSet<uint>>();
 
         /// <summary>Path of the currently loaded file</summary>
         private string curFile = "";
@@ -82,13 +83,13 @@ namespace VRVis.IO {
         /// Converts the input path to lowercase.<para/>
         /// Returns null if there are no edges for this file!
         /// </summary>
-        public IEnumerable<Edge> GetEdgesOfFile(CodeFile codeFile) {
-            
-            if (!fileEdges.ContainsKey(codeFile)) { return null; }
+        public IEnumerable<Edge> GetEdgesOfFile(CodeFile codeFile, string configName) {
+            var key = Tuple.Create(codeFile, configName);
+            if (!fileEdges.ContainsKey(key)) { return null; }
 
             // gather all the according edge instances
             List<Edge> list = new List<Edge>();
-            foreach (uint edgeID in fileEdges[codeFile]) {
+            foreach (uint edgeID in fileEdges[key]) {
                 if (!edges.ContainsKey(edgeID)) { continue; }
                 list.Add(edges[edgeID]);
             }
@@ -99,10 +100,10 @@ namespace VRVis.IO {
         /// <summary>
         /// Returns the amount of outgoing edges of this file.
         /// </summary>
-        public int GetEdgeCountOfFile(CodeFile codeFile) {
-            
-            if (!fileEdges.ContainsKey(codeFile)) { return 0; }
-            return fileEdges[codeFile].Count;
+        public int GetEdgeCountOfFile(CodeFile codeFile, string configName) {
+            var key = Tuple.Create(codeFile, configName);
+            if (!fileEdges.ContainsKey(key)) { return 0; }
+            return fileEdges[key].Count;
         }
 
         /// <summary>Returns the edge or null if not found.</summary>
@@ -144,7 +145,7 @@ namespace VRVis.IO {
             }
 
             // get valid files and add full path to list
-            FileInfo[] files = dirInf.GetFiles(namingConvention, SearchOption.TopDirectoryOnly);
+            FileInfo[] files = dirInf.GetFiles(namingConvention, SearchOption.AllDirectories);
             List<string> paths = new List<string>();
             foreach (FileInfo fi in files) { paths.Add(fi.FullName); }
             return paths;
@@ -193,6 +194,8 @@ namespace VRVis.IO {
         /// Loads a single edges file and returns true on success.
         /// </summary>
         private bool LoadFile(string filePath) {
+            // name of the corresponding configuration is the name of the parent directory
+            string parentDirName = new DirectoryInfo(filePath).Parent.Name;
 
             if (!File.Exists(filePath)) {
                 Debug.LogError("Edges file does not exist! (" + filePath + ")");
@@ -225,8 +228,11 @@ namespace VRVis.IO {
                 }
 
                 // [INDEXING] add edge ID relation to code file
-                if (!fileEdges.ContainsKey(codeFile)) { fileEdges.Add(codeFile, new HashSet<uint>()); }
-                fileEdges[codeFile].Add(edgeID);
+                var key = Tuple.Create(codeFile, parentDirName);
+                if (!fileEdges.ContainsKey(key)) {
+                    fileEdges.Add(key, new HashSet<uint>());
+                }
+                fileEdges[key].Add(edgeID);
 
 
                 // ToDo: maybe check if there is already an edge leading to exactly the same location

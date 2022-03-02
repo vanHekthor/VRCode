@@ -31,6 +31,7 @@ namespace VRVis.IO {
         public string configurationName = "app_config.json";
         public string variabilityModelName = "variability_model.xml";
         public string influenceModelName = "model.csv";
+        public string configsFolderName = "configs";
 
         [Tooltip("Add the first x found feature regions to the selected list on startup")]
         public bool addFeatureRegions = false;
@@ -141,7 +142,7 @@ namespace VRVis.IO {
             }
 
             // load edges from file
-            List<string> edgeFiles = EdgeLoader.GetEdgeFiles(mainPath);
+            List<string> edgeFiles = EdgeLoader.GetEdgeFiles(mainPath + configsFolderName);
             string[] edgeFilePaths = edgeFiles != null ? edgeFiles.ToArray() : new string[]{};
             edgeLoader = new EdgeLoader(edgeFilePaths);
             if (!edgeLoader.Load()) {
