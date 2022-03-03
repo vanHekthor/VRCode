@@ -5,7 +5,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using VRVis.Elements;
 using VRVis.IO;
-
+using VRVis.IO.Features;
 
 namespace VRVis.Spawner.File {
 
@@ -62,6 +62,8 @@ namespace VRVis.Spawner.File {
         [Tooltip("Points required for successful edge creation")]
         public EdgeAnchors edgePoints;
         public bool drawEdgeAnchorGizmos = true;
+
+        public Configuration Config { get; private set; }
 
         // reference to the "main" element managing the according code file
         private CodeFile codeFile;

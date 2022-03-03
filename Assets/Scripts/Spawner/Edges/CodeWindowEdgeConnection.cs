@@ -120,15 +120,15 @@ namespace VRVis.Spawner.Edges {
         public void SetEdge(Edge edge) { this.edge = edge; }
 
         /// <summary>Get the code file this line starts at. Can be null on errors!</summary>
-        public CodeFile GetStartCodeFile() {
+        public CodeFileReferences GetStartCodeFileInstance() {
             if (fromWindowRefs == null) { return null; }
-            return fromWindowRefs.GetCodeFile();
+            return fromWindowRefs;
         }
 
         /// <summary>Get the code file this line ends at. Can be null on errors!</summary>
-        public CodeFile GetEndCodeFile() {
+        public CodeFileReferences GetEndCodeFileInstance() {
             if (toWindowRefs == null) { return null; }
-            return toWindowRefs.GetCodeFile();
+            return toWindowRefs;
         }
 
         /// <summary>Get the start attachment transform.</summary>
@@ -298,8 +298,10 @@ namespace VRVis.Spawner.Edges {
         /// Prepare and spawn the edge objects.<para/>
         /// Ensure to set the edge before calling this method by using the "Prepare" method!<para/>
         /// </summary>
-        public bool InitConnection(CodeFile fromCodeFile, CodeFile toCodeFile) {
-            
+        public bool InitConnection(CodeFileReferences fromCodeFileInstance, CodeFileReferences toCodeFileInstance) {
+            fromWindowRefs = fromCodeFileInstance;
+            toWindowRefs = toCodeFileInstance;
+
             updateEdge = true;
             successfulAttached = false;
             string base_err = "Failed to spawn edge";
@@ -310,26 +312,22 @@ namespace VRVis.Spawner.Edges {
             }
 
             // get relative file paths that user entered
-            string file1 = fromCodeFile.GetNode().GetPath(); //edge.GetFrom().file.ToLower();
-            string file2 = toCodeFile.GetNode().GetPath(); //edge.GetTo().file.ToLower();
+            string file1 = fromCodeFileInstance.GetCodeFile().GetNode().GetPath(); //edge.GetFrom().file.ToLower();
+            string file2 = toCodeFileInstance.GetCodeFile().GetNode().GetPath(); //edge.GetTo().file.ToLower();
 
             // get according code files (null if not found)
-            CodeFile cf1 = fromCodeFile;
-            CodeFile cf2 = toCodeFile;
+            CodeFile cf1 = fromCodeFileInstance.GetCodeFile();
+            CodeFile cf2 = toCodeFileInstance.GetCodeFile();
 
             // code file error handling
             string file1_err = "(file: " + file1 + ")";
             string file2_err = "(file: " + file2 + ")";
             if (cf1 == null) { Debug.LogError(base_err + " - missing code file 1! " + file1_err); return false; }
-            if (cf1.GetReferences() == null) { Debug.LogError(base_err + " - missing code file 1 references! " + file1_err); return false; }
+            if (fromCodeFileInstance == null) { Debug.LogError(base_err + " - missing code file 1 references! " + file1_err); return false; }
             if (cf2 == null) { Debug.LogError(base_err + " - missing code file 2! " + file2_err); return false; }
-            if (cf2.GetReferences() == null) { Debug.LogError(base_err + " - missing code file 2 references! " + file2_err); return false; }
+            if (toCodeFileInstance == null) { Debug.LogError(base_err + " - missing code file 2 references! " + file2_err); return false; }            
 
-            // get edge point references
-            fromWindowRefs = cf1.GetReferences();
-            toWindowRefs = cf2.GetReferences();
-
-            if (cf1 == cf2) { fromToSameFile = true; }
+            if (fromCodeFileInstance == toCodeFileInstance) { fromToSameFile = true; }
 
             // create point transforms telling where the connection should start and end
             GameObject p1 = new GameObject("EdgeStartAnchor", typeof(RectTransform));

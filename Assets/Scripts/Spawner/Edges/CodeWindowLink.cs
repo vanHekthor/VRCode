@@ -23,7 +23,7 @@ namespace VRVis.Spawner.Edges {
         private Vector3 previousAnchorPointPos;
 
         public CodeFile BaseFile { get; private set; }
-        private CodeFileReferences baseWindowReferences;
+        public CodeFileReferences BaseFileInstance { get; private set; }
 
         public CodeFile TargetFile { get; private set; }
 
@@ -69,8 +69,9 @@ namespace VRVis.Spawner.Edges {
             if (linkButton) { Destroy(linkButton); }
         }
 
-        public bool InitLink(Edge edge, CodeFile baseFile, CodeFile targetFile) {            
-            BaseFile = baseFile;
+        public bool InitLink(Edge edge, CodeFileReferences baseFileInstance, CodeFile targetFile) {            
+            BaseFile = baseFileInstance.GetCodeFile();
+            BaseFileInstance = baseFileInstance;
 
             // set the edge this connection represents
             EdgeLink = edge;
@@ -90,15 +91,12 @@ namespace VRVis.Spawner.Edges {
             }
 
             // get relative file paths that user entered
-            string baseFilePath = baseFile.GetNode().GetPath();
+            string baseFilePath = BaseFile.GetNode().GetPath();
 
             // code file error handling
             string baseFilePathError = "(file: " + baseFilePath + ")";
-            if (baseFile == null) { Debug.LogError(base_err + " - missing code base file! " + baseFilePathError); return false; }
-            if (baseFile.GetReferences() == null) { Debug.LogError(base_err + " - missing code base file references! " + baseFilePathError); return false; }
-
-            // get edge point references
-            baseWindowReferences = baseFile.GetReferences();
+            if (baseFileInstance.GetCodeFile() == null) { Debug.LogError(base_err + " - missing code base file! " + baseFilePathError); return false; }
+            if (baseFileInstance == null) { Debug.LogError(base_err + " - missing code base file references! " + baseFilePathError); return false; }
 
             // create point transforms telling where the link button should be placed
             GameObject linkAnchor = new GameObject("LinkAnchor", typeof(RectTransform));
@@ -112,7 +110,7 @@ namespace VRVis.Spawner.Edges {
                 "Button", 
                 EdgeLink.GetFrom().columns.from, 
                 EdgeLink.GetFrom().columns.to,
-                baseWindowReferences.GetCodeFile().GetLineInfo().characterWidth);
+                BaseFileInstance.GetCodeFile().GetLineInfo().characterWidth);
 
             if (!linkButton) {
                 Debug.LogError("Not able to properly instantiate the LinkButton targeting the file '" + targetFile + "'!");
@@ -123,12 +121,12 @@ namespace VRVis.Spawner.Edges {
             PositionLinkAnchors(
                 linkAnchor.GetComponent<RectTransform>(), 
                 EdgeLink.GetFrom().lines.from, 
-                EdgeLink.GetFrom().columns.from, 
-                baseWindowReferences);
+                EdgeLink.GetFrom().columns.from,
+                BaseFileInstance);
 
             // get distances between left and right next to each window
             // and convert them from canvas units in world units (mult with scale)
-            baseWindowLeftRightDistance = baseWindowReferences.GetEdgePoints().GetLeftRightDistance() * linkAnchorTransform.lossyScale.x;
+            baseWindowLeftRightDistance = BaseFileInstance.GetEdgePoints().GetLeftRightDistance() * linkAnchorTransform.lossyScale.x;
 
             updateLink = true;
             successfullyAttached = true;
@@ -233,7 +231,7 @@ namespace VRVis.Spawner.Edges {
             if (!IsUpdateRequired()) { return; }
 
             // get position left and right next to the "base" window
-            Vector3 baseWindowAttachmentLeft = baseWindowReferences.GetLeftEdgeConnection(); // edge attachment left
+            Vector3 baseWindowAttachmentLeft = BaseFileInstance.GetLeftEdgeConnection(); // edge attachment left
             Vector3 baseWindowLeftPosition = new Vector3(linkAnchorTransform.position.x, linkAnchorTransform.position.y, linkAnchorTransform.position.z);
             Vector3 basewindowRightPosition = baseWindowLeftPosition + linkAnchorTransform.right * baseWindowLeftRightDistance;
 
@@ -247,10 +245,10 @@ namespace VRVis.Spawner.Edges {
 
             if (baseRegionSpan > 0) {
                 float finalBaseRegionSpan = baseRegionSpan * LineHeight * canvasScale;
-                lineStart = ValidateBoundsRegion(true, lineStart, finalBaseRegionSpan, baseWindowReferences, attachToLeftSide, out startOutOfBounds, linkButton);
+                lineStart = ValidateBoundsRegion(true, lineStart, finalBaseRegionSpan, BaseFileInstance, attachToLeftSide, out startOutOfBounds, linkButton);
             }
             else {
-                lineStart = ValidateBounds(lineStart, baseWindowReferences, attachToLeftSide, out startOutOfBounds, linkButton);
+                lineStart = ValidateBounds(lineStart, BaseFileInstance, attachToLeftSide, out startOutOfBounds, linkButton);
             }
 
 
