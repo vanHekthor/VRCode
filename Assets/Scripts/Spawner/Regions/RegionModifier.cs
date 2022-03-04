@@ -204,7 +204,7 @@ namespace VRVis.Spawner.Regions {
                 Color neutralColor = new Color();
 
                 if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.CODE_MARKING) {
-                    neutralColor = file.GetReferences().codeBackground.color;
+                    neutralColor = file.GetInstances().codeBackground.color;
                 }            
                 else if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.HEIGHTMAP) {
                     var heightmapInfo = obj.GetComponent<HeightmapRegionInfo>();
@@ -444,7 +444,7 @@ namespace VRVis.Spawner.Regions {
         /// <param name="setInvalid">Mark label values as invalid using "/"</param>
         private void UpdateHeightmapLabels(bool setInvalid = false) {
 
-            if (!file.GetReferences().GetHeightmap().activeInHierarchy) { return; }
+            if (!file.GetInstances().GetHeightmap().activeInHierarchy) { return; }
 
             // get the name of the currently selected non functional property
             string nfpName = ApplicationLoader.GetApplicationSettings().GetSelectedNFP().ToLower();
@@ -474,8 +474,8 @@ namespace VRVis.Spawner.Regions {
 
             // try to update the heightmap labels
             //Debug.Log("Updating heightmap labels of: " + codeFile.GetNode().GetName(), codeFile.GetReferences().gameObject);
-            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
-            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
+            file.GetInstances().GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
+            file.GetInstances().GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
         }
 
 

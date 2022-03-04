@@ -46,7 +46,7 @@ namespace VRVis.Spawner {
         // callbacks for when the regions were modified (e.g. used by overview)
         [HideInInspector]
         public CodeFileEvent onRegionsValuesChanged = new CodeFileEvent();
-        public class CodeFileEvent : UnityEvent<CodeFile> {}
+        public class CodeFileEvent : UnityEvent<CodeFileReferences> {}
 
         private string activeNFP; // stores active property temporarily
         private CodeFile currentFile; // regions currently spawned for this file
@@ -55,7 +55,7 @@ namespace VRVis.Spawner {
         /// Stores the spawned regions for each CodeFile (modified by the RegionSpawner)<para/>
         /// 2. dict: key = region ID (to ensure uniqueness) and value = Region instance
         /// </summary>
-        private Dictionary<CodeFile, Dictionary<string, Region>> spawnedRegions = new Dictionary<CodeFile, Dictionary<string, Region>>();
+        private Dictionary<CodeFileReferences, Dictionary<string, Region>> spawnedRegions = new Dictionary<CodeFileReferences, Dictionary<string, Region>>();
 
 
         // kinda like the class constructor
@@ -120,12 +120,12 @@ namespace VRVis.Spawner {
 
 
         /// <summary>Remove all NFP region objects of a file.</summary>
-        public static void CleanupNFPRegions(CodeFile file) {
+        public static void CleanupNFPRegions(CodeFileReferences fileInstance) {
 
             List<GameObject> elementsToDestroy = new List<GameObject>();
 
             // remove possible old region elements of "code" marking visualization
-            Transform regionContainer = file.GetReferences().regionContainer;
+            Transform regionContainer = fileInstance.regionContainer;
             if (regionContainer) {
                 // (works while iterating because Destroy is not running immediately)
                 foreach (Transform child in regionContainer) {
@@ -134,7 +134,7 @@ namespace VRVis.Spawner {
             }
 
             // remove possible old region elements of "heightmap" visualization
-            Transform heightmapContainer = file.GetReferences().heightmapRegionContainer;
+            Transform heightmapContainer = fileInstance.heightmapRegionContainer;
             if (heightmapContainer) {
                 // (works while iterating because Destroy is not running immediately)
                 foreach (Transform child in heightmapContainer) {
@@ -157,12 +157,12 @@ namespace VRVis.Spawner {
         /// Coloring should be done in a separate step because it can be
         /// influence by "visual properties".
         /// </summary>
-        public bool SpawnNFPRegions(CodeFile file) {
+        public bool SpawnNFPRegions(CodeFileReferences fileInstance) {
 
-            currentFile = file;    
+            currentFile = fileInstance.GetCodeFile();    
 
             // remove old regions objects before spawning new ones
-            CleanupNFPRegions(file);
+            CleanupNFPRegions(fileInstance);
 
 
             // check if variability model is used and valid (if invalid, do not spawn any regions)
@@ -176,22 +176,22 @@ namespace VRVis.Spawner {
             }
 
 
-            if (file.GetReferences().GetTextElements().Count == 0) {
+            if (fileInstance.GetTextElements().Count == 0) {
                 Debug.LogWarning("Failed to spawn NFP regions! No text elements found.");
                 return false;
             }
 
-            float lineHeight = file.GetLineInfo().lineHeight;
-            float totalWidth_codeMarking = file.GetLineInfo().lineWidth;
+            float lineHeight = fileInstance.GetCodeFile().GetLineInfo().lineHeight;
+            float totalWidth_codeMarking = fileInstance.GetCodeFile().GetLineInfo().lineWidth;
 
             // adjust width or height depending on visualization type
             ApplicationSettings appSettings = ApplicationLoader.GetApplicationSettings();
             if (appSettings.IsNFPVisActive(ApplicationSettings.NFP_VIS.CODE_MARKING)) {
 
                 // get region width for code marking visualization (might change in future)
-                RectTransform scrollRectRT = file.GetReferences().GetScrollRect().GetComponent<RectTransform>();
-                RectTransform textContainerRT = file.GetReferences().textContainer.GetComponent<RectTransform>();
-                RectTransform vertScrollbarRT = file.GetReferences().GetVerticalScrollbarRect();
+                RectTransform scrollRectRT = fileInstance.GetScrollRect().GetComponent<RectTransform>();
+                RectTransform textContainerRT = fileInstance.textContainer.GetComponent<RectTransform>();
+                RectTransform vertScrollbarRT = fileInstance.GetVerticalScrollbarRect();
                 if (scrollRectRT && textContainerRT && vertScrollbarRT) {
                     totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
                 }
@@ -233,7 +233,7 @@ namespace VRVis.Spawner {
 
             // use loader to find regions of that file
             RegionLoader regionLoader = ApplicationLoader.GetInstance().GetRegionLoader();
-            foreach (Region region in regionLoader.GetFileRegions(file.GetNode().GetPath())) {
+            foreach (Region region in regionLoader.GetFileRegions(fileInstance.GetCodeFile().GetNode().GetPath())) {
                 if (region.HasProperty(ARProperty.TYPE.NFP, activeNFP)) {
                     regionsToSpawn.Add(region);
                 }
@@ -251,7 +251,7 @@ namespace VRVis.Spawner {
                     
                     // depending on the current state of the visualization "switch"
                     // show the regions marking the code text or show the height map
-                    CodeFileReferences fileRefs = file.GetReferences();
+                    CodeFileReferences fileRefs = fileInstance;
 
                     // depending on visualization type, create the regions
                     if (appSettings.IsNFPVisActive(ApplicationSettings.NFP_VIS.CODE_MARKING)) {
@@ -269,7 +269,7 @@ namespace VRVis.Spawner {
 
             // add all the spawned NFP regions to the CodeFile instance as reference
             // (this reference is required to color or scale them)
-            AddSpawnedRegions(file, regionsSpawned);
+            AddSpawnedRegions(fileInstance, regionsSpawned);
             if (LOGGING) { Debug.Log("NFP regions spawned: " + regionsSpawned.Count); }
 
             return true;
@@ -358,12 +358,12 @@ namespace VRVis.Spawner {
         // ========================== FEATURES ==========================//
 
         /// <summary>Remove all feature regions of a file.</summary>
-        public static void CleanupFeatureRegions(CodeFile file) {
+        public static void CleanupFeatureRegions(CodeFileReferences fileInstance) {
 
             List<GameObject> elementsToRemove = new List<GameObject>();
 
             // remove possible old region elements of "code" marking visualization
-            Transform featureContainer = file.GetReferences().featureContainer;
+            Transform featureContainer = fileInstance.featureContainer;
             if (featureContainer) {
                 // (works while iterating because Destroy is not running immediately)
                 foreach (Transform child in featureContainer) {
@@ -388,24 +388,24 @@ namespace VRVis.Spawner {
         /// 
         /// Returns true on success and false otherwise.
         /// </summary>
-        public bool SpawnFeatureRegions(CodeFile file) {
+        public bool SpawnFeatureRegions(CodeFileReferences fileInstance) {
 
-            currentFile = file;
+            currentFile = fileInstance.GetCodeFile();
             
             // remove old regions objects before spawning new ones
-            CleanupFeatureRegions(file);
+            CleanupFeatureRegions(fileInstance);
 
             // region loader tells about loaded regions
             RegionLoader loader = ApplicationLoader.GetInstance().GetRegionLoader();
 
-            if (file.GetReferences().GetTextElements().Count == 0) {
+            if (fileInstance.GetTextElements().Count == 0) {
                 Debug.LogWarning("Failed to spawn feature regions! No text elements found.");
                 return false;
             }
 
             // features use only the height because width must be calculated
             // by using the amount of active features and the fixed width of the feature box
-            float lineHeight = file.GetLineInfo().lineHeight;
+            float lineHeight = fileInstance.GetCodeFile().GetLineInfo().lineHeight;
             if (lineHeight == 0) {
                 Debug.LogWarning("Failed to spawn regions! A dimension is zero! (height: " + lineHeight + ")");
                 return false;
@@ -427,7 +427,7 @@ namespace VRVis.Spawner {
             List<string> activeFeatures = ApplicationLoader.GetInstance().GetAppSettings().GetActiveFeatures();
             if (LOGGING) { Debug.Log("Active features: " + activeFeatures.Count); }
 
-            foreach (Region region in loader.GetFileRegions(file.GetNode().GetPath())) {
+            foreach (Region region in loader.GetFileRegions(fileInstance.GetCodeFile().GetNode().GetPath())) {
                 foreach (string featureName in activeFeatures) {
                     if (region.HasProperty(ARProperty.TYPE.FEATURE, featureName)) {
                         regionsToSpawn.Add(region); // adding the region once is sufficient
@@ -454,7 +454,7 @@ namespace VRVis.Spawner {
                     // success if at least one section was spawned
                     int sectionsSpawned = 0;
                     foreach (Region.Section section in region.GetSections()) {
-                        sectionsSpawned += CreateFeatureRegion(region, section, file.GetReferences(), lineHeight, widthPerFeature, featureNo) ? 1 : 0;
+                        sectionsSpawned += CreateFeatureRegion(region, section, fileInstance, lineHeight, widthPerFeature, featureNo) ? 1 : 0;
                     }
 
                     // store this region for later usage
@@ -463,7 +463,7 @@ namespace VRVis.Spawner {
             }
 
             // add all the spawned feature regions to the CodeFile instance as reference
-            AddSpawnedRegions(file, regionsSpawned);
+            AddSpawnedRegions(fileInstance, regionsSpawned);
             if (LOGGING) { Debug.Log("Feature regions spawned: " + regionsSpawned.Count); }
             return true;
         }
@@ -519,18 +519,18 @@ namespace VRVis.Spawner {
         // ----------------------------------------------------------------------------------------------------------
         // Region Management
 
-        public List<Region> GetSpawnedRegions(CodeFile file) {
-            if (!spawnedRegions.ContainsKey(file)) { return new List<Region>(); }
-            return new List<Region>(spawnedRegions[file].Values);
+        public List<Region> GetSpawnedRegions(CodeFileReferences fileInstance) {
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return new List<Region>(); }
+            return new List<Region>(spawnedRegions[fileInstance].Values);
         }
 
         /// <summary>Get a list of spawned regions that include this property type.</summary>
-        public List<Region> GetSpawnedRegions(CodeFile file, ARProperty.TYPE propType) {
+        public List<Region> GetSpawnedRegions(CodeFileReferences fileInstance, ARProperty.TYPE propType) {
             
             List<Region> list = new List<Region>();
-            if (!spawnedRegions.ContainsKey(file)) { return list; }
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return list; }
 
-            foreach (KeyValuePair<string, Region> entry in spawnedRegions[file]) {
+            foreach (KeyValuePair<string, Region> entry in spawnedRegions[fileInstance]) {
                 if (entry.Value.HasPropertyType(propType)) {
                     list.Add(entry.Value);
                 }
@@ -539,29 +539,29 @@ namespace VRVis.Spawner {
             return list;
         }
 
-        public bool HasSpawnedRegions(CodeFile file) {
-            if (!spawnedRegions.ContainsKey(file)) { return false; }
-            return spawnedRegions[file].Count > 0;
+        public bool HasSpawnedRegions(CodeFileReferences fileInstance) {
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return false; }
+            return spawnedRegions[fileInstance].Count > 0;
         }
 
-        public bool HasSpawnedRegion(CodeFile file, string regionID) {
-            if (!spawnedRegions.ContainsKey(file)) { return false; }
-            return spawnedRegions[file].ContainsKey(regionID);
+        public bool HasSpawnedRegion(CodeFileReferences fileInstance, string regionID) {
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return false; }
+            return spawnedRegions[fileInstance].ContainsKey(regionID);
         }
 
         /// <summary>
         /// Add a region to spawned regions list.<para/>
         /// Uniqueness is ensured by region ID.
         /// </summary>
-        public bool AddSpawnedRegion(CodeFile file, Region region) {
+        public bool AddSpawnedRegion(CodeFileReferences fileInstance, Region region) {
 
-            if (HasSpawnedRegion(file, region.GetID())) { return false; }
+            if (HasSpawnedRegion(fileInstance, region.GetID())) { return false; }
 
-            if (!spawnedRegions.ContainsKey(file)) {
-                spawnedRegions.Add(file, new Dictionary<string, Region>());
+            if (!spawnedRegions.ContainsKey(fileInstance)) {
+                spawnedRegions.Add(fileInstance, new Dictionary<string, Region>());
             }
 
-            spawnedRegions[file].Add(region.GetID(), region);
+            spawnedRegions[fileInstance].Add(region.GetID(), region);
             return true;
         }
 
@@ -569,15 +569,15 @@ namespace VRVis.Spawner {
         /// Add a list of regions to spawned regions list.<para/>
         /// Uniqueness is ensured by region ID.
         /// </summary>
-        public void AddSpawnedRegions(CodeFile file, List<Region> regions) {
-            regions.ForEach(region => AddSpawnedRegion(file, region));
+        public void AddSpawnedRegions(CodeFileReferences fileInstance, List<Region> regions) {
+            regions.ForEach(region => AddSpawnedRegion(fileInstance, region));
         }
         
         
         /// <summary>Simply removes each spawned region reference.</summary>
-        public void ClearSpawnedRegions(CodeFile file) {
-            if (!spawnedRegions.ContainsKey(file)) { return; }
-            spawnedRegions[file].Clear();
+        public void ClearSpawnedRegions(CodeFileReferences fileInstance) {
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return; }
+            spawnedRegions[fileInstance].Clear();
         }
 
         /// <summary>
@@ -585,12 +585,12 @@ namespace VRVis.Spawner {
         /// Checks if a region has an active feature or a selected NFP.<para/>
         /// If this is the case, the region is still required and wont be removed.
         /// </summary>
-        public void ClearSpawnedRegions(CodeFile file, List<string> activeFeatures, string selectedNFP) {
+        public void ClearSpawnedRegions(CodeFileReferences fileInstance, List<string> activeFeatures, string selectedNFP) {
 
-            if (!spawnedRegions.ContainsKey(file)) { return; }
+            if (!spawnedRegions.ContainsKey(fileInstance)) { return; }
             List<string> removeKeys = new List<string>();
 
-            foreach (KeyValuePair<string, Region> entry in spawnedRegions[file]) {
+            foreach (KeyValuePair<string, Region> entry in spawnedRegions[fileInstance]) {
 
                 // do not remove if this region has the selected NFP
                 if (entry.Value.HasProperty(ARProperty.TYPE.NFP, selectedNFP)) { continue; }
@@ -609,37 +609,37 @@ namespace VRVis.Spawner {
                 removeKeys.Add(entry.Key);
             }
 
-            removeKeys.ForEach(key => spawnedRegions[file].Remove(key));
+            removeKeys.ForEach(key => spawnedRegions[fileInstance].Remove(key));
         }
 
 
         /// <summary>Refresh the represented region value (to re-apply the visual properties).</summary>
-        public void RefreshRegionValues(CodeFile file, ARProperty.TYPE propType) {
-            new RegionModifier(file, this).ApplyRegionValues(new ARProperty.TYPE[]{ propType });
-            FireRegionValuesChangedEvent(file);
+        public void RefreshRegionValues(CodeFileReferences fileInstance, ARProperty.TYPE propType) {
+            new RegionModifier(fileInstance, this).ApplyRegionValues(new ARProperty.TYPE[]{ propType });
+            FireRegionValuesChangedEvent(fileInstance);
         }
 
 
         /// <summary>Notify listeners that regions changed.</summary>
-        public void FireRegionValuesChangedEvent(CodeFile file) {
-            onRegionsValuesChanged.Invoke(file);
+        public void FireRegionValuesChangedEvent(CodeFileReferences fileInstance) {
+            onRegionsValuesChanged.Invoke(fileInstance);
         }
 
 
         /// <summary>Refresh the shown regions for this property type.</summary>
         /// <param name="refreshRepresentation">Tells if the visual properties should be applied or not</param>
-        public void RefreshRegions(CodeFile file, ARProperty.TYPE propType, bool refreshRepresentation) {
+        public void RefreshRegions(CodeFileReferences fileInstance, ARProperty.TYPE propType, bool refreshRepresentation) {
 
             // ToDo: examine! the call "spawner.SpawnNFPRegions" is removing all spawned regions anyway!
             // remove old region objects
             //ClearOldRegions();
 
             // refresh spawned region objects
-            if (propType == ARProperty.TYPE.NFP) { SpawnNFPRegions(file); }
-            else if (propType == ARProperty.TYPE.FEATURE) { SpawnFeatureRegions(file); }
+            if (propType == ARProperty.TYPE.NFP) { SpawnNFPRegions(fileInstance); }
+            else if (propType == ARProperty.TYPE.FEATURE) { SpawnFeatureRegions(fileInstance); }
 
             // refresh visual property mapping
-            if (refreshRepresentation) { RefreshRegionValues(file, propType); }
+            if (refreshRepresentation) { RefreshRegionValues(fileInstance, propType); }
         }
 
         // ToDo: examine! the call "spawner.SpawnNFPRegions" is removing all spawned regions anyway!

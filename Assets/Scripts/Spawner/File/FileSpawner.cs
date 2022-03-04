@@ -66,6 +66,7 @@ namespace VRVis.Spawner {
         // information required during spawn procedure
         private bool spawning = false; // tells if there is currently a file to be spawned
         private CodeFile spawn_file;
+        private CodeFileReferences spawn_file_instance;
         private SNode spawn_node;
         private Vector3 spawn_position;
         private Quaternion spawn_rotation;
@@ -145,8 +146,10 @@ namespace VRVis.Spawner {
                 scrollbarDisabled = false;
 
                 // enable scroll rect to fix the scroll bar bug
-                if (spawn_file.GetReferences().GetScrollRect()) {
-                    spawn_file.GetReferences().GetScrollRect().enabled = true;
+                foreach (var instance in spawn_file.GetInstances()) {
+                    if (instance.GetScrollRect()) {
+                        instance.GetScrollRect().enabled = true;
+                    }
                 }
             }
 
@@ -319,13 +322,13 @@ namespace VRVis.Spawner {
                         break;
 
                     case 1:
-                        string msg = SpawnRegions();
+                        string msg = SpawnRegions(spawn_file_instance);
                         if (msg != null) { Debug.LogWarning(msg); }
                         break;
 
                     case 2:
                         // notify edge spawner to take care of spawning node edges
-                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file); }
+                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance); }
                         break;
                 }
 
@@ -378,26 +381,27 @@ namespace VRVis.Spawner {
             spawn_window.transform.SetParent(codeWindowParent, true);
 
             // use CodeFileReferences (should already be attached to the code window prefab)
-            CodeFileReferences fileRefs = spawn_window.GetComponent<CodeFileReferences>();
-            if (!fileRefs) {
+            CodeFileReferences fileInstance = spawn_window.GetComponent<CodeFileReferences>();
+            if (!fileInstance) {
                 DestroyImmediate(spawn_window);
                 return "Spawning file failed! Missing CodeFileReferences component!";
             }
-            
+
             // set the reference to the CodeFileReferences instance
-            spawn_file.SetReferences(fileRefs);
-            fileRefs.SetCodeFile(spawn_file);
+            spawn_file_instance = fileInstance;
+            spawn_file.AddInstance(fileInstance);
+            fileInstance.SetCodeFile(spawn_file);
 
             // disable and enable later in update to fix scroll bar bug
             scrollbarDisabled = false;
-            if (fileRefs.GetScrollRect()) {
-                fileRefs.GetScrollRect().enabled = false;
+            if (fileInstance.GetScrollRect()) {
+                fileInstance.GetScrollRect().enabled = false;
                 scrollbarDisabled = true;
             }
 
             // load the actual file content
             if (!LoadFileContent(spawn_node, textPrefab)) {
-                spawn_file.SetReferences(null);
+                spawn_file.DeleteInstance(fileInstance);
                 DestroyImmediate(spawn_window);
                 return "Failed to load content of file: " + spawn_node.GetFullPath();
             }
@@ -426,10 +430,10 @@ namespace VRVis.Spawner {
         /// Furthermore, according value mappings will be applied.<para/>
         /// Returns a failure message or null on success.
         /// </summary>
-        private string SpawnRegions() {
+        private string SpawnRegions(CodeFileReferences fileInstance) {
 
             // add line numbers (use information from read content)
-            spawn_file.GetReferences().AddLineNumbers((uint) spawn_file.GetContentInfo().linesRead_total);
+            fileInstance.AddLineNumbers((uint) spawn_file.GetContentInfo().linesRead_total);
 
             // try to get correct line information (height and so on)
             spawn_file.UpdateLineInfo();
@@ -515,7 +519,7 @@ namespace VRVis.Spawner {
                 }
 
                 Debug.Log("Lines read: " + contentInfo.linesRead_total);
-                spawn_file.GetReferences().SetLinesTotal(contentInfo.linesRead_total);
+                spawn_file.GetInstances().SetLinesTotal(contentInfo.linesRead_total);
                 spawn_file.SetContentInfo(contentInfo);
 
                 // save last instance if not done yet
@@ -551,19 +555,19 @@ namespace VRVis.Spawner {
             TextMeshProUGUI tmpgui = text.GetComponent<TextMeshProUGUI>();
             if (tmpgui) {
                 tmpgui.SetText(sourceCode);
-                spawn_file.GetReferences().AddTextElement(tmpgui.textInfo);
+                spawn_file.GetInstances().AddTextElement(tmpgui.textInfo);
                 tmpgui.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
             else {
                 TextMeshPro tmp = text.GetComponent<TextMeshPro>();
                 if (!tmp) { tmp = text.AddComponent<TextMeshPro>(); }
                 tmp.SetText(sourceCode);
-                spawn_file.GetReferences().AddTextElement(tmp.textInfo);
+                spawn_file.GetInstances().AddTextElement(tmp.textInfo);
                 tmp.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
 
             // set the element parent without keeping world coordinates
-            text.transform.SetParent(spawn_file.GetReferences().textContainer, false);
+            text.transform.SetParent(spawn_file.GetInstances().textContainer, false);
         }
 
 

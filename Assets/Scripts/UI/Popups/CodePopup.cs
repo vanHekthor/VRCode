@@ -131,7 +131,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         if (fs) {
             fs.SpawnFileNextTo(
                 Link.TargetFile,
-                Link.BaseFile.GetReferences(),
+                Link.BaseFileInstance,
                 true,
                 FileSpawnCallback);
         }

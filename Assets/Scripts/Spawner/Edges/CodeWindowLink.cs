@@ -149,7 +149,7 @@ namespace VRVis.Spawner.Edges {
             // attach this CodeWindowLink to the physical button
             linkButton.name = name;
             linkButtonComponent.Link = this;
-            linkButtonComponent.BaseCodeWindowObject = BaseFile.GetReferences().gameObject;
+            linkButtonComponent.BaseCodeWindowObject = BaseFileInstance.gameObject;
 
             // attach to this GameObject instance
             linkButton.transform.SetParent(transform, false);
