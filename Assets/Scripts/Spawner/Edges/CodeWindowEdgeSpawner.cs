@@ -415,7 +415,7 @@ namespace VRVis.Spawner {
 
             // initialize the connection objects
             // (CAN BE DONE IN A SEPARATE STEP IF REQUIRED)
-            bool success = edgeCon.InitConnection(fromCodeFileInstance, targetFile);
+            bool success = edgeCon.InitConnection(fromCodeFileInstance, targetFileInstance);
             if (!success) {
                 DestroyImmediate(edgeConInstance);
                 return -1;

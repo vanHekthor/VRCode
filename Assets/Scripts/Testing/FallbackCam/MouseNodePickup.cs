@@ -37,7 +37,7 @@ namespace VRVis.Fallback {
         private float curRayDist = 0;
         private float placeHolderDist = 0;
 
-        private Action nodePlacedCallback;
+        private Action<CodeFileReferences> nodePlacedCallback;
 
 
         public class MousePickupEventData : PointerEventData {
@@ -162,12 +162,12 @@ namespace VRVis.Fallback {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
-            nodePlacedCallback?.Invoke();
+        private void WindowSpawnedCallback(bool success, CodeFileReferences fileInstance, string msg) {
+            nodePlacedCallback?.Invoke(fileInstance);
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }
@@ -220,7 +220,7 @@ namespace VRVis.Fallback {
         /// Attach the previous so that user can select position to spawn file at.
         /// </summary>
         /// <param name="initPos">Position to initialize place holder instance at</param>
-        public bool AttachFileToSpawn(SNode node, Vector3 initPos, Action callback = null) {
+        public bool AttachFileToSpawn(SNode node, Vector3 initPos, Action<CodeFileReferences> callback = null) {
 
             nodePlacedCallback = callback;
 
@@ -257,16 +257,16 @@ namespace VRVis.Fallback {
             GameObject hitObj = hit.collider.gameObject;
 
             // try to find main component with codefile references
-            CodeFileReferences refs = hitObj.GetComponent<CodeFileReferences>();
+            CodeFileReferences fileInstance = hitObj.GetComponent<CodeFileReferences>();
 
             // try to find somewhere in hierarchy
-            if (!refs) {
+            if (!fileInstance) {
 
                 Transform codeWindowMain = hitObj.transform;
                 while (codeWindowMain.parent != null) {
                                     
-                    refs = codeWindowMain.GetComponent<CodeFileReferences>();
-                    if (refs) { break; }
+                    fileInstance = codeWindowMain.GetComponent<CodeFileReferences>();
+                    if (fileInstance) { break; }
 
                     // go "one layer above" in hierarchy
                     codeWindowMain = codeWindowMain.parent;
@@ -274,12 +274,12 @@ namespace VRVis.Fallback {
             }
 
             // if found, delete the code window
-            if (refs) {
+            if (fileInstance) {
 
                 Debug.LogWarning("Code window deletion request!");
 
                 FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-                if (fs && fs.DeleteFileWindow(refs.GetCodeFile())) { Debug.LogWarning("File window removed!"); }
+                if (fs && fs.DeleteFileWindow(fileInstance)) { Debug.LogWarning("File window removed!"); }
                 else { Debug.LogError("Failed to delete code window!"); }
                 return;
             }

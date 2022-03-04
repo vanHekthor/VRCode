@@ -236,10 +236,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         if (fs) {
 
             if (spawnSide == SpawnLeft) {
-                fs.SpawnFileNextTo(TargetFile, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), true, FileSpawnCallback);
+                fs.SpawnFileNextTo(TargetFile, Link.BaseFileInstance.Config.Name, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), true, FileSpawnCallback);
             }
             else if (spawnSide == SpawnRight) {
-                fs.SpawnFileNextTo(TargetFile, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), false, FileSpawnCallback);
+                fs.SpawnFileNextTo(TargetFile, Link.BaseFileInstance.Config.Name, BaseCodeWindowObject.GetComponent<CodeFileReferences>(), false, FileSpawnCallback);
             }
             else if (spawnSide == SpawnFartherAway) {
                 fs.SpawnFile(
@@ -265,25 +265,25 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// <summary>
     /// Called after the window placement finished.
     /// </summary>
-    private void FileSpawnCallback(bool success, CodeFile fileInstance, string msg) {
+    private void FileSpawnCallback(bool success, CodeFileReferences fileInstance, string msg) {
 
         windowSpawned = success;
         windowSpawning = false;
 
-        var edgeConnection = SpawnEdgeConnection();        
+        var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, fileInstance);        
 
         edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
 
         if (!success) {
             string name = "";
-            if (fileInstance != null && fileInstance.GetNode() != null) { name = "(" + fileInstance.GetNode().GetName() + ") "; }
+            if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
             Debug.LogError("Failed to place window! " + name + msg);
             return;
         }        
     }
 
-    private CodeWindowEdgeConnection SpawnEdgeConnection() {
-        var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
+    private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
+        var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFileInstance, endFileInstance, Link.EdgeLink);
 
         return edgeConnection;
     }

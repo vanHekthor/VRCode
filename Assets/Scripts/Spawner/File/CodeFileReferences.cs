@@ -63,7 +63,7 @@ namespace VRVis.Spawner.File {
         public EdgeAnchors edgePoints;
         public bool drawEdgeAnchorGizmos = true;
 
-        public Configuration Config { get; private set; }
+        public Configuration Config { get; set; }
 
         // reference to the "main" element managing the according code file
         private CodeFile codeFile;

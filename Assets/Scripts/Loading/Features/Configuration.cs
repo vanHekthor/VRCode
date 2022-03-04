@@ -126,6 +126,8 @@ namespace VRVis.IO.Features {
                 Debug.Log("Key: " + numOption.Key + " Value: " + numOption.Value);
             }
 
+            result.Name = new DirectoryInfo(filePath).Parent.Name;
+
             return result;
         }
 

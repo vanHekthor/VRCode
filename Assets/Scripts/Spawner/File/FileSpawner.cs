@@ -6,6 +6,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.Events;
 using VRVis.IO;
+using VRVis.IO.Features;
 using VRVis.IO.Structure;
 using VRVis.RegionProperties;
 using VRVis.Settings;
@@ -53,20 +54,21 @@ namespace VRVis.Spawner {
         // callbacks for when the file was spawned (e.g. used by content overview)
         [HideInInspector]
         public CodeFileEvent onFileSpawned = new CodeFileEvent();
-        public class CodeFileEvent : UnityEvent<CodeFile> {}
+        public class CodeFileEvent : UnityEvent<CodeFileReferences> {}
 
         // after how many characters we have to split up the text
         // and add the rest to another text element
         [Tooltip("Maximum amount of characters per text instance")]
         public int LIMIT_CHARACTERS_PER_TEXT = 10000;
 
-        private Dictionary<string, CodeFile> spawnedFiles = new Dictionary<string, CodeFile>();
+        private Dictionary<string, HashSet<CodeFileReferences>> spawnedFiles = new Dictionary<string, HashSet<CodeFileReferences>>();
         private bool scrollbarDisabled = false;
         
         // information required during spawn procedure
         private bool spawning = false; // tells if there is currently a file to be spawned
         private CodeFile spawn_file;
         private CodeFileReferences spawn_file_instance;
+        private string spawn_config_name;
         private SNode spawn_node;
         private Vector3 spawn_position;
         private Quaternion spawn_rotation;
@@ -120,13 +122,17 @@ namespace VRVis.Spawner {
         }
 
         /// <summary>Returns the spawned files CodeFile instance or null.</summary>
-        public CodeFile GetFileSpawned(string fullFilePath) {
+        public HashSet<CodeFileReferences> GetFileInstancesSpawned(string fullFilePath) {
             return IsFileSpawned(fullFilePath) ? spawnedFiles[fullFilePath] : null;
         }
 
         /// <summary>Returns the spawned code files.</summary>
-        public IEnumerable<CodeFile> GetSpawnedFiles() {
-            return spawnedFiles.Values;
+        public IEnumerable<CodeFileReferences> GetSpawnedFiles() {
+            var fileInstances = new HashSet<CodeFileReferences>();
+            foreach (var set in spawnedFiles.Values) {
+                fileInstances.UnionWith(set);
+            }
+            return fileInstances;
         }
 
         public GameObject WindowScreen { get => sphereScreen; }
@@ -175,12 +181,21 @@ namespace VRVis.Spawner {
 
         /// <summary>
         /// Spawn a code window showing the file content.<para/>
-        /// A file is unique and can not be spawned multiple times.<para/>
         /// Calls the callback method/action and passes the CodeFile instance on success or null otherwise!
         /// The boolean parameter tells about the success so that no "null"-check is required.
         /// The string parameter of the callback function includes a failure message.
         /// </summary>
-        public void SpawnFile(SNode fileNode, Vector3 position, Quaternion rotation, Action<bool, CodeFile, string> callback) {
+        public void SpawnFile(SNode fileNode, Vector3 position, Quaternion rotation, Action<bool, CodeFileReferences, string> callback) {
+            SpawnFile(fileNode, ConfigManager.GetInstance().DefaultConfig.Name, position, rotation, callback);                
+        }
+
+        /// <summary>
+        /// Spawn a code window showing the file content.<para/>
+        /// Calls the callback method/action and passes the CodeFile instance on success or null otherwise!
+        /// The boolean parameter tells about the success so that no "null"-check is required.
+        /// The string parameter of the callback function includes a failure message.
+        /// </summary>
+        public void SpawnFile(SNode fileNode, string configName, Vector3 position, Quaternion rotation, Action<bool, CodeFileReferences, string> callback) {
 
             // DONE: Spawn the game object (from prefab) of the code window
             // DONE: Attach a new instance of the "SpawnedFileInfo" script
@@ -189,7 +204,7 @@ namespace VRVis.Spawner {
             // DONE: Spawn the file regions for the current selection
             // DONE: Color the file regions according to their visual attributes
 
-            if (!InitSpawning(fileNode, callback)) {
+            if (!InitSpawning(fileNode, configName, callback)) {
                 return;
             }
 
@@ -233,9 +248,9 @@ namespace VRVis.Spawner {
         /// <param name="baseFileRef"></param>
         /// <param name="leftSide">True if the file should be spawned to the left.</param>
         /// <param name="callback"></param>
-        public void SpawnFileNextTo(CodeFile fileToSpawn, CodeFileReferences baseFileRef, bool leftSide, Action<bool, CodeFile, string> callback) {
+        public void SpawnFileNextTo(CodeFile fileToSpawn, string configName, CodeFileReferences baseFileRef, bool leftSide, Action<bool, CodeFileReferences, string> callback) {
 
-            if (!InitSpawning(fileToSpawn.GetNode(), callback)) {
+            if (!InitSpawning(fileToSpawn.GetNode(), configName, callback)) {
                 return;
             }
 
@@ -305,7 +320,7 @@ namespace VRVis.Spawner {
         /// This is due to the time it takes to align the UI components.<para/>
         /// So we have to wait until alignment is finished.
         /// </summary>
-        IEnumerator SpawnCoroutine(Action<bool, CodeFile, string> callback) {
+        IEnumerator SpawnCoroutine(Action<bool, CodeFileReferences, string> callback) {
 
             for (uint i = 0; i < 3; i++) {
                 
@@ -338,21 +353,21 @@ namespace VRVis.Spawner {
             // when we arrive here, everything completed successfully
             spawning = false;
             Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
-            callback(true, spawn_file, "");
-            onFileSpawned.Invoke(spawn_file);
+            callback(true, spawn_file_instance, "");
+            onFileSpawned.Invoke(spawn_file_instance);
         }
 
-        private bool InitSpawning(SNode fileNode, Action<bool, CodeFile, string> callback) {
+        private bool InitSpawning(SNode fileNode, string configName,Action<bool, CodeFileReferences, string> callback) {
             if (spawning) {
                 callback(false, null, "Currently spawning a file...");
                 return false;
             }
 
-            // prevent spawning the same file multiple times
-            if (IsFileSpawned(fileNode.GetFullPath())) {
-                callback(false, null, "File already spawned: " + fileNode.GetName());
-                return false;
-            }
+            //// prevent spawning the same file multiple times
+            //if (IsFileSpawned(fileNode.GetFullPath())) {
+            //    callback(false, null, "File already spawned: " + fileNode.GetName());
+            //    return false;
+            //}
 
             // get according and required code file instance
             CodeFile codeFile = fileNode.GetCodeFile();
@@ -364,6 +379,8 @@ namespace VRVis.Spawner {
             // assign required information
             spawn_file = codeFile;
             spawn_node = fileNode;
+            spawn_config_name = configName;
+
             spawning = true;
 
             return true;
@@ -388,6 +405,7 @@ namespace VRVis.Spawner {
             }
 
             // set the reference to the CodeFileReferences instance
+            fileInstance.Config = ConfigManager.GetInstance().ConfigDict[spawn_config_name];
             spawn_file_instance = fileInstance;
             spawn_file.AddInstance(fileInstance);
             fileInstance.SetCodeFile(spawn_file);
@@ -415,7 +433,10 @@ namespace VRVis.Spawner {
             }
 
             // register this file as spawned using its full path as the key
-            spawnedFiles.Add(spawn_node.GetFullPath(), spawn_file);
+            if (!spawnedFiles.ContainsKey(spawn_node.GetFullPath())) {
+                spawnedFiles.Add(spawn_node.GetFullPath(), new HashSet<CodeFileReferences>());
+            }
+            spawnedFiles[spawn_node.GetFullPath()].Add(spawn_file_instance);
 
             return null;
         }
@@ -448,11 +469,11 @@ namespace VRVis.Spawner {
             // spawn the regions using the RegionSpawner instance
             if (!regionSpawner) { return "Missing RegionSpawner instance!"; }
 
-            regionSpawner.RefreshRegions(spawn_file, ARProperty.TYPE.NFP, false);
-            regionSpawner.RefreshRegions(spawn_file, ARProperty.TYPE.FEATURE, false);
+            regionSpawner.RefreshRegions(fileInstance, ARProperty.TYPE.NFP, false);
+            regionSpawner.RefreshRegions(fileInstance, ARProperty.TYPE.FEATURE, false);
 
             // apply visual properties / region coloring and scaling accordingly
-            new RegionModifier(spawn_file, regionSpawner).ApplyRegionValues();
+            new RegionModifier(fileInstance, regionSpawner).ApplyRegionValues();
             return null;
         }
 
@@ -519,7 +540,7 @@ namespace VRVis.Spawner {
                 }
 
                 Debug.Log("Lines read: " + contentInfo.linesRead_total);
-                spawn_file.GetInstances().SetLinesTotal(contentInfo.linesRead_total);
+                spawn_file_instance.SetLinesTotal(contentInfo.linesRead_total);
                 spawn_file.SetContentInfo(contentInfo);
 
                 // save last instance if not done yet
@@ -555,19 +576,19 @@ namespace VRVis.Spawner {
             TextMeshProUGUI tmpgui = text.GetComponent<TextMeshProUGUI>();
             if (tmpgui) {
                 tmpgui.SetText(sourceCode);
-                spawn_file.GetInstances().AddTextElement(tmpgui.textInfo);
+                spawn_file_instance.AddTextElement(tmpgui.textInfo);
                 tmpgui.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
             else {
                 TextMeshPro tmp = text.GetComponent<TextMeshPro>();
                 if (!tmp) { tmp = text.AddComponent<TextMeshPro>(); }
                 tmp.SetText(sourceCode);
-                spawn_file.GetInstances().AddTextElement(tmp.textInfo);
+                spawn_file_instance.AddTextElement(tmp.textInfo);
                 tmp.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
             }
 
             // set the element parent without keeping world coordinates
-            text.transform.SetParent(spawn_file.GetInstances().textContainer, false);
+            text.transform.SetParent(spawn_file_instance.textContainer, false);
         }
 
 
@@ -576,14 +597,14 @@ namespace VRVis.Spawner {
         
             bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
 
-            foreach (CodeFile file in GetSpawnedFiles()) {
+            foreach (CodeFileReferences fileInstance in GetSpawnedFiles()) {
 
                 // false (default - hides height map) means code marking
                 // true means height map visualization (show height map)
-                file.ToggleHeightMap(heightMapVisible);
+                fileInstance.GetCodeFile().ToggleHeightMap(heightMapVisible);
 
                 // refresh the NFP region visualization
-                regionSpawner.RefreshRegions(file, propType, true);
+                regionSpawner.RefreshRegions(fileInstance, propType, true);
             }
         }
 
@@ -595,14 +616,14 @@ namespace VRVis.Spawner {
 
             bool heightMapVisible = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(ApplicationSettings.NFP_VIS.HEIGHTMAP);
 
-            foreach (CodeFile file in GetSpawnedFiles()) {
+            foreach (CodeFileReferences fileInstance in GetSpawnedFiles()) {
 
                 // false (default - hides height map) means code marking
                 // true means height map visualization (show height map)
-                file.ToggleHeightMap(heightMapVisible);
+                fileInstance.GetCodeFile().ToggleHeightMap(heightMapVisible);
 
                 // refresh only the values (without re-generating the gameobjects)
-                regionSpawner.RefreshRegionValues(file, propType);
+                regionSpawner.RefreshRegionValues(fileInstance, propType);
             }
         }
 
@@ -613,11 +634,11 @@ namespace VRVis.Spawner {
         /// </summary>
         public void RemoveSpawnedFileRegions(ARProperty.TYPE propType) {
 
-            foreach (CodeFile file in GetSpawnedFiles()) {
+            foreach (CodeFileReferences fileInstance in GetSpawnedFiles()) {
                 
                 switch(propType) {
-                    case ARProperty.TYPE.NFP: RegionSpawner.CleanupNFPRegions(file); break;
-                    case ARProperty.TYPE.FEATURE: RegionSpawner.CleanupFeatureRegions(file); break;
+                    case ARProperty.TYPE.NFP: RegionSpawner.CleanupNFPRegions(fileInstance); break;
+                    case ARProperty.TYPE.FEATURE: RegionSpawner.CleanupFeatureRegions(fileInstance); break;
                 }
             }
         }
@@ -641,7 +662,12 @@ namespace VRVis.Spawner {
             if (edgeSpawner) { edgeSpawner.CodeWindowRemovedEvent(codeFileInstance); }
 
             // unregister the file from "spawned" list
-            spawnedFiles.Remove(codeFileInstance.GetNode().GetFullPath());
+            if (spawnedFiles.ContainsKey(codeFileInstance.GetCodeFile().GetNode().GetFullPath())) {
+                spawnedFiles[codeFileInstance.GetCodeFile().GetNode().GetFullPath()].Remove(codeFileInstance);
+            }
+            else {
+                Debug.LogError($"Spawned file instance list does not contain '{codeFileInstance.GetCodeFile().GetNode().GetFullPath()}'");
+            }
 
             // detach code window from grid
             SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
@@ -651,8 +677,8 @@ namespace VRVis.Spawner {
             }
 
             // destroy code file references
-            Destroy(codeFileInstance.gameObject);
-            codeFileInstance.SetReferences(null);
+            codeFileInstance.GetCodeFile().DeleteInstance(codeFileInstance);
+            Destroy(codeFileInstance.gameObject);            
             return true;
         }
 

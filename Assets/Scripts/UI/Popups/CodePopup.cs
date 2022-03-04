@@ -110,8 +110,8 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         }        
     }
 
-    private void ToDoAfterCodeWindowPlacement() {
-        var edgeConnection = SpawnEdgeConnection();
+    private void ToDoAfterCodeWindowPlacement(CodeFileReferences spawnedFileInstance) {
+        var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, spawnedFileInstance);
 
         if (edgeConnection != null) {
             edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
@@ -131,6 +131,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         if (fs) {
             fs.SpawnFileNextTo(
                 Link.TargetFile,
+                Link.BaseFileInstance.Config.Name,
                 Link.BaseFileInstance,
                 true,
                 FileSpawnCallback);
@@ -143,21 +144,21 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void FileSpawnCallback(bool success, CodeFile file, string msg) {
+        private void FileSpawnCallback(bool success, CodeFileReferences fileReferences, string msg) {
             windowSpawned = success;
             windowSpawning = false;            
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileReferences != null && fileReferences.GetCodeFile().GetNode() != null) { name = "(" + fileReferences.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
             }
 
             ClickEvent.Invoke();
     }
 
-        private CodeWindowEdgeConnection SpawnEdgeConnection() {
-            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
+        private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
+            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, Link.EdgeLink);
 
             return edgeConnection;
         }

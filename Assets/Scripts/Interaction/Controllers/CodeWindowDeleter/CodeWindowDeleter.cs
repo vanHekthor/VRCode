@@ -243,8 +243,8 @@ namespace VRVis.Interaction.Controller {
             foreach (GameObject go in selectedObjects) {
 
                 // get the CodeFileReference script of code windows to be able to delete them
-                CodeFileReferences fileRefs;
-                bool isCodeWindow = IsCodeWindow(go, out fileRefs);
+                CodeFileReferences fileInstance;
+                bool isCodeWindow = IsCodeWindow(go, out fileInstance);
                 if (!isCodeWindow && deleteCodeWindowsOnly) { continue; }
 
                 // remove cross if exists
@@ -259,7 +259,7 @@ namespace VRVis.Interaction.Controller {
                     Debug.LogWarning("Deleting a code window...");
 
                     FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-                    if (!fs || !fs.DeleteFileWindow(fileRefs.GetCodeFile())) {
+                    if (!fs || !fs.DeleteFileWindow(fileInstance)) {
                         Debug.LogWarning("Failed to delete code window!", go);
                     }
                     else {

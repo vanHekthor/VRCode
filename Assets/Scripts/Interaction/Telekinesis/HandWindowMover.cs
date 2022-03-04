@@ -7,6 +7,7 @@ using VRVis.Interaction.ControllerSelectionSystem;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
 using VRVis.UI.CodeWindowScreen;
 using VRVis.UI.Helper;
 using VRVis.Utilities;
@@ -97,7 +98,7 @@ namespace VRVis.Interaction.Controller {
 
         private bool placeOntoSphereScreen = false;
 
-        private Action nodePlacedCallback;
+        private Action<CodeFileReferences> nodePlacedCallback;
 
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
@@ -287,12 +288,12 @@ namespace VRVis.Interaction.Controller {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
-            nodePlacedCallback?.Invoke();
+        private void WindowSpawnedCallback(bool success, CodeFileReferences fileInstance, string msg) {
+            nodePlacedCallback?.Invoke(fileInstance);
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }
@@ -510,7 +511,7 @@ namespace VRVis.Interaction.Controller {
         /// <summary>Set selected node that is currently moved.</summary>
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
         /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action callback = null) {
+        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
             nodePlacedCallback = callback;
 
             if (IsSomethingSelected()) { return false; }

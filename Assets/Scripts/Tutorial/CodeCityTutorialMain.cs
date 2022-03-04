@@ -6,6 +6,7 @@ using Valve.VR;
 using Valve.VR.InteractionSystem;
 using VRVis.IO;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
 
 public class CodeCityTutorialMain : MonoBehaviour {
 
@@ -202,10 +203,10 @@ public class CodeCityTutorialMain : MonoBehaviour {
         successfullyTeleported = true;
     }
 
-    private void FileSpawned(CodeFile codeFile) {
+    private void FileSpawned(CodeFileReferences codeFileInstance) {
         spawnedFile = true;
         
-        if (codeFile.GetNode().GetName() == TallestJavaBuildingName) {
+        if (codeFileInstance.GetCodeFile().GetNode().GetName() == TallestJavaBuildingName) {
             spawnedHighestJavaBuilding = true;
         }
     }

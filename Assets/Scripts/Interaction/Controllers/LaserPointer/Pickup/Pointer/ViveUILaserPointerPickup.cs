@@ -12,6 +12,7 @@ using VRVis.IO.Features;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.ConfigModel;
+using VRVis.Spawner.File;
 using VRVis.Spawner.Structure;
 
 namespace VRVis.Interaction.LaserPointer {
@@ -380,7 +381,7 @@ namespace VRVis.Interaction.LaserPointer {
 
         /// <summary>Called when clicked on a structure node.</summary>
         /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
-        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null, Action callback = null) {
+        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
 
             if (node == null) { return; }
 
@@ -389,8 +390,12 @@ namespace VRVis.Interaction.LaserPointer {
             bool isFile = node.GetNodeType() == SNode.DNodeTYPE.FILE;
             if (isFile) {
 
+                // old logic 
                 // check if already spawned
                 bool isFileSpawned = FileSpawner.GetInstance().IsFileSpawned(node.GetFullPath());
+
+                // now multiple instances of a file can be opened
+                isFileSpawned = false;
                 if (!isFileSpawned) {
 
                     // get the controller selection script
@@ -434,7 +439,7 @@ namespace VRVis.Interaction.LaserPointer {
                     // or make it light up for a short amount of time to show where it is?
 
                     Debug.LogWarning("File already spawned: " + node.GetName());
-                    callback();
+                    //callback();
                 }
             }
         }
