@@ -620,37 +620,35 @@ namespace VRVis.Spawner {
 
 
         /// <summary>Delete the current code window representing this file.</summary>
-        public bool DeleteFileWindow(CodeFile codeFile) {
+        public bool DeleteFileWindow(CodeFileReferences codeFileInstance) {
 
-            if (codeFile == null) { return false; }
+            if (codeFileInstance == null) {
+                Debug.LogError("Can't delete window! Code window instance is null!");
+                return false;
+            }
 
-            if (!IsFileSpawned(codeFile.GetNode().GetFullPath())) {
+            if (!IsFileSpawned(codeFileInstance.GetCodeFile().GetNode().GetFullPath())) {
                 Debug.LogError("Tried to delete a file that is not spawned yet!");
                 return false;
             }
 
-            if (!codeFile.IsCodeWindowExisting()) {
-                Debug.LogError("Code window references missing!");
-                return false;
-            }
-
             // notify edge spawner to take care of removing edges
-            Debug.Log("Deleting code window of file: " + codeFile.GetNode().GetName());
-            if (edgeSpawner) { edgeSpawner.CodeWindowRemovedEvent(codeFile); }
+            Debug.Log("Deleting code window of file: " + codeFileInstance.GetCodeFile().GetNode().GetName());
+            if (edgeSpawner) { edgeSpawner.CodeWindowRemovedEvent(codeFileInstance); }
 
             // unregister the file from "spawned" list
-            spawnedFiles.Remove(codeFile.GetNode().GetFullPath());
+            spawnedFiles.Remove(codeFileInstance.GetNode().GetFullPath());
 
             // detach code window from grid
             SphereGrid windowGrid = WindowScreen.GetComponent<SphereGrid>();
-            GridElement gridElement = codeFile.GetReferences().gameObject.GetComponent<GridElement>();
+            GridElement gridElement = codeFileInstance.gameObject.GetComponent<GridElement>();
             if (windowGrid) {
                 windowGrid.DetachGridElement(ref gridElement);
             }
 
             // destroy code file references
-            Destroy(codeFile.GetReferences().gameObject);
-            codeFile.SetReferences(null);
+            Destroy(codeFileInstance.gameObject);
+            codeFileInstance.SetReferences(null);
             return true;
         }
 
