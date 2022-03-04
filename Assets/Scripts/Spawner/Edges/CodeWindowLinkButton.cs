@@ -265,18 +265,18 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     /// <summary>
     /// Called after the window placement finished.
     /// </summary>
-    private void FileSpawnCallback(bool success, CodeFile file, string msg) {
+    private void FileSpawnCallback(bool success, CodeFile fileInstance, string msg) {
 
         windowSpawned = success;
         windowSpawning = false;
 
         var edgeConnection = SpawnEdgeConnection();        
 
-        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
+        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
 
         if (!success) {
             string name = "";
-            if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+            if (fileInstance != null && fileInstance.GetNode() != null) { name = "(" + fileInstance.GetNode().GetName() + ") "; }
             Debug.LogError("Failed to place window! " + name + msg);
             return;
         }        
@@ -288,10 +288,10 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
         return edgeConnection;
     }
 
-    private LineHighlight HighlightCodeAreaInTargetfile() {
+    private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
         int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
         int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
-        var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
+        var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
         if (highlight == null) {
             Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                 endLineToHighlight + " inside code window for " + TargetFile.GetNode().GetName());

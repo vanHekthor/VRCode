@@ -214,7 +214,29 @@ namespace VRVis.Spawner.File {
         /// <param name="width"></param>
         /// <param name="lineHeight">height of a single line</param>
         /// <returns>line highlight component of the instantiated highlight object</returns>
-        public LineHighlight spawnLineHighlight(int start, int end, float width, float lineHeight) {
+        public LineHighlight SpawnLineHighlight(int start, int end) {
+            float lineHeight = codeFile.GetLineInfo().lineHeight;
+            float totalWidth_codeMarking = codeFile.GetLineInfo().lineWidth;
+
+            // check height and width values
+            if (lineHeight == 0) {
+                Debug.LogWarning("Failed to spawn regions! Line height is zero!");
+                return null;
+            }
+
+            if (totalWidth_codeMarking == 0) {
+                Debug.LogWarning("Failed to spawn regions! Code marking width is zero!");
+                return null;
+            }
+
+            // get region width for code marking visualization (might change in future)
+            RectTransform scrollRectRT = GetScrollRect().GetComponent<RectTransform>();
+            RectTransform textContainerRT = textContainer.GetComponent<RectTransform>();
+            RectTransform vertScrollbarRT = GetVerticalScrollbarRect();
+            if (scrollRectRT && textContainerRT && vertScrollbarRT) {
+                totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
+            }
+
             GameObject lineHighlightObject = Instantiate(lineHighlightPrefab);
             var lineHighlight = lineHighlightObject.GetComponent<LineHighlight>();
             if (lineHighlight == null) {
@@ -242,7 +264,7 @@ namespace VRVis.Spawner.File {
 
             RectTransform rt = lineHighlightObject.GetComponent<RectTransform>();
             rt.anchoredPosition = new Vector2(x, y);
-            rt.sizeDelta = new Vector2(width, height);
+            rt.sizeDelta = new Vector2(totalWidth_codeMarking, height);
 
             return lineHighlight;
         }

@@ -15,6 +15,7 @@ using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.Edges;
+using VRVis.Spawner.File;
 
 public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
@@ -113,7 +114,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         var edgeConnection = SpawnEdgeConnection();
 
         if (edgeConnection != null) {
-            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
+            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
         }
     }
 
@@ -161,10 +162,10 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             return edgeConnection;
         }
 
-        private LineHighlight HighlightCodeAreaInTargetfile() {
+        private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
             int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
             int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
-            var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
+            var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
             if (highlight == null) {
                 Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                     endLineToHighlight + " inside code window for " + Link.TargetFile.GetNode().GetName());

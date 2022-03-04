@@ -31,7 +31,7 @@ namespace VRVis.IO {
         private readonly SNode node;
 
         /// <summary>attached to the editor code window and holds several references and information (set by FileSpawner)</summary>
-        private CodeFileReferences references;
+        private HashSet<CodeFileReferences> instances;
 
         /// <summary>information about the content after the file was spawned</summary>
         public struct ReadInformation {
@@ -86,8 +86,8 @@ namespace VRVis.IO {
 
         public SNode GetNode() { return node; }
 
-        public CodeFileReferences GetReferences() { return references; }
-        public void SetReferences(CodeFileReferences references) { this.references = references; }
+        public CodeFileReferences GetReferences() { return instances; }
+        public void SetReferences(CodeFileReferences references) { this.instances = references; }
 
         public LineInformation GetLineInfo() { return lineInfo; }
         public bool IsLineInfoSet() { return lineInfo.isSet; }
@@ -105,7 +105,7 @@ namespace VRVis.IO {
         }
 
         /// <summary>Tells if the references are available that lead to the code window components.</summary>
-        public bool IsCodeWindowExisting() { return references != null; }
+        public bool IsCodeWindowExisting() { return instances != null; }
 
         public ReadInformation GetContentInfo() { return readContentInfo; }
 
@@ -194,40 +194,6 @@ namespace VRVis.IO {
             lineInfo.characterWidth = characterWidth;
             lineInfo.isSet = true;
         }
-
-        /// <summary>
-        /// Highlights a region in the code.
-        /// </summary>
-        /// <param name="start">start line number</param>
-        /// <param name="end">end line number</param>
-        /// <returns>line highlight component attached to instantiated object</returns>
-        public LineHighlight HighlightLines(int start, int end) {
-
-            float lineHeight = lineInfo.lineHeight;
-            float totalWidth_codeMarking = lineInfo.lineWidth;
-
-            // check height and width values
-            if (lineHeight == 0) {
-                Debug.LogWarning("Failed to spawn regions! Line height is zero!");
-                return null;
-            }
-
-            if (totalWidth_codeMarking == 0) {
-                Debug.LogWarning("Failed to spawn regions! Code marking width is zero!");
-                return null;
-            }
-
-            // get region width for code marking visualization (might change in future)
-            RectTransform scrollRectRT = references.GetScrollRect().GetComponent<RectTransform>();
-            RectTransform textContainerRT = references.textContainer.GetComponent<RectTransform>();
-            RectTransform vertScrollbarRT = references.GetVerticalScrollbarRect();
-            if (scrollRectRT && textContainerRT && vertScrollbarRT) {
-                totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
-            }
-
-            return references.spawnLineHighlight(start, end, totalWidth_codeMarking, lineHeight);
-        }
-
 
         /// <summary>
         /// Recalculates the current performance influence model value
