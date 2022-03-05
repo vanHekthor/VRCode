@@ -121,12 +121,42 @@ namespace VRVis.Spawner {
             return spawnedFiles.ContainsKey(fullFilePath);
         }
 
-        /// <summary>Returns the spawned files CodeFile instance or null.</summary>
+        /// <summary>Returns true if the code file showing a specific config is already spawned.</summary>
+        public bool IsFileWithSpecificConfigSpawned(string fullFilePath, string configName) {
+            return GetSpawnedFileInstance(fullFilePath, configName) != null;
+        }
+
+        /// <summary>Returns true if the code file showing a specific config is already spawned.</summary>
+        public bool IsFileWithSpecificConfigSpawned(CodeFile codeFile, string configName) {
+            return GetSpawnedFileInstance(codeFile, configName) != null;
+        }
+
+        /// <summary>Returns a file instance that was already spawned. Null if it was not spawned yet.</summary>
+        public CodeFileReferences GetSpawnedFileInstance(string fullFilePath, string configName) {
+            if (!spawnedFiles.ContainsKey(fullFilePath)) {
+                return null;
+            }
+
+            foreach (var fileInstance in spawnedFiles[fullFilePath]) {
+                if (fileInstance.Config.Name.Equals(configName)) {
+                    return fileInstance;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>Returns a file instance that was already spawned. Null if it was not spawned yet.</summary>
+        public CodeFileReferences GetSpawnedFileInstance(CodeFile codeFile, string configName) {
+            return GetSpawnedFileInstance(codeFile.GetNode().GetFullPath(), configName);
+        }
+
+        /// <summary>Returns spawned code file instances corresponding to the passed file path or null.</summary>
         public HashSet<CodeFileReferences> GetFileInstancesSpawned(string fullFilePath) {
             return IsFileSpawned(fullFilePath) ? spawnedFiles[fullFilePath] : null;
         }
 
-        /// <summary>Returns the spawned code files.</summary>
+        /// <summary>Returns spawned code file instances corresponding to the passed file path or null.</summary>
         public IEnumerable<CodeFileReferences> GetSpawnedFiles() {
             var fileInstances = new HashSet<CodeFileReferences>();
             foreach (var set in spawnedFiles.Values) {
