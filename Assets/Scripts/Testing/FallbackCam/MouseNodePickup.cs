@@ -38,7 +38,7 @@ namespace VRVis.Fallback {
         private float placeHolderDist = 0;
 
         private Action<CodeFileReferences> nodePlacedCallback;
-
+        private string selectedConfig;
 
         public class MousePickupEventData : PointerEventData {
         
@@ -144,7 +144,7 @@ namespace VRVis.Fallback {
                     Debug.Log("Spawning code window at position: " + spawnPos);
 
                     FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-                    if (fs) { fs.SpawnFile(attachedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
+                    if (fs) { fs.SpawnFile(attachedNode, selectedConfig, spawnPos, spawnRot, WindowSpawnedCallback); }
                     else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
                     // cleanup
@@ -196,7 +196,7 @@ namespace VRVis.Fallback {
                 // remember hit object so that next click can not be on same object
                 hitObj = hit.collider.gameObject;
                 Debug.Log("Mouse click at node: " + attachedNode.GetName());
-                AttachFileToSpawn(attachedNode, hit.point);
+                AttachFileToSpawn(attachedNode, ConfigManager.GetInstance().DefaultConfig.Name, hit.point);
                 return;
             }
 
@@ -222,12 +222,14 @@ namespace VRVis.Fallback {
         /// Attach the previous so that user can select position to spawn file at.
         /// </summary>
         /// <param name="initPos">Position to initialize place holder instance at</param>
-        public bool AttachFileToSpawn(SNode node, Vector3 initPos, Action<CodeFileReferences> callback = null) {
+        public bool AttachFileToSpawn(SNode node, string configName, Vector3 initPos, Action<CodeFileReferences> callback = null) {
 
             nodePlacedCallback = callback;
 
             if (node == null) { return false; }
             attachedNode = node;
+
+            selectedConfig = configName;
 
             // destroy possible old placeholder
             if (placeHolderInstance != null) {

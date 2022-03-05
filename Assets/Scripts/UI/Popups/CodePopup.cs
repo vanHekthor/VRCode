@@ -88,7 +88,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         if (e != null) {
             MouseNodePickup mnp = e.GetMNP();
             if (e.button.Equals(PointerEventData.InputButton.Left)) {
-                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
+                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
             }
         }
 
@@ -99,12 +99,12 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             var laserHand = d.controller.GetComponent<LaserHand>();
 
             if (laserPointer) {
-                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
             }
 
             if (laserPointer == null) {
                 if (laserHand != null) {
-                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
                 }
             }
         }        
@@ -220,8 +220,13 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
                     int declarationLines = 1;
                     while ((curLine = sr.ReadLine()) != null) {
                         declarationLines++;
-                        output += '\n' + curLine.Substring(leadingSpaceCount).TrimEnd();
-                        
+                        if (!curLine.Equals(string.Empty)) {
+                            output += '\n' + curLine?.Substring(leadingSpaceCount).TrimEnd();
+                        }
+                        else {
+                            output += '\n';
+                        }
+
                         if (IsDeclarationEndLine(curLine) || declarationLines > 10) {
                             return output;
                         }

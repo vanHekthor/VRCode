@@ -118,6 +118,9 @@ namespace VRVis.Interaction.Controller {
         /// <summary>Selected node of a code file for which the according code window should be spawned</summary>
         private SNode selectedNode;
 
+        /// <summary>Selected config for which the according code window should be spawned</summary>
+        private string selectedConfig;
+
         // store time of last touchpad button press to detect click event
         private float touchpadLastDownTime = 0;
 
@@ -428,7 +431,7 @@ namespace VRVis.Interaction.Controller {
                 }
                 Quaternion spawnRot = placementObject.transform.rotation; // Quaternion.identity                
                 
-                if (fs) { fs.SpawnFile(selectedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
+                if (fs) { fs.SpawnFile(selectedNode, selectedConfig, spawnPos, spawnRot, WindowSpawnedCallback); }
                 else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
                 // code window has been placed
@@ -683,7 +686,7 @@ namespace VRVis.Interaction.Controller {
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
         /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
         /// <param name="callback">Method that will be called after the node was placed</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
+        public bool SelectNode(SNode node, string configName, bool switchToPreviousController, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
             nodePlacedCallback = callback;
 
             if (IsSomethingSelected()) { return false; }
@@ -694,6 +697,7 @@ namespace VRVis.Interaction.Controller {
 
             selectedNode = node;
             Debug.Log("Node to spawn selected: " + node.GetFullPath());
+            selectedConfig = configName;
 
             // set laser distance to last hit
             float hitDist = clickedAt == null ? -1 : Vector3.Distance(transform.position, clickedAt.position);

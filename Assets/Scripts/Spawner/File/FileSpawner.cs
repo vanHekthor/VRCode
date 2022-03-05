@@ -216,7 +216,7 @@ namespace VRVis.Spawner {
         /// The string parameter of the callback function includes a failure message.
         /// </summary>
         public void SpawnFile(SNode fileNode, Vector3 position, Quaternion rotation, Action<bool, CodeFileReferences, string> callback) {
-            SpawnFile(fileNode, ConfigManager.GetInstance().DefaultConfig.Name, position, rotation, callback);                
+            SpawnFile(fileNode, ConfigManager.GetInstance().selectedConfig, position, rotation, callback);                
         }
 
         /// <summary>

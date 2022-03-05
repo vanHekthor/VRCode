@@ -364,11 +364,11 @@ namespace VRVis.Interaction.LaserPointer {
 
             // check if click reached a structure node
             StructureNodeInfo nodeInf = go.GetComponent<StructureNodeInfo>();
-            if (nodeInf != null) { StartCodeWindowPlacement(nodeInf.GetSNode(), go.transform); }
+            if (nodeInf != null) { StartCodeWindowPlacement(nodeInf.GetSNode(), ConfigManager.GetInstance().selectedConfig, go.transform); }
 
             // check if click reached a structure node of structure version 2
             StructureNodeInfoV2 nodeInfV2 = go.GetComponent<StructureNodeInfoV2>();
-            if (nodeInfV2 != null) { StartCodeWindowPlacement(nodeInfV2.GetSNode(), go.transform); }
+            if (nodeInfV2 != null) { StartCodeWindowPlacement(nodeInfV2.GetSNode(), ConfigManager.GetInstance().selectedConfig, go.transform); }
 
             // ToDo: cleanup
             // BELOW CODE IS DISCARDED: pointer click is now handled by VariabilityModelInteraction.cs
@@ -381,7 +381,7 @@ namespace VRVis.Interaction.LaserPointer {
 
         /// <summary>Called when clicked on a structure node.</summary>
         /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
-        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
+        public void StartCodeWindowPlacement(SNode node, string configName, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
 
             if (node == null) { return; }
 
@@ -431,7 +431,7 @@ namespace VRVis.Interaction.LaserPointer {
                     GameObject attachedObject = controller.currentAttachedObject;
                     CodeWindowMover cwm = attachedObject.GetComponent<CodeWindowMover>();
                     cwm.isActive = true;
-                    if (cwm) { cwm.SelectNode(node, true, clickedAt, callback); }
+                    if (cwm) { cwm.SelectNode(node, configName, true, clickedAt, callback); }
                 }
                 else {
 
