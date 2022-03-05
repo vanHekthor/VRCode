@@ -167,7 +167,9 @@ namespace VRVis.Fallback {
 
             if (!success) {
                 string name = "";
-                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
+                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) {
+                    name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") ";
+                }
                 Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }

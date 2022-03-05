@@ -152,7 +152,7 @@ namespace VRVis.Spawner {
         }
 
         /// <summary>Returns spawned code file instances corresponding to the passed file path or null.</summary>
-        public HashSet<CodeFileReferences> GetFileInstancesSpawned(string fullFilePath) {
+        public HashSet<CodeFileReferences> GetSpawnedFileInstances(string fullFilePath) {
             return IsFileSpawned(fullFilePath) ? spawnedFiles[fullFilePath] : null;
         }
 
@@ -393,11 +393,12 @@ namespace VRVis.Spawner {
                 return false;
             }
 
-            //// prevent spawning the same file multiple times
-            //if (IsFileSpawned(fileNode.GetFullPath())) {
-            //    callback(false, null, "File already spawned: " + fileNode.GetName());
-            //    return false;
-            //}
+            // prevent spawning the same file with a specific config multiple times
+            var fileInstance = GetSpawnedFileInstance(fileNode.GetFullPath(), configName);
+            if (fileInstance != null) {
+                callback(false, fileInstance, $"File with [{configName} config] was already spawned!");
+                return false;
+            }
 
             // get according and required code file instance
             CodeFile codeFile = fileNode.GetCodeFile();
