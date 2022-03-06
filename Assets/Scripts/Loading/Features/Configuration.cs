@@ -14,6 +14,8 @@ namespace VRVis.IO.Features {
     /// Represents a software configuration containing binary and numery options. It can be evaluated by the Influence Model.   
     /// </summary>
     public class Configuration {
+        public string Name { get; set; }
+
         private string configID;        
 
         private Dictionary<string, bool> binaryOptions;
@@ -123,6 +125,8 @@ namespace VRVis.IO.Features {
             foreach (KeyValuePair<string, float> numOption in result.numericOptions) {
                 Debug.Log("Key: " + numOption.Key + " Value: " + numOption.Value);
             }
+
+            result.Name = new DirectoryInfo(filePath).Parent.Name;
 
             return result;
         }

@@ -9,6 +9,7 @@ using VRVis.Mappings;
 using VRVis.Mappings.Methods;
 using VRVis.RegionProperties;
 using VRVis.Settings;
+using VRVis.Spawner.File;
 using VRVis.Utilities;
 
 namespace VRVis.Spawner.Regions {
@@ -23,7 +24,7 @@ namespace VRVis.Spawner.Regions {
     /// </summary>
     public class RegionModifier {
 
-	    private readonly CodeFile file;
+	    private readonly CodeFileReferences fileInstance;
         private readonly RegionSpawner regionSpawner;
         //private readonly VisualPropertiesLoader visPropLoader;
 
@@ -34,9 +35,9 @@ namespace VRVis.Spawner.Regions {
 
         // CONSTRUCTOR
 
-        public RegionModifier(CodeFile codeFile, RegionSpawner regionSpawner) {
+        public RegionModifier(CodeFileReferences codeFileInstance, RegionSpawner regionSpawner) {
             
-            file = codeFile;
+            fileInstance = codeFileInstance;
             this.regionSpawner = regionSpawner;
 
             //visPropLoader = ApplicationLoader.GetInstance().GetVisualPropertiesLoader();
@@ -66,7 +67,7 @@ namespace VRVis.Spawner.Regions {
                     // check if any region changed its color
                     bool regionColorChanged = false;
 
-                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.NFP).ForEach(region =>
+                    regionSpawner.GetSpawnedRegions(fileInstance, ARProperty.TYPE.NFP).ForEach(region =>
                         {
                             Color color_prev = region.GetCurrentNFPColor();
                             ApplyRegionValues_NFP(region);
@@ -75,10 +76,10 @@ namespace VRVis.Spawner.Regions {
                     );
 
                     // notify listeners about the change in color
-                    if (regionColorChanged) { regionSpawner.FireRegionValuesChangedEvent(file); }
+                    if (regionColorChanged) { regionSpawner.FireRegionValuesChangedEvent(fileInstance); }
                 }
                 else if (type == ARProperty.TYPE.FEATURE) {
-                    regionSpawner.GetSpawnedRegions(file, ARProperty.TYPE.FEATURE).ForEach(region => ApplyRegionValues_Features(region));
+                    regionSpawner.GetSpawnedRegions(fileInstance, ARProperty.TYPE.FEATURE).ForEach(region => ApplyRegionValues_Features(region));
                 }
                 else {
                     // ... more ...
@@ -204,7 +205,7 @@ namespace VRVis.Spawner.Regions {
                 Color neutralColor = new Color();
 
                 if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.CODE_MARKING) {
-                    neutralColor = file.GetReferences().codeBackground.color;
+                    neutralColor = fileInstance.codeBackground.color;
                 }            
                 else if (info.GetNFPVisType() == ApplicationSettings.NFP_VIS.HEIGHTMAP) {
                     var heightmapInfo = obj.GetComponent<HeightmapRegionInfo>();
@@ -444,7 +445,7 @@ namespace VRVis.Spawner.Regions {
         /// <param name="setInvalid">Mark label values as invalid using "/"</param>
         private void UpdateHeightmapLabels(bool setInvalid = false) {
 
-            if (!file.GetReferences().GetHeightmap().activeInHierarchy) { return; }
+            if (!fileInstance.GetHeightmap().activeInHierarchy) { return; }
 
             // get the name of the currently selected non functional property
             string nfpName = ApplicationLoader.GetApplicationSettings().GetSelectedNFP().ToLower();
@@ -459,7 +460,7 @@ namespace VRVis.Spawner.Regions {
             // get currently relevant min/max values
             //AColorMethod colMethod = setting.GetColorMethod(ApplicationSettings.NFP_VIS.HEIGHTMAP); // ToDo: cleanup
             //MinMaxValue minMax = GetMinMaxValues(nfpName, codeFile, colMethod.GetRange()); // ToDo: cleanup
-            MinMaxValue minMax = GetMinMaxValues(nfpName, file, setting.GetMinMaxValue(), true);
+            MinMaxValue minMax = GetMinMaxValues(nfpName, fileInstance.GetCodeFile(), setting.GetMinMaxValue(), true);
             string minStr = "/", maxStr = "/";
             if (minMax != null) {
                 minStr = minMax.GetMinValue().ToString();
@@ -474,8 +475,8 @@ namespace VRVis.Spawner.Regions {
 
             // try to update the heightmap labels
             //Debug.Log("Updating heightmap labels of: " + codeFile.GetNode().GetName(), codeFile.GetReferences().gameObject);
-            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
-            file.GetReferences().GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
+            fileInstance.GetHeightmap().SendMessage("SetHeightmapLabel_from", minStr);
+            fileInstance.GetHeightmap().SendMessage("SetHeightmapLabel_to", maxStr);
         }
 
 

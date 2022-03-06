@@ -25,7 +25,7 @@ namespace VRVis.Spawner.File.Overview {
     public class RegionOverview : MonoBehaviour {
 
         [Tooltip("References of CodeFile this overview belongs to")]
-        public CodeFileReferences fileRefs;
+        public CodeFileReferences fileInstance;
 
         [Tooltip("Image to apply texture")]
         public Image image;
@@ -74,7 +74,7 @@ namespace VRVis.Spawner.File.Overview {
 	    void Start () {
 		
             // ensure that file references are assigned
-            if (!fileRefs) {
+            if (!fileInstance) {
                 Debug.LogError("Got no file references!");
                 enabled = false;
                 return;
@@ -120,11 +120,11 @@ namespace VRVis.Spawner.File.Overview {
         /// Called as a callback method when a file was spawned.<para/>
         /// Called after the layout calculation of TextMesh Pro is finished.
         /// </summary>
-        private void FileSpawnedEvent(CodeFile file) {
+        private void FileSpawnedEvent(CodeFileReferences fileInstance) {
 
-            if (file == null || file != fileRefs.GetCodeFile()) { return; }
+            if (fileInstance == null || fileInstance != this.fileInstance) { return; }
             if (codeTexture == null) { GenerateCodeTexture(); }
-            RegionsChangedEvent(file); // regions need to be updated as well!
+            RegionsChangedEvent(fileInstance); // regions need to be updated as well!
         }
 
 
@@ -132,14 +132,14 @@ namespace VRVis.Spawner.File.Overview {
         /// Called as a callback method when regions where spawned.<para/>
         /// Checks if the heightmap visualization is active, as the overview is not shown if it is active.
         /// </summary>
-        /// <param name="file">The affected code file</param>
-        private void RegionsChangedEvent(CodeFile file) {
+        /// <param name="fileInstance">The affected code file</param>
+        private void RegionsChangedEvent(CodeFileReferences fileInstance) {
 
             // don't update if the heightmap is shown
             bool heightmapShown = ApplicationLoader.GetApplicationSettings().IsNFPVisActive(Settings.ApplicationSettings.NFP_VIS.HEIGHTMAP);
             if (!updateIfHeightmapShown && heightmapShown) { return; }
 
-            if (file == null || file != fileRefs.GetCodeFile()) { return; }
+            if (fileInstance == null || fileInstance != this.fileInstance) { return; }
             if (codeTexture == null) { GenerateCodeTexture(); }
 
             // generate the region texture, overlay on code texture and apply result
@@ -222,7 +222,7 @@ namespace VRVis.Spawner.File.Overview {
             
             int charInfoStart = 0;
 
-            foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) {
+            foreach (TMP_TextInfo ti in fileInstance.GetTextElements()) {
                 for (int n = 0; n < ti.lineCount; n++) {
                     
                     TMP_LineInfo li = ti.lineInfo[n];
@@ -475,7 +475,7 @@ namespace VRVis.Spawner.File.Overview {
 
             // get amount of lines
             int lines = 0;
-            foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) { lines += ti.lineCount; }
+            foreach (TMP_TextInfo ti in fileInstance.GetTextElements()) { lines += ti.lineCount; }
 
             // render text/code patterns
             float lineHeight = 3;
@@ -502,7 +502,7 @@ namespace VRVis.Spawner.File.Overview {
             ct_lineHeight = lineHeight;
             ct_xIncrement = x_increment;
 
-            foreach (TMP_TextInfo ti in fileRefs.GetTextElements()) {
+            foreach (TMP_TextInfo ti in fileInstance.GetTextElements()) {
                 for (int n = 0; n < ti.lineCount; n++) {
                     
                     TMP_LineInfo li = ti.lineInfo[n];
@@ -585,7 +585,7 @@ namespace VRVis.Spawner.File.Overview {
             RegionSpawner rsp = (RegionSpawner) ((FileSpawner) sp).GetSpawner((int) FileSpawner.SpawnerList.RegionSpawner);
             
             // check if regions should be shown
-            if (!rsp.HasSpawnedRegions(fileRefs.GetCodeFile())) { return Texture2D.blackTexture; }
+            if (!rsp.HasSpawnedRegions(fileInstance)) { return Texture2D.blackTexture; }
             hasRegions = true;
 
             // start generating texture if there are regions
@@ -606,7 +606,7 @@ namespace VRVis.Spawner.File.Overview {
                 }
             }
 
-            foreach (Region r in rsp.GetSpawnedRegions(fileRefs.GetCodeFile())) {
+            foreach (Region r in rsp.GetSpawnedRegions(fileInstance)) {
                 foreach (Region.Section s in r.GetSections()) {
 
                     int y_start = Mathf.RoundToInt((s.start-1) * ct_lineHeight);

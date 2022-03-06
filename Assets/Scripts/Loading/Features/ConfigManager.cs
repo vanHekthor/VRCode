@@ -10,22 +10,23 @@ namespace VRVis.IO.Features {
     /// </summary>
     public class ConfigManager : MonoBehaviour {
 
-        private static ConfigManager INSTANCE;
+        private static ConfigManager INSTANCE;       
 
         public bool isActive;
         public string defaultConfigPath;
         public string configPath1;
         public string configPath2;
-
         public GameObject configPanel;
+        public string selectedConfig = "default";
+        
 
         public Dictionary<string, Configuration> ConfigDict { get; private set; }
-        private List<ConfigPanel> configPanels;
-        private List<ConfigPanel> comparisonPanels;
-
         public Configuration DefaultConfig { get; private set; }
         public Configuration Config1 { get; private set; }
         public Configuration Config2 { get; private set; }
+
+        private List<ConfigPanel> configPanels;
+        private List<ConfigPanel> comparisonPanels;
 
         void Awake() {
             if (!isActive) { return; }
@@ -67,10 +68,9 @@ namespace VRVis.IO.Features {
             }
 
             ConfigDict = new Dictionary<string, Configuration>();
-            ConfigDict.Add(DefaultConfig.GetConfigID(), DefaultConfig);
-            ConfigDict.Add(Config1.GetConfigID(), Config1);
-            ConfigDict.Add(Config2.GetConfigID(), Config2);
-
+            ConfigDict.Add(DefaultConfig.Name, DefaultConfig);
+            ConfigDict.Add(Config1.Name, Config1);
+            ConfigDict.Add(Config2.Name, Config2);
         }
 
         /// <summary>Get the only instance of this class. Can be null if not set yet!</summary>

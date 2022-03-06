@@ -8,6 +8,7 @@ using VRVis.Interaction.LaserHand;
 using VRVis.Interaction.LaserPointer;
 using VRVis.Interaction.PsychicHand;
 using VRVis.IO;
+using VRVis.IO.Features;
 using VRVis.IO.Structure;
 using VRVis.Utilities;
 
@@ -125,7 +126,7 @@ namespace VRVis.Spawner.CodeCity {
             if (e != null) {
                 MouseNodePickup mnp = e.GetMNP();
                 if (e.button.Equals(PointerEventData.InputButton.Left)) {
-                    mnp.AttachFileToSpawn(GetSNode(), e.pointerCurrentRaycast.worldPosition);
+                    mnp.AttachFileToSpawn(GetSNode(), ConfigManager.GetInstance().selectedConfig, e.pointerCurrentRaycast.worldPosition);
                 }
             }
 
@@ -136,12 +137,12 @@ namespace VRVis.Spawner.CodeCity {
                 var laserHand = d.controller.GetComponent<LaserHand>();
 
                 if (laserPointer) {
-                    laserPointer.StartCodeWindowPlacement(GetSNode(), transform);
+                    laserPointer.StartCodeWindowPlacement(GetSNode(), ConfigManager.GetInstance().selectedConfig, transform);
                 }
 
                 if (laserPointer == null) {
                     if (laserHand != null) {
-                        laserHand.StartCodeWindowPlacement(GetSNode(), transform);
+                        laserHand.StartCodeWindowPlacement(GetSNode(), ConfigManager.GetInstance().selectedConfig, transform);
                     }
                 }
             }

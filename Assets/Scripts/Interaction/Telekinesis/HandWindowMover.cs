@@ -7,6 +7,7 @@ using VRVis.Interaction.ControllerSelectionSystem;
 using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
 using VRVis.UI.CodeWindowScreen;
 using VRVis.UI.Helper;
 using VRVis.Utilities;
@@ -97,13 +98,16 @@ namespace VRVis.Interaction.Controller {
 
         private bool placeOntoSphereScreen = false;
 
-        private Action nodePlacedCallback;
+        private Action<CodeFileReferences> nodePlacedCallback;
 
         /// <summary>Moveable instance of the selected object</summary>
         private Movable selectedObject;
 
         /// <summary>Selected node of a code file for which the according code window should be spawned</summary>
         private SNode selectedNode;
+
+        /// <summary>Selected config for which the according code window should be spawned</summary>
+        private string selectedConfig;
 
         // store time of last touchpad button press to detect click event
         private float touchpadLastDownTime = 0;
@@ -272,7 +276,7 @@ namespace VRVis.Interaction.Controller {
                 }
                 Quaternion spawnRot = placementObject.transform.rotation; // Quaternion.identity                
 
-                if (fs) { fs.SpawnFile(selectedNode, spawnPos, spawnRot, WindowSpawnedCallback); }
+                if (fs) { fs.SpawnFile(selectedNode, selectedConfig, spawnPos, spawnRot, WindowSpawnedCallback); }
                 else { WindowSpawnedCallback(false, null, "Missing FileSpawner!"); }
 
                 // code window has been placed
@@ -287,12 +291,12 @@ namespace VRVis.Interaction.Controller {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
-            nodePlacedCallback?.Invoke();
+        private void WindowSpawnedCallback(bool success, CodeFileReferences fileInstance, string msg) {
+            nodePlacedCallback?.Invoke(fileInstance);
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }
@@ -510,7 +514,7 @@ namespace VRVis.Interaction.Controller {
         /// <summary>Set selected node that is currently moved.</summary>
         /// <param name="switchToPreviousController">To switch to the previous controller after the window is placed</param>
         /// <param name="clickedAt">The object we initially clicked at (e.g. an element of the code city or structure tree).</param>
-        public bool SelectNode(SNode node, bool switchToPreviousController, Transform clickedAt = null, Action callback = null) {
+        public bool SelectNode(SNode node, string configName, bool switchToPreviousController, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
             nodePlacedCallback = callback;
 
             if (IsSomethingSelected()) { return false; }
@@ -521,6 +525,7 @@ namespace VRVis.Interaction.Controller {
 
             selectedNode = node;
             Debug.Log("Node to spawn selected: " + node.GetFullPath());
+            selectedConfig = configName;
 
             // set laser distance to last hit
             float hitDist = clickedAt == null ? -1 : Vector3.Distance(transform.position, clickedAt.position);

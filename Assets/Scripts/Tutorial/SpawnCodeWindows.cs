@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using VRVis.IO;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
 
 namespace VRVis.Tutorial {
 
@@ -143,14 +144,14 @@ namespace VRVis.Tutorial {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void WindowSpawnedCallback(bool success, CodeFile file, string msg) {
+        private void WindowSpawnedCallback(bool success, CodeFileReferences fileInstance, string msg) {
 
             windowSpawned = success;
             windowSpawning = false;
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileInstance != null && fileInstance.GetCodeFile().GetNode() != null) { name = "(" + fileInstance.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
                 return;
             }

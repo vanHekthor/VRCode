@@ -13,11 +13,11 @@ public class CloseCodeWindowButton : MonoBehaviour, IPointerClickHandler {
     public class CloseWindowEvent : UnityEvent<CodeFileReferences> { }
 
     private GameObject codeWindow;
-    private CodeFileReferences fileRefs; 
+    private CodeFileReferences fileInstance; 
 
     void Start() {
-        fileRefs = gameObject.GetComponentInParent<CodeFileReferences>();
-        codeWindow = fileRefs.gameObject;
+        fileInstance = gameObject.GetComponentInParent<CodeFileReferences>();
+        codeWindow = fileInstance.gameObject;
     }
     
     public void OnPointerClick(PointerEventData eventData) {
@@ -27,13 +27,13 @@ public class CloseCodeWindowButton : MonoBehaviour, IPointerClickHandler {
         Debug.LogWarning("Deleting a code window...");
 
         FileSpawner fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
-        if (!fs || !fs.DeleteFileWindow(fileRefs.GetCodeFile())) {
+        if (!fs || !fs.DeleteFileWindow(fileInstance)) {
             Debug.LogWarning("Failed to delete code window!", codeWindow);
         }
 
         if (codeWindow != null) {
             Destroy(codeWindow);
-            closeEvent.Invoke(fileRefs);
+            closeEvent.Invoke(fileInstance);
         }
     }
 }

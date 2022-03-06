@@ -1,13 +1,10 @@
-﻿using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-using VRVis.IO;
+﻿using VRVis.Spawner.File;
 
 public class CodeWindowTextHelper {
 
-    public static string GetTextByLineIndex(CodeFile codeFile, int lineIdx) {
+    public static string GetTextByLineIndex(CodeFileReferences codeFileInstance, int lineIdx) {
 
-        var textElements = codeFile.GetReferences().GetTextElements();
+        var textElements = codeFileInstance.GetTextElements();
 
          int lineCounter = 0;
          foreach (var element in textElements) {

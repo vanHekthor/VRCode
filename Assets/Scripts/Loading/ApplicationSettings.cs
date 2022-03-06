@@ -6,6 +6,7 @@ using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.RegionProperties;
 using VRVis.Spawner;
+using VRVis.Spawner.File;
 
 namespace VRVis.Settings {
 
@@ -76,7 +77,7 @@ namespace VRVis.Settings {
                 }
             }
 
-            ComparisonMode = false;
+            ComparisonMode = true;
 
             // only enable code marking as the default visualization
             //nfpVisualizationActive[NFP_VIS.CODE_MARKING] = true;
@@ -355,8 +356,8 @@ namespace VRVis.Settings {
             // update all spawned code files accordingly
             FileSpawner fs = (FileSpawner) ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
             if (!fs) { return; }
-            foreach (CodeFile spawned in fs.GetSpawnedFiles()) {
-                spawned.ToggleActiveFeatureVis(activeFeatureVisVisible);
+            foreach (CodeFileReferences spawned in fs.GetSpawnedFiles()) {
+                spawned.GetCodeFile().ToggleActiveFeatureVis(activeFeatureVisVisible);
             }
         }
 

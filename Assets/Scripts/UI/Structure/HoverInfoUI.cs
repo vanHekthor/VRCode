@@ -1,5 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text;
 using UnityEngine;
 using Valve.VR.InteractionSystem;
@@ -132,8 +134,14 @@ namespace VRVis.UI.Structure {
 
                 // outgoing edges
                 if (loader.GetEdgeLoader() != null && cf != null) {
-                    additionalInfo.Append("- Edges outgoing: ");
-                    additionalInfo.Append(loader.GetEdgeLoader().GetEdgeCountOfFile(cf));
+                    string configDirPath = ApplicationLoader.GetInstance().mainPath + ApplicationLoader.GetInstance().configsFolderName;
+                    var configNames = new DirectoryInfo(configDirPath).GetDirectories().Select(subDir => subDir.Name);
+
+
+                    additionalInfo.Append("- Edges outgoing: \n");
+                    foreach (var name in configNames) {
+                        additionalInfo.Append($"- {name} config:" + loader.GetEdgeLoader().GetEdgeCountOfFile(cf, name) + "\n");
+                    }
                 }
             }
             else if (n.GetNodeType() == SNode.DNodeTYPE.FOLDER) {

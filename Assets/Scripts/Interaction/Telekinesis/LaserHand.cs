@@ -13,6 +13,7 @@ using VRVis.IO.Features;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.ConfigModel;
+using VRVis.Spawner.File;
 using VRVis.Spawner.Structure;
 
 namespace VRVis.Interaction.LaserHand {
@@ -401,11 +402,11 @@ namespace VRVis.Interaction.LaserHand {
 
             // check if click reached a structure node
             StructureNodeInfo nodeInf = go.GetComponent<StructureNodeInfo>();
-            if (nodeInf != null) { StartCodeWindowPlacement(nodeInf.GetSNode(), go.transform); }
+            if (nodeInf != null) { StartCodeWindowPlacement(nodeInf.GetSNode(), ConfigManager.GetInstance().selectedConfig, go.transform); }
 
             // check if click reached a structure node of structure version 2
             StructureNodeInfoV2 nodeInfV2 = go.GetComponent<StructureNodeInfoV2>();
-            if (nodeInfV2 != null) { StartCodeWindowPlacement(nodeInfV2.GetSNode(), go.transform); }
+            if (nodeInfV2 != null) { StartCodeWindowPlacement(nodeInfV2.GetSNode(), ConfigManager.GetInstance().selectedConfig, go.transform); }
 
             // ToDo: cleanup
             // BELOW CODE IS DISCARDED: pointer click is now handled by VariabilityModelInteraction.cs
@@ -418,7 +419,7 @@ namespace VRVis.Interaction.LaserHand {
 
         /// <summary>Called when clicked on a structure node.</summary>
         /// <param name="clickedAt">The object that was clicked (e.g. code city element...)</param>
-        public void StartCodeWindowPlacement(SNode node, Transform clickedAt = null, Action callback = null) {
+        public void StartCodeWindowPlacement(SNode node, string configName, Transform clickedAt = null, Action<CodeFileReferences> callback = null) {
 
             if (node == null) { return; }
 
@@ -427,8 +428,11 @@ namespace VRVis.Interaction.LaserHand {
             bool isFile = node.GetNodeType() == SNode.DNodeTYPE.FILE;
             if (isFile) {
 
+                // old logic
                 // check if already spawned
                 bool isFileSpawned = FileSpawner.GetInstance().IsFileSpawned(node.GetFullPath());
+
+                // now multiple instances of a file can be opened
                 if (!isFileSpawned) {
 
                     // get the controller selection script
@@ -464,7 +468,7 @@ namespace VRVis.Interaction.LaserHand {
                     GameObject attachedObject = hand.currentAttachedObject;
                     var cwm = gameObject.GetComponent<HandWindowMover>();
                     cwm.isActive = true;
-                    if (cwm) { cwm.SelectNode(node, true, clickedAt, callback); }
+                    if (cwm) { cwm.SelectNode(node, configName, true, clickedAt, callback); }
                 }
                 else {
 
@@ -472,7 +476,7 @@ namespace VRVis.Interaction.LaserHand {
                     // or make it light up for a short amount of time to show where it is?
 
                     Debug.LogWarning("File already spawned: " + node.GetName());
-                    callback();
+                    // callback();
                 }
             }
         }

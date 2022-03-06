@@ -15,6 +15,7 @@ using VRVis.IO;
 using VRVis.IO.Structure;
 using VRVis.Spawner;
 using VRVis.Spawner.Edges;
+using VRVis.Spawner.File;
 
 public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
@@ -87,7 +88,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         if (e != null) {
             MouseNodePickup mnp = e.GetMNP();
             if (e.button.Equals(PointerEventData.InputButton.Left)) {
-                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
+                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
             }
         }
 
@@ -98,22 +99,22 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             var laserHand = d.controller.GetComponent<LaserHand>();
 
             if (laserPointer) {
-                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
             }
 
             if (laserPointer == null) {
                 if (laserHand != null) {
-                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), transform, ToDoAfterCodeWindowPlacement);
+                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
                 }
             }
         }        
     }
 
-    private void ToDoAfterCodeWindowPlacement() {
-        var edgeConnection = SpawnEdgeConnection();
+    private void ToDoAfterCodeWindowPlacement(CodeFileReferences spawnedFileInstance) {
+        var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, spawnedFileInstance);
 
         if (edgeConnection != null) {
-            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile();
+            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
         }
     }
 
@@ -130,7 +131,8 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         if (fs) {
             fs.SpawnFileNextTo(
                 Link.TargetFile,
-                Link.BaseFile.GetReferences(),
+                Link.BaseFileInstance.Config.Name,
+                Link.BaseFileInstance,
                 true,
                 FileSpawnCallback);
         }
@@ -142,29 +144,29 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         /// <summary>
         /// Called after the window placement finished.
         /// </summary>
-        private void FileSpawnCallback(bool success, CodeFile file, string msg) {
+        private void FileSpawnCallback(bool success, CodeFileReferences fileReferences, string msg) {
             windowSpawned = success;
             windowSpawning = false;            
 
             if (!success) {
                 string name = "";
-                if (file != null && file.GetNode() != null) { name = "(" + file.GetNode().GetName() + ") "; }
+                if (fileReferences != null && fileReferences.GetCodeFile().GetNode() != null) { name = "(" + fileReferences.GetCodeFile().GetNode().GetName() + ") "; }
                 Debug.LogError("Failed to place window! " + name + msg);
             }
 
             ClickEvent.Invoke();
     }
 
-        private CodeWindowEdgeConnection SpawnEdgeConnection() {
-            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(Link.BaseFile, Link.EdgeLink);
+        private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
+            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, Link.EdgeLink);
 
             return edgeConnection;
         }
 
-        private LineHighlight HighlightCodeAreaInTargetfile() {
+        private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
             int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
             int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
-            var highlight = Link.TargetFile.HighlightLines(startLineToHighlight, endLineToHighlight);
+            var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
             if (highlight == null) {
                 Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                     endLineToHighlight + " inside code window for " + Link.TargetFile.GetNode().GetName());
@@ -218,8 +220,13 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
                     int declarationLines = 1;
                     while ((curLine = sr.ReadLine()) != null) {
                         declarationLines++;
-                        output += '\n' + curLine.Substring(leadingSpaceCount).TrimEnd();
-                        
+                        if (!curLine.Equals(string.Empty)) {
+                            output += '\n' + curLine?.Substring(leadingSpaceCount).TrimEnd();
+                        }
+                        else {
+                            output += '\n';
+                        }
+
                         if (IsDeclarationEndLine(curLine) || declarationLines > 10) {
                             return output;
                         }

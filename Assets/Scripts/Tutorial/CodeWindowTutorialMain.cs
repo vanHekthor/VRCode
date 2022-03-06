@@ -220,12 +220,12 @@ public class CodeWindowTutorialMain : MonoBehaviour {
         successfullyTeleported = true;
     }
 
-    private void FileSpawned(CodeFile codeFile) {
+    private void FileSpawned(CodeFileReferences codeFileInstance) {
         spawnedFile = true;
 
         if (State == TutorialState.open_file_with_regions) {
-            if (codeFile.GetNode().GetName() == StripedBuilding
-                || codeFile.GetNode().GetName() == StripedBuildingAlternative) {
+            if (codeFileInstance.GetCodeFile().GetNode().GetName() == StripedBuilding
+                || codeFileInstance.GetCodeFile().GetNode().GetName() == StripedBuildingAlternative) {
                 spawnedStripedBuilding = true;
             }
         }
