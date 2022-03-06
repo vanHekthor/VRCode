@@ -12,9 +12,11 @@ namespace VRVis.UI {
     /// </summary>
     [RequireComponent(typeof(RectTransform))]
     public class RectTransformDimensionLink : MonoBehaviour {
-    
+
         [Tooltip("Minimum size that this object can have")]
         public Vector2 minSize = new Vector2();
+
+        public Vector2 additionalSize = new Vector2();
 
         [System.Serializable]
         public class Receiver {
@@ -26,20 +28,20 @@ namespace VRVis.UI {
         [Tooltip("Objects with this script to call. Leave empty if this object is only a receiver and no sender.")]
         public Receiver[] sendTo;
         private RectTransform thisRT;
-	
-	    void Awake () {
-		
+
+        void Awake() {
+
             // Get the attached Rect Transform component of this object.
             thisRT = GetComponent<RectTransform>();
             if (!thisRT) {
                 Debug.LogWarning("This object does not have a rect transform attached!");
                 return;
             }
-	    }
+        }
 
         /**
          * Called if the rect transform dimension changes.
-         */ 
+         */
         private void OnRectTransformDimensionsChange() {
 
             // do nothing if no receiver is set or RectTransform is missing
@@ -56,7 +58,7 @@ namespace VRVis.UI {
         /// <param name="other">RectTransform of the sender</param>
         /// <param name="receiver">Holds Receiver component of the object to update</param>
         void UpdateThisRectTransform(RectTransform other, Receiver receiver) {
-        
+
             //Debug.Log("Received Update!");
             if (!thisRT) { return; }
 
@@ -71,8 +73,8 @@ namespace VRVis.UI {
             if (newHeight < minSize.y) { newHeight = minSize.y; }
 
             // add new width and height to the new size vector
-            if (receiver.applyWidth) { newSizeDelta.x = newWidth; }
-            if (receiver.applyHeight) { newSizeDelta.y = newHeight; }
+            if (receiver.applyWidth) { newSizeDelta.x = newWidth + additionalSize.x; }
+            if (receiver.applyHeight) { newSizeDelta.y = newHeight + additionalSize.y; }
 
             // apply size
             thisRT.sizeDelta = newSizeDelta;
