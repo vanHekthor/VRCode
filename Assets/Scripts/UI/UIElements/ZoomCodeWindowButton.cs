@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using VRVis.Spawner;
 using VRVis.Spawner.File;
 
 public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
@@ -91,7 +92,14 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
         }
 
         zooming = true;
+
+        var canvasRect = codeWindow.transform.Find("PositionAnchor/CodeWindowCanvas").GetComponent<RectTransform>();
+        canvasRect.sizeDelta = new Vector2(canvasRect.sizeDelta.x, canvasRect.sizeDelta.y + 200);
+        UpdateControlFlows();
     }
 
-
+    private void UpdateControlFlows() {
+        var eSpawner = (CodeWindowEdgeSpawner)FileSpawner.GetInstance().GetSpawner((uint)FileSpawner.SpawnerList.EdgeSpawner);
+        eSpawner.UpdateControlFlowInsideCodeWindow(codeWindow.GetComponent<CodeFileReferences>());
+    }
 }

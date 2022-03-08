@@ -377,6 +377,21 @@ namespace VRVis.Spawner {
             Debug.Log("Removed " + removedEdges + " edges and " + removedLinks + " link buttons!");
         }
 
+        public void UpdateControlFlowInsideCodeWindow(CodeFileReferences fileInstance) {
+            foreach (var edgeID in spawnedLinksAndEdges[fileInstance]) {
+                if (codeWindowLinks.ContainsKey(edgeID)) {
+                    var link = codeWindowLinks[edgeID];
+                    link.ForcePositionUpdate();
+                    return;
+                }
+                if (edgeConnections.ContainsKey(edgeID)) {
+                    var edgeConnection = edgeConnections[edgeID];
+                    edgeConnection.ForcePositionUpdate();
+                    return;
+                }
+            }
+        }
+
         /// <summary>
         /// Spawn a new connection instance (i.e. edge connection or link button if targeted code file is not open)<para/>
         /// Returns 1 when an edge connection was successfully spawned
