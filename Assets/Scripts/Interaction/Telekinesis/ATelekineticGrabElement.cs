@@ -170,6 +170,10 @@ namespace VRVis.Interaction.Telekinesis {
 
         protected abstract void WasReleased(Ray ray);
 
+        public abstract void OnStretch(float factor);
+
+        public abstract void OnStretchEnded();
+
         private IEnumerator HapticFeedback(Hand hand) {
             while (true) {
                 if (hand != null) {
@@ -196,6 +200,6 @@ namespace VRVis.Interaction.Telekinesis {
             moveToTarget = true;
             targetPoint.position = position;
             targetPoint.rotation = rotation;
-        }       
+        }
     }
 }

@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.Spawner;
 using VRVis.Spawner.File;
 using VRVis.UI.Helper;
 using VRVis.Utilities;
@@ -60,6 +61,22 @@ namespace VRVis.Interaction.Telekinesis {
             grid.AttachGridElement(ref gridElement, selectedGridPoint.LayerIdx, selectedGridPoint.ColumnIdx);
         }
 
+        float initialHeight;
+        bool initialHeightWasSet = false;
+        public override void OnStretch(float factor) {
+            var canvasRect = codeWindow.transform.Find("PositionAnchor/CodeWindowCanvas").GetComponent<RectTransform>();
+
+            if (!initialHeightWasSet) {
+                initialHeight = canvasRect.sizeDelta.y;
+                initialHeightWasSet = true;
+            }
+
+            canvasRect.sizeDelta = new Vector2(canvasRect.sizeDelta.x, initialHeight * factor);
+        }
+
+        public override void OnStretchEnded() {
+            initialHeightWasSet = false;
+        }
 
         private void SetTargetToClosestGridPoint(out SphereGridPoint sphereGridPoint, Vector3 pointOnWindowSphere) {
             Vector3 pointerPos = pointOnWindowSphere;
@@ -72,6 +89,6 @@ namespace VRVis.Interaction.Telekinesis {
             if ((codeWindow.transform.position - previewPos).magnitude > 0.1f) {
                 ChangeTargetPoint(selectedGridPoint.AttachmentPointObject.transform);
             }
-        }
+        }        
     }
 }
