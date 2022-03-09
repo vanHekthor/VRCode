@@ -13,10 +13,18 @@ namespace VRVis.UI {
     [RequireComponent(typeof(RectTransform))]
     public class RectTransformDimensionLink : MonoBehaviour {
 
+        public bool changeParentTransform;
+
+        public Transform parent;
+
+        public Transform positionAnchor;
+
         [Tooltip("Minimum size that this object can have")]
         public Vector2 minSize = new Vector2();
 
         public Vector2 additionalSize = new Vector2();
+
+        public bool keepRelativePositionToParent;
 
         [System.Serializable]
         public class Receiver {
@@ -28,6 +36,8 @@ namespace VRVis.UI {
         [Tooltip("Objects with this script to call. Leave empty if this object is only a receiver and no sender.")]
         public Receiver[] sendTo;
         private RectTransform thisRT;
+        private BoxCollider parentCollider;
+        private float initialYRatio; 
 
         void Awake() {
 
@@ -36,7 +46,31 @@ namespace VRVis.UI {
             if (!thisRT) {
                 Debug.LogWarning("This object does not have a rect transform attached!");
                 return;
+            }            
+        }
+
+        void Start() {
+            if (sendTo.Length == 0 || !thisRT) { return; }
+
+            if (!changeParentTransform) {
+                return;
             }
+
+            if (parent == null) {
+                Debug.LogWarning("Parent is null! Probably the reference was not set in the inspector.");
+            }
+            else { 
+                parentCollider = parent.GetComponent<BoxCollider>();
+                if (parentCollider == null) {
+                    Debug.LogWarning("Parent object does not have a box collider attached!");
+                }
+            }
+
+            if (positionAnchor == null) {
+                Debug.LogWarning("Position anchor is null! Probably the reference was not set in the inspector.");
+            }
+
+            initialYRatio = thisRT.localPosition.y / thisRT.sizeDelta.y;
         }
 
         /**
@@ -51,6 +85,22 @@ namespace VRVis.UI {
             //Debug.Log("Sending Update to receiver!");
             foreach (Receiver receiver in sendTo) {
                 receiver.link.UpdateThisRectTransform(thisRT, receiver);
+            }
+
+            if (!changeParentTransform) {
+                return;
+            }
+
+            parentCollider.size = new Vector3(
+                parentCollider.size.x, 
+                thisRT.sizeDelta.y * thisRT.localScale.y, 
+                parentCollider.size.z);
+
+            if (keepRelativePositionToParent) {
+                positionAnchor.localPosition = new Vector3(
+                    positionAnchor.localPosition.x, 
+                    thisRT.sizeDelta.y * initialYRatio - thisRT.localPosition.y, 
+                    positionAnchor.localPosition.z);
             }
         }
 
