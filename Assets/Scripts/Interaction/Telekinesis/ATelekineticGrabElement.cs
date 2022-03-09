@@ -11,6 +11,7 @@ namespace VRVis.Interaction.Telekinesis {
     public abstract class ATelekineticGrabElement : MonoBehaviour, ITelekinesable {
 
         public Transform grabbedTransform;
+        public Transform stretchedTransform;
         public ParticleSystem focusEffect;
         public ParticleSystem grabEffect;
         public float snapTime = 1;

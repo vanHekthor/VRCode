@@ -248,6 +248,7 @@ namespace VRVis.Interaction.Telekinesis {
                 else {
                     stretching = false;
                     playerWasStretchingBefore = false;
+                    GrabbedTelekinesable.OnStretchEnded();
                 }
             }
             else {

@@ -14,12 +14,14 @@ namespace VRVis.Interaction.Telekinesis {
         private SphereGridPoint selectedGridPoint;
         private ZoomCodeWindowButton zoomButton;
         private bool moveWindowOnSphere;
+        private RectTransform codeCanvasRect;
 
         protected override void Initialize() {
             codeWindow = GetComponentInParent<CodeFileReferences>().gameObject;
             gridElement = codeWindow.GetComponent<GridElement>();
             grid = gridElement.Grid;
             zoomButton = codeWindow.GetComponentInChildren<ZoomCodeWindowButton>();
+            codeCanvasRect = stretchedTransform.GetComponent<RectTransform>();
 
             targetPoint = grid.GetGridPoint(gridElement.GridPositionLayer, gridElement.GridPositionColumn).AttachmentPointObject.transform;
 
@@ -64,14 +66,12 @@ namespace VRVis.Interaction.Telekinesis {
         float initialHeight;
         bool initialHeightWasSet = false;
         public override void OnStretch(float factor) {
-            var canvasRect = codeWindow.transform.Find("PositionAnchor/CodeWindowCanvas").GetComponent<RectTransform>();
-
             if (!initialHeightWasSet) {
-                initialHeight = canvasRect.sizeDelta.y;
+                initialHeight = codeCanvasRect.sizeDelta.y;
                 initialHeightWasSet = true;
             }
 
-            canvasRect.sizeDelta = new Vector2(canvasRect.sizeDelta.x, initialHeight * factor);
+            codeCanvasRect.sizeDelta = new Vector2(codeCanvasRect.sizeDelta.x, initialHeight * factor);
         }
 
         public override void OnStretchEnded() {
