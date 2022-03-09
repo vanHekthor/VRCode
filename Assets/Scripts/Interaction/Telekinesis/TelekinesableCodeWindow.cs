@@ -18,10 +18,25 @@ namespace VRVis.Interaction.Telekinesis {
 
         protected override void Initialize() {
             codeWindow = GetComponentInParent<CodeFileReferences>().gameObject;
+            if (codeWindow == null) {
+                Debug.LogError("Code window instance not found!");
+            }
+
             gridElement = codeWindow.GetComponent<GridElement>();
+            if (gridElement == null) {
+                Debug.LogError("Code window instance has no grid element component!");
+            }
+
             grid = gridElement.Grid;
             zoomButton = codeWindow.GetComponentInChildren<ZoomCodeWindowButton>();
-            codeCanvasRect = stretchedTransform.GetComponent<RectTransform>();
+            if (zoomButton == null) {
+                Debug.LogError("Code window instance has no zoom button!");
+            }
+
+            codeCanvasRect = stretchTransform.GetComponent<RectTransform>();
+            if (codeCanvasRect == null) {
+                Debug.LogError("Object to be stretched has no RectTransform!");
+            }
 
             targetPoint = grid.GetGridPoint(gridElement.GridPositionLayer, gridElement.GridPositionColumn).AttachmentPointObject.transform;
 
