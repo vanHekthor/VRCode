@@ -27,6 +27,7 @@ namespace VRVis.Interaction.Telekinesis {
         protected Transform targetPoint;
         protected bool attachedToHand = false;
         protected Transform telekineticAttachmentPoint;
+        protected bool stretching;
 
         private const float FocusPulseInterval = 0.5f;
         private const float GrabPulseInterval = 0.33f;
@@ -66,7 +67,6 @@ namespace VRVis.Interaction.Telekinesis {
         protected abstract void Initialize();
 
         void Update() {
-
             if (!moveToTarget || attachedToHand) {
                 dropTimer = -1;
             }

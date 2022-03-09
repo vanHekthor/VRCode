@@ -382,12 +382,11 @@ namespace VRVis.Spawner {
                 if (codeWindowLinks.ContainsKey(edgeID)) {
                     var link = codeWindowLinks[edgeID];
                     link.ForcePositionUpdate();
-                    return;
+                    continue;
                 }
                 if (edgeConnections.ContainsKey(edgeID)) {
                     var edgeConnection = edgeConnections[edgeID];
                     edgeConnection.ForcePositionUpdate();
-                    return;
                 }
             }
         }

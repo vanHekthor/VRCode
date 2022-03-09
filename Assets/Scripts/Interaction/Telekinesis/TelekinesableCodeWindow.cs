@@ -15,6 +15,7 @@ namespace VRVis.Interaction.Telekinesis {
         private ZoomCodeWindowButton zoomButton;
         private bool moveWindowOnSphere;
         private RectTransform codeCanvasRect;
+        private CodeWindowEdgeSpawner eSpawner;
 
         protected override void Initialize() {
             codeWindow = GetComponentInParent<CodeFileReferences>().gameObject;
@@ -42,6 +43,12 @@ namespace VRVis.Interaction.Telekinesis {
 
             if (grid != null) {
                 moveWindowOnSphere = true;
+            }
+
+            eSpawner = (CodeWindowEdgeSpawner)FileSpawner.GetInstance().GetSpawner((uint)FileSpawner.SpawnerList.EdgeSpawner);
+            if (eSpawner == null) {
+                Debug.LogError("No edge spawner instance found! " +
+                    "Check if reference was set correctly inside the file spawner component via the inspector!");
             }
         }
 
@@ -81,16 +88,19 @@ namespace VRVis.Interaction.Telekinesis {
         float initialHeight;
         bool initialHeightWasSet = false;
         public override void OnStretch(float factor) {
+            stretching = true;
             if (!initialHeightWasSet) {
                 initialHeight = codeCanvasRect.sizeDelta.y;
                 initialHeightWasSet = true;
             }
 
             codeCanvasRect.sizeDelta = new Vector2(codeCanvasRect.sizeDelta.x, initialHeight * factor);
+            eSpawner.UpdateControlFlowInsideCodeWindow(codeWindow.GetComponent<CodeFileReferences>());
         }
 
         public override void OnStretchEnded() {
             initialHeightWasSet = false;
+            stretching = false;
         }
 
         private void SetTargetToClosestGridPoint(out SphereGridPoint sphereGridPoint, Vector3 pointOnWindowSphere) {
