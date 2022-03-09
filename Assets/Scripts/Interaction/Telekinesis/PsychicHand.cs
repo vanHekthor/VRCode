@@ -44,6 +44,8 @@ namespace VRVis.Interaction.Telekinesis {
 
         public Hand dominantHand;
 
+        public ParticleSystem stretchEffectPrefab;
+
         // PROPERTIES
 
         public GameObject TelekinesisAttachmentPoint { get; private set; }
@@ -75,6 +77,9 @@ namespace VRVis.Interaction.Telekinesis {
         private bool stretching = false;
         private bool playerWasStretchingBefore = false;
         private float initialStretchingDistance;
+        private Vector2 initialForceMinMax;
+        private float initialEmissionRate;
+        private ParticleSystem stretchEffect;
 
         protected override void Initialize() {
             base.Initialize();
@@ -84,8 +89,10 @@ namespace VRVis.Interaction.Telekinesis {
 
             TelekinesisAttachmentPoint = new GameObject("TelekinesisAttachmentPoint");
             TelekinesisAttachmentPoint.transform.SetParent(transform);
+            stretchEffect = Instantiate(stretchEffectPrefab, transform.position, transform.rotation);
+            stretchEffect.transform.SetParent(transform);
 
-            Debug.Log("Initialize Super Hand!");
+            Debug.Log("Initialize Psychic Hand!");
         }
 
         protected override void Update() {
@@ -113,6 +120,8 @@ namespace VRVis.Interaction.Telekinesis {
                     }
                 }
             }
+
+            StretchEffectPositionUpdate();
 
             TelekinesisAttachmentPositionUpdate();
 
@@ -168,6 +177,14 @@ namespace VRVis.Interaction.Telekinesis {
             }
 
             return true;
+        }
+
+        private void StretchEffectPositionUpdate() {
+            var handToHand = dominantHand.hoverSphereTransform.position - dominantHand.otherHand.hoverSphereTransform.position;
+            var center = (dominantHand.hoverSphereTransform.position + dominantHand.otherHand.hoverSphereTransform.position) / 2;
+            stretchEffect.transform.position = center;
+            stretchEffect.transform.rotation = Quaternion.LookRotation(handToHand);
+            stretchEffect.transform.rotation = Quaternion.LookRotation(stretchEffect.transform.up);
         }
 
         private void TelekinesisAttachmentPositionUpdate() {
@@ -235,25 +252,14 @@ namespace VRVis.Interaction.Telekinesis {
                 GrabbedTelekinesable.OnDrag(hitPoint.transform);
                 
                 if (grippingOtherHand) {
-                    stretching = true;
-                    float distanceBetweenHands =
-                        (dominantHand.transform.position - dominantHand.otherHand.transform.position).magnitude;
-                    if (!playerWasStretchingBefore) {
-                        initialStretchingDistance = distanceBetweenHands;
-                        playerWasStretchingBefore = true;
-                    }
-
-                    GrabbedTelekinesable.OnStretch(distanceBetweenHands / initialStretchingDistance);
+                    Stretch();
                 }
-                else {
-                    stretching = false;
-                    playerWasStretchingBefore = false;
-                    GrabbedTelekinesable.OnStretchEnded();
+                else {                    
+                    StopStretching();
                 }
             }
             else {
-                stretching = false;
-                playerWasStretchingBefore = false;
+                StopStretching();
             }
 
             if (!grippingDominantHand && playerWasGrippingBefore) {
@@ -261,13 +267,11 @@ namespace VRVis.Interaction.Telekinesis {
 
                 if (GrabbedTelekinesable != null) {
                     GrabbedTelekinesable.OnRelease(ray);
-                    if (!stretching) {
-                        GrabbedTelekinesable.OnStretchEnded();
-                    }                    
+                    StopStretching();                
                     GrabbedTelekinesable = null;
                 }
             }
-        }
+        }        
 
         private float beginThreshold = 1.6f;
         private float endThreshold = 0.25f;
@@ -289,6 +293,48 @@ namespace VRVis.Interaction.Telekinesis {
                     thresholdBroken = false;
                 }
             }
+        }
+
+        private void Stretch() {
+            stretching = true;
+            float distanceBetweenHands =
+                (dominantHand.transform.position - dominantHand.otherHand.transform.position).magnitude;
+            var fo = stretchEffect.forceOverLifetime;
+            var emission = stretchEffect.emission;
+            if (!playerWasStretchingBefore) {
+                initialStretchingDistance = distanceBetweenHands;
+                initialForceMinMax = new Vector2(fo.y.constantMin, fo.y.constantMax);
+                initialEmissionRate = emission.rateOverTime.constant;
+                playerWasStretchingBefore = true;
+                StartStretchEffect();
+            }
+            float factor = distanceBetweenHands / initialStretchingDistance;
+            
+            GrabbedTelekinesable.OnStretch(factor);
+            
+            fo.y = new ParticleSystem.MinMaxCurve(initialForceMinMax.x * factor, initialForceMinMax.y * factor);
+            emission.rateOverTime = new ParticleSystem.MinMaxCurve(initialEmissionRate * factor);
+        }
+
+        private void StopStretching() {
+            stretching = false;
+            if (playerWasStretchingBefore) {
+                playerWasStretchingBefore = false;
+                StopStretchEffect();
+                GrabbedTelekinesable.OnStretchEnded();
+                var fo = stretchEffect.forceOverLifetime;
+                fo.y = new ParticleSystem.MinMaxCurve(initialForceMinMax.x, initialForceMinMax.y);
+                var emission = stretchEffect.emission;
+                emission.rateOverTime = new ParticleSystem.MinMaxCurve(initialEmissionRate);
+            }
+        }
+
+        private void StartStretchEffect() {
+            stretchEffect.Play();
+        }
+
+        private void StopStretchEffect() {
+            stretchEffect.Stop();
         }
 
         /// <summary>
