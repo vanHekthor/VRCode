@@ -10,7 +10,8 @@ using VRVis.Utilities;
 namespace VRVis.Interaction.Telekinesis {
     public abstract class ATelekineticGrabElement : MonoBehaviour, ITelekinesable {
 
-        public Transform grabbedTransform;
+        public Transform grabTransform;
+        public Transform stretchTransform;
         public ParticleSystem focusEffect;
         public ParticleSystem grabEffect;
         public float snapTime = 1;
@@ -26,6 +27,7 @@ namespace VRVis.Interaction.Telekinesis {
         protected Transform targetPoint;
         protected bool attachedToHand = false;
         protected Transform telekineticAttachmentPoint;
+        protected bool stretching;
 
         private const float FocusPulseInterval = 0.5f;
         private const float GrabPulseInterval = 0.33f;
@@ -43,8 +45,18 @@ namespace VRVis.Interaction.Telekinesis {
         private bool moveTowardsHand = false;
         private Vector3 originalScale;
 
-        void Start() {         
-            originalScale = grabbedTransform.localScale;
+        void Start() {
+            if (grabTransform == null) {
+                Debug.LogError("Object to be grabbed is null. " +
+                    "Probably reference needs to be set in the inspector!");
+            }
+
+            if (stretchTransform == null) {
+                Debug.LogError("Object to be stretched is null. " +
+                    "Probably reference needs to be set in the inspector!");
+            }
+
+            originalScale = grabTransform.localScale;
 
             // vrCamera = Player.instance.gameObject.GetComponentInChildren<Camera>();
             elementCollider = gameObject.GetComponent<Collider>();
@@ -55,7 +67,6 @@ namespace VRVis.Interaction.Telekinesis {
         protected abstract void Initialize();
 
         void Update() {
-
             if (!moveToTarget || attachedToHand) {
                 dropTimer = -1;
             }
@@ -64,8 +75,8 @@ namespace VRVis.Interaction.Telekinesis {
 
                 if (dropTimer > 1) {
                     //transform.parent = snapTo;
-                    grabbedTransform.position = targetPoint.position;
-                    grabbedTransform.rotation = targetPoint.rotation;
+                    grabTransform.position = targetPoint.position;
+                    grabTransform.rotation = targetPoint.rotation;
                     moveToTarget = false;
 
                     if (moveTowardsHand) {
@@ -75,14 +86,14 @@ namespace VRVis.Interaction.Telekinesis {
                 }
                 else {
                     float t = Mathf.Pow(35, dropTimer);
-                    grabbedTransform.position = Vector3.Lerp(grabbedTransform.position, targetPoint.position, Time.fixedDeltaTime * t * 3);
-                    grabbedTransform.rotation = Quaternion.Slerp(grabbedTransform.rotation, targetPoint.rotation, Time.fixedDeltaTime * t * 2);
+                    grabTransform.position = Vector3.Lerp(grabTransform.position, targetPoint.position, Time.fixedDeltaTime * t * 3);
+                    grabTransform.rotation = Quaternion.Slerp(grabTransform.rotation, targetPoint.rotation, Time.fixedDeltaTime * t * 2);
 
                     if (moveTowardsHand) {
-                        grabbedTransform.localScale = Vector3.Lerp(grabbedTransform.localScale, originalScale * 0.67f, Time.fixedDeltaTime * t * 3);
+                        grabTransform.localScale = Vector3.Lerp(grabTransform.localScale, originalScale * 0.67f, Time.fixedDeltaTime * t * 3);
                     }
                     else {
-                        grabbedTransform.localScale = Vector3.Lerp(grabbedTransform.localScale, originalScale, Time.fixedDeltaTime * t * 3);
+                        grabTransform.localScale = Vector3.Lerp(grabTransform.localScale, originalScale, Time.fixedDeltaTime * t * 3);
                     }
                 }
             }
@@ -170,6 +181,10 @@ namespace VRVis.Interaction.Telekinesis {
 
         protected abstract void WasReleased(Ray ray);
 
+        public abstract void OnStretch(float factor);
+
+        public abstract void OnStretchEnded();
+
         private IEnumerator HapticFeedback(Hand hand) {
             while (true) {
                 if (hand != null) {
@@ -196,6 +211,6 @@ namespace VRVis.Interaction.Telekinesis {
             moveToTarget = true;
             targetPoint.position = position;
             targetPoint.rotation = rotation;
-        }       
+        }
     }
 }

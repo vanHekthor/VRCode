@@ -17,5 +17,9 @@ namespace VRVis.Interaction.Telekinesis {
         void OnRelease(Ray ray);
 
         void OnDrag(Transform pointer);
+
+        void OnStretch(float factor);
+
+        void OnStretchEnded();
     }
 }

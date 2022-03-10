@@ -134,6 +134,13 @@ namespace VRVis.Spawner.Edges {
         }
 
         /// <summary>
+        /// Forces update of the link positions.
+        /// </summary>
+        public void ForcePositionUpdate() {
+            UpdateLinePosition(true);
+        }
+
+        /// <summary>
         /// Creates physical link button and returns it.
         /// </summary>
         private GameObject CreatePhysicalButton(string name, int startColumn, int endColumn, float columnWidth) {
@@ -225,10 +232,10 @@ namespace VRVis.Spawner.Edges {
             return true;
         }
 
-        private void UpdateLinePosition() {
+        private void UpdateLinePosition(bool forceUpdate = false) {
 
             // check if we even have to update
-            if (!IsUpdateRequired()) { return; }
+            if (!IsUpdateRequired() && !forceUpdate) { return; }
 
             // get position left and right next to the "base" window
             Vector3 baseWindowAttachmentLeft = BaseFileInstance.GetLeftEdgeConnection(); // edge attachment left
@@ -250,10 +257,6 @@ namespace VRVis.Spawner.Edges {
             else {
                 lineStart = ValidateBounds(lineStart, BaseFileInstance, attachToLeftSide, out startOutOfBounds, linkButton);
             }
-
-
-
-
         }
 
         /// <summary>

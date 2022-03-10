@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using VRVis.Spawner;
 using VRVis.Spawner.File;
 using VRVis.UI.Helper;
 using VRVis.Utilities;
@@ -13,17 +14,41 @@ namespace VRVis.Interaction.Telekinesis {
         private SphereGridPoint selectedGridPoint;
         private ZoomCodeWindowButton zoomButton;
         private bool moveWindowOnSphere;
+        private RectTransform codeCanvasRect;
+        private CodeWindowEdgeSpawner eSpawner;
 
         protected override void Initialize() {
             codeWindow = GetComponentInParent<CodeFileReferences>().gameObject;
+            if (codeWindow == null) {
+                Debug.LogError("Code window instance not found!");
+            }
+
             gridElement = codeWindow.GetComponent<GridElement>();
+            if (gridElement == null) {
+                Debug.LogError("Code window instance has no grid element component!");
+            }
+
             grid = gridElement.Grid;
             zoomButton = codeWindow.GetComponentInChildren<ZoomCodeWindowButton>();
+            if (zoomButton == null) {
+                Debug.LogError("Code window instance has no zoom button!");
+            }
+
+            codeCanvasRect = stretchTransform.GetComponent<RectTransform>();
+            if (codeCanvasRect == null) {
+                Debug.LogError("Object to be stretched has no RectTransform!");
+            }
 
             targetPoint = grid.GetGridPoint(gridElement.GridPositionLayer, gridElement.GridPositionColumn).AttachmentPointObject.transform;
 
             if (grid != null) {
                 moveWindowOnSphere = true;
+            }
+
+            eSpawner = (CodeWindowEdgeSpawner)FileSpawner.GetInstance().GetSpawner((uint)FileSpawner.SpawnerList.EdgeSpawner);
+            if (eSpawner == null) {
+                Debug.LogError("No edge spawner instance found! " +
+                    "Check if reference was set correctly inside the file spawner component via the inspector!");
             }
         }
 
@@ -60,6 +85,23 @@ namespace VRVis.Interaction.Telekinesis {
             grid.AttachGridElement(ref gridElement, selectedGridPoint.LayerIdx, selectedGridPoint.ColumnIdx);
         }
 
+        float initialHeight;
+        bool initialHeightWasSet = false;
+        public override void OnStretch(float factor) {
+            stretching = true;
+            if (!initialHeightWasSet) {
+                initialHeight = codeCanvasRect.sizeDelta.y;
+                initialHeightWasSet = true;
+            }
+
+            codeCanvasRect.sizeDelta = new Vector2(codeCanvasRect.sizeDelta.x, initialHeight * factor);
+            eSpawner.UpdateControlFlowInsideCodeWindow(codeWindow.GetComponent<CodeFileReferences>());
+        }
+
+        public override void OnStretchEnded() {
+            initialHeightWasSet = false;
+            stretching = false;
+        }
 
         private void SetTargetToClosestGridPoint(out SphereGridPoint sphereGridPoint, Vector3 pointOnWindowSphere) {
             Vector3 pointerPos = pointOnWindowSphere;
@@ -72,6 +114,6 @@ namespace VRVis.Interaction.Telekinesis {
             if ((codeWindow.transform.position - previewPos).magnitude > 0.1f) {
                 ChangeTargetPoint(selectedGridPoint.AttachmentPointObject.transform);
             }
-        }
+        }        
     }
 }

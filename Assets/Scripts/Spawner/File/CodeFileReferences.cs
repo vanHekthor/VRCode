@@ -269,7 +269,6 @@ namespace VRVis.Spawner.File {
             return lineHighlight;
         }
 
-
         void OnDrawGizmos() {
             
             // draw edge point gizmos

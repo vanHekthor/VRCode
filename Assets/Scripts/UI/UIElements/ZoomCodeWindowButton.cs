@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using VRVis.Spawner;
 using VRVis.Spawner.File;
 
 public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
@@ -92,6 +93,4 @@ public class ZoomCodeWindowButton : MonoBehaviour, IPointerClickHandler {
 
         zooming = true;
     }
-
-
 }

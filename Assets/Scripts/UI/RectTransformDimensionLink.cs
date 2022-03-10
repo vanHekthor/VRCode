@@ -12,9 +12,19 @@ namespace VRVis.UI {
     /// </summary>
     [RequireComponent(typeof(RectTransform))]
     public class RectTransformDimensionLink : MonoBehaviour {
-    
+
+        public bool changeParentTransform;
+
+        public Transform parent;
+
+        public Transform positionAnchor;
+
         [Tooltip("Minimum size that this object can have")]
         public Vector2 minSize = new Vector2();
+
+        public Vector2 additionalSize = new Vector2();
+
+        public bool keepRelativePositionToParent;
 
         [System.Serializable]
         public class Receiver {
@@ -26,20 +36,46 @@ namespace VRVis.UI {
         [Tooltip("Objects with this script to call. Leave empty if this object is only a receiver and no sender.")]
         public Receiver[] sendTo;
         private RectTransform thisRT;
-	
-	    void Awake () {
-		
+        private BoxCollider parentCollider;
+        private float initialYRatio; 
+
+        void Awake() {
+
             // Get the attached Rect Transform component of this object.
             thisRT = GetComponent<RectTransform>();
             if (!thisRT) {
                 Debug.LogWarning("This object does not have a rect transform attached!");
                 return;
+            }            
+        }
+
+        void Start() {
+            if (sendTo.Length == 0 || !thisRT) { return; }
+
+            if (!changeParentTransform) {
+                return;
             }
-	    }
+
+            if (parent == null) {
+                Debug.LogWarning("Parent is null! Probably the reference was not set in the inspector.");
+            }
+            else { 
+                parentCollider = parent.GetComponent<BoxCollider>();
+                if (parentCollider == null) {
+                    Debug.LogWarning("Parent object does not have a box collider attached!");
+                }
+            }
+
+            if (positionAnchor == null) {
+                Debug.LogWarning("Position anchor is null! Probably the reference was not set in the inspector.");
+            }
+
+            initialYRatio = thisRT.localPosition.y / thisRT.sizeDelta.y;
+        }
 
         /**
          * Called if the rect transform dimension changes.
-         */ 
+         */
         private void OnRectTransformDimensionsChange() {
 
             // do nothing if no receiver is set or RectTransform is missing
@@ -50,13 +86,29 @@ namespace VRVis.UI {
             foreach (Receiver receiver in sendTo) {
                 receiver.link.UpdateThisRectTransform(thisRT, receiver);
             }
+
+            if (!changeParentTransform) {
+                return;
+            }
+
+            parentCollider.size = new Vector3(
+                parentCollider.size.x, 
+                thisRT.sizeDelta.y * thisRT.localScale.y, 
+                parentCollider.size.z);
+
+            if (keepRelativePositionToParent) {
+                positionAnchor.localPosition = new Vector3(
+                    positionAnchor.localPosition.x, 
+                    thisRT.sizeDelta.y * initialYRatio - thisRT.localPosition.y, 
+                    positionAnchor.localPosition.z);
+            }
         }
 
         /// <summary>Called by the sender if there is an update available.</summary>
         /// <param name="other">RectTransform of the sender</param>
         /// <param name="receiver">Holds Receiver component of the object to update</param>
         void UpdateThisRectTransform(RectTransform other, Receiver receiver) {
-        
+
             //Debug.Log("Received Update!");
             if (!thisRT) { return; }
 
@@ -71,8 +123,8 @@ namespace VRVis.UI {
             if (newHeight < minSize.y) { newHeight = minSize.y; }
 
             // add new width and height to the new size vector
-            if (receiver.applyWidth) { newSizeDelta.x = newWidth; }
-            if (receiver.applyHeight) { newSizeDelta.y = newHeight; }
+            if (receiver.applyWidth) { newSizeDelta.x = newWidth + additionalSize.x; }
+            if (receiver.applyHeight) { newSizeDelta.y = newHeight + additionalSize.y; }
 
             // apply size
             thisRT.sizeDelta = newSizeDelta;

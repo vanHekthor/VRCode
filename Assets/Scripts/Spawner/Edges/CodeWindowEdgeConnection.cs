@@ -350,6 +350,13 @@ namespace VRVis.Spawner.Edges {
             return true;
         }
 
+        /// <summary>
+        /// Forces update of the edge positions.
+        /// </summary>
+        public void ForcePositionUpdate() {
+            UpdateLinePosition(true);
+        }
+
         /// <summary>Initially attach the point / "node" to the canvas of the code file.</summary>
         /// <param name="pointSpan">How big the region is that this connection encloses.</param>
         private bool AttachPoint(RectTransform point, int startLine, CodeFileReferences fileRefs) {
@@ -394,10 +401,10 @@ namespace VRVis.Spawner.Edges {
 
 
         /// <summary>Recalculates and changes the line position.</summary>
-        private void UpdateLinePosition() {
+        private void UpdateLinePosition(bool forceUpdate = false) {
 
             // check if we even have to update
-            if (!IsUpdateRequired()) { return; }
+            if (!IsUpdateRequired() && !forceUpdate) { return; }
 
 
             // get position left and right next to the "from" window

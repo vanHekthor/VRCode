@@ -42,7 +42,9 @@ namespace VRVis.Interaction.Telekinesis {
 
         public Transform head;
 
-        public Hand hand;
+        public Hand dominantHand;
+
+        public ParticleSystem stretchEffectPrefab;
 
         // PROPERTIES
 
@@ -69,8 +71,15 @@ namespace VRVis.Interaction.Telekinesis {
         private float lastFeedback = 0;
 
         private bool playerWasGrippingBefore = false;
-        private bool gripping = false;
-        private bool focusing = false;           
+        private bool grippingDominantHand = false;
+        private bool grippingOtherHand = false;
+        private bool focusing = false;
+        private bool stretching = false;
+        private bool playerWasStretchingBefore = false;
+        private float initialStretchingDistance;
+        private Vector2 initialForceMinMax;
+        private float initialEmissionRate;
+        private ParticleSystem stretchEffect;
 
         protected override void Initialize() {
             base.Initialize();
@@ -80,8 +89,10 @@ namespace VRVis.Interaction.Telekinesis {
 
             TelekinesisAttachmentPoint = new GameObject("TelekinesisAttachmentPoint");
             TelekinesisAttachmentPoint.transform.SetParent(transform);
+            stretchEffect = Instantiate(stretchEffectPrefab, transform.position, transform.rotation);
+            stretchEffect.transform.SetParent(transform);
 
-            Debug.Log("Initialize Super Hand!");
+            Debug.Log("Initialize Psychic Hand!");
         }
 
         protected override void Update() {
@@ -110,6 +121,8 @@ namespace VRVis.Interaction.Telekinesis {
                 }
             }
 
+            StretchEffectPositionUpdate();
+
             TelekinesisAttachmentPositionUpdate();
 
             TelekinesisUpdate();
@@ -118,17 +131,17 @@ namespace VRVis.Interaction.Telekinesis {
         }
 
         private bool IsAvailable() {
-            return hand && IsLaserActive();
+            return dominantHand && IsLaserActive();
         }
 
         public override bool ButtonDown() {
             if (!IsAvailable()) { return false; }
-            return grip.GetStateDown(hand.handType);
+            return grip.GetStateDown(dominantHand.handType);
         }
 
         public override bool ButtonUp() {
             if (!IsAvailable()) { return false; }
-            return grip.GetStateUp(hand.handType);
+            return grip.GetStateUp(dominantHand.handType);
         }
 
         public override void OnExitControl(GameObject control) {
@@ -139,11 +152,11 @@ namespace VRVis.Interaction.Telekinesis {
 
         public override bool ButtonToggleClicked() {
 
-            if (!hand) { return false; }
+            if (!dominantHand) { return false; }
 
             // get the current button state and check if it changed from true to false
             bool stateChangedToTrue = false;
-            bool toggleState = toggleButton.GetStateDown(hand.handType);
+            bool toggleState = toggleButton.GetStateDown(dominantHand.handType);
             if (!toggleState && toggleState != lastToggleState) { stateChangedToTrue = true; }
             lastToggleState = toggleState;
             return stateChangedToTrue;
@@ -153,7 +166,7 @@ namespace VRVis.Interaction.Telekinesis {
         public override bool IsScrolling() { return scrolling && scrollStarted && scrollChange != Vector2.zero; }
 
         public override Vector2 GetScrollDelta() {
-            if (scrollWheel == null || !hand) { return Vector2.zero; }
+            if (scrollWheel == null || !dominantHand) { return Vector2.zero; }
             return new Vector2(scrollChange.x * -1, scrollChange.y); // invert scroll dir on horizontal axis
         }
 
@@ -164,6 +177,14 @@ namespace VRVis.Interaction.Telekinesis {
             }
 
             return true;
+        }
+
+        private void StretchEffectPositionUpdate() {
+            var handToHand = dominantHand.hoverSphereTransform.position - dominantHand.otherHand.hoverSphereTransform.position;
+            var center = (dominantHand.hoverSphereTransform.position + dominantHand.otherHand.hoverSphereTransform.position) / 2;
+            stretchEffect.transform.position = center;
+            stretchEffect.transform.rotation = Quaternion.LookRotation(handToHand);
+            stretchEffect.transform.rotation = Quaternion.LookRotation(stretchEffect.transform.up);
         }
 
         private void TelekinesisAttachmentPositionUpdate() {
@@ -180,9 +201,9 @@ namespace VRVis.Interaction.Telekinesis {
             // TelekinesisAttachmentPoint.transform.position = new Vector3(transform.position.y);
         }
 
-        private void TelekinesisUpdate() {
-
-            gripping = grip.GetState(hand.handType);
+        private void TelekinesisUpdate() {            
+            grippingDominantHand = grip.GetState(dominantHand.handType);
+            grippingOtherHand = grip.GetState(dominantHand.otherHand.handType);
 
             if (bHit) {
                 if (hitInfo.transform != null) {
@@ -193,10 +214,10 @@ namespace VRVis.Interaction.Telekinesis {
                             if (!focusing) {
                                 focusing = true;
                                 FocusedTelekinesable = hitTelekinesable;
-                                FocusedTelekinesable.OnFocus(hand);
+                                FocusedTelekinesable.OnFocus(dominantHand);
                             }
                             else {
-                                if (gripping && !playerWasGrippingBefore) {
+                                if (grippingDominantHand && !playerWasGrippingBefore) {
                                     playerWasGrippingBefore = true;
                                     hitTelekinesable.OnGrab();
                                     GrabbedTelekinesable = hitTelekinesable;
@@ -207,11 +228,11 @@ namespace VRVis.Interaction.Telekinesis {
                     else {
                         if (focusing) {
                             focusing = false;
-                            FocusedTelekinesable.OnUnfocus(hand);
+                            FocusedTelekinesable.OnUnfocus(dominantHand);
                             FocusedTelekinesable = null;
                         }
 
-                        if (gripping && !playerWasGrippingBefore) {
+                        if (grippingDominantHand && !playerWasGrippingBefore) {
                             playerWasGrippingBefore = true;
                             GrabbedTelekinesable = null;
                         }
@@ -221,25 +242,36 @@ namespace VRVis.Interaction.Telekinesis {
             else {
                 if (focusing) {
                     focusing = false;
-                    FocusedTelekinesable.OnUnfocus(hand);
+                    FocusedTelekinesable.OnUnfocus(dominantHand);
                     FocusedTelekinesable = null;
                 }
             }
 
-            if (gripping && playerWasGrippingBefore && GrabbedTelekinesable != null) {
-                CheckVelocityFlick(hand);
-                GrabbedTelekinesable.OnDrag(hitPoint.transform);                
-            }            
+            if (grippingDominantHand && playerWasGrippingBefore && GrabbedTelekinesable != null) {
+                CheckVelocityFlick(dominantHand);
+                GrabbedTelekinesable.OnDrag(hitPoint.transform);
+                
+                if (grippingOtherHand) {
+                    Stretch();
+                }
+                else {                    
+                    StopStretching();
+                }
+            }
+            else {
+                StopStretching();
+            }
 
-            if (!gripping && playerWasGrippingBefore) {
+            if (!grippingDominantHand && playerWasGrippingBefore) {
                 playerWasGrippingBefore = false;
 
                 if (GrabbedTelekinesable != null) {
                     GrabbedTelekinesable.OnRelease(ray);
+                    StopStretching();                
                     GrabbedTelekinesable = null;
                 }
             }
-        }
+        }        
 
         private float beginThreshold = 1.6f;
         private float endThreshold = 0.25f;
@@ -263,13 +295,55 @@ namespace VRVis.Interaction.Telekinesis {
             }
         }
 
+        private void Stretch() {
+            stretching = true;
+            float distanceBetweenHands =
+                (dominantHand.transform.position - dominantHand.otherHand.transform.position).magnitude;
+            var fo = stretchEffect.forceOverLifetime;
+            var emission = stretchEffect.emission;
+            if (!playerWasStretchingBefore) {
+                initialStretchingDistance = distanceBetweenHands;
+                initialForceMinMax = new Vector2(fo.y.constantMin, fo.y.constantMax);
+                initialEmissionRate = emission.rateOverTime.constant;
+                playerWasStretchingBefore = true;
+                StartStretchEffect();
+            }
+            float factor = distanceBetweenHands / initialStretchingDistance;
+            
+            GrabbedTelekinesable.OnStretch(factor);
+            
+            fo.y = new ParticleSystem.MinMaxCurve(initialForceMinMax.x * factor, initialForceMinMax.y * factor);
+            emission.rateOverTime = new ParticleSystem.MinMaxCurve(initialEmissionRate * factor);
+        }
+
+        private void StopStretching() {
+            stretching = false;
+            if (playerWasStretchingBefore) {
+                playerWasStretchingBefore = false;
+                StopStretchEffect();
+                GrabbedTelekinesable.OnStretchEnded();
+                var fo = stretchEffect.forceOverLifetime;
+                fo.y = new ParticleSystem.MinMaxCurve(initialForceMinMax.x, initialForceMinMax.y);
+                var emission = stretchEffect.emission;
+                emission.rateOverTime = new ParticleSystem.MinMaxCurve(initialEmissionRate);
+            }
+        }
+
+        private void StartStretchEffect() {
+            stretchEffect.Play();
+        }
+
+        private void StopStretchEffect() {
+            stretchEffect.Stop();
+        }
+
         /// <summary>
         /// Checks if the user is scrolling on the trackpad.<para/>
         /// Takes care of showing the scroll wheel objects and so on.
         /// </summary>
         private void CheckScrolling() {
 
-            if (scrollWheel == null || !hand) { scrolling = false; return; }
+            if (scrollWheel == null || !dominantHand) { scrolling = false; return; }
 
             scrolling = ScrollingGesture();
 
@@ -295,7 +369,7 @@ namespace VRVis.Interaction.Telekinesis {
                 }
 
                 // store last scroll axis for change calculation
-                Vector2 cur = scrollWheel.GetAxis(hand.handType);
+                Vector2 cur = scrollWheel.GetAxis(dominantHand.handType);
                 if (lastScrollAxis != Vector2.zero && cur != Vector2.zero) { scrollChange = cur - lastScrollAxis; }
                 else { scrollChange = Vector2.zero; }
                 lastScrollAxis = cur;
@@ -330,24 +404,24 @@ namespace VRVis.Interaction.Telekinesis {
 
             // check if finger is somewhere on the trackpad
             // by assuming that if not, the vector will be zero
-            if (scrollWheel.GetAxis(hand.handType).magnitude < 0.0001f) { return false; }
+            if (scrollWheel.GetAxis(dominantHand.handType).magnitude < 0.0001f) { return false; }
 
             // check if the change was strong enough
-            float scrollDeltaMag = Mathf.Abs(scrollWheel.GetAxisDelta(hand.handType).y);
+            float scrollDeltaMag = Mathf.Abs(scrollWheel.GetAxisDelta(dominantHand.handType).y);
             if (scrollDeltaMag < 0.01f) { return false; }
             if (!scrollStarted && scrollDeltaMag < scrollActivationThreshold) { return false; }
 
             // user did just put finger on touchpad for the first time, which caused high delta magnitude
-            if (scrollWheel.GetLastAxis(hand.handType) == Vector2.zero) { return false; }
+            if (scrollWheel.GetLastAxis(dominantHand.handType) == Vector2.zero) { return false; }
 
             // check if the finger touches the virtual "wheel"
-            Vector2 fingerpos = scrollWheel.GetAxis(hand.handType);
+            Vector2 fingerpos = scrollWheel.GetAxis(dominantHand.handType);
             if (fingerpos.x < -wheel_width || fingerpos.x > wheel_width) { return false; }
             else if (fingerpos.y > wheel_height || fingerpos.y < -wheel_height) { return false; }
 
             // haptic feedback
             if (scrollStarted && Time.time > lastFeedback + 0.1f) {
-                hand.hapticAction.Execute(0, 0.1f, 1, 0.1f, hand.handType);
+                dominantHand.hapticAction.Execute(0, 0.1f, 1, 0.1f, dominantHand.handType);
                 lastFeedback = Time.time;
             }
             return true;
