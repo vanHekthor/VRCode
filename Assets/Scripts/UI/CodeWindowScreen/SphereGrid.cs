@@ -33,7 +33,7 @@ namespace VRVis.UI.Helper {
         private const float PolarOrigin = 9.0f / 8.0f * Mathf.PI;
         private const float ElevationOrigin = 0f;
 
-        private const int LayerCount = 5;        
+        private const int LayerCount = 20;        
 
         private Vector3 sphereOrigin;
         private float sphereRadius;

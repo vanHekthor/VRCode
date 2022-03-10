@@ -107,7 +107,7 @@ namespace VRVis.Interaction.Telekinesis {
                 focusEffect.Play();
 
                 pulseCoroutine = HapticFeedback(hand);
-                StartCoroutine(pulseCoroutine);
+                //StartCoroutine(pulseCoroutine);
             }
 
             telekineticAttachmentPoint = hand.GetComponentInChildren<PsychicHand>().TelekinesisAttachmentPoint.transform;
@@ -124,9 +124,9 @@ namespace VRVis.Interaction.Telekinesis {
                 focused = false;
                 focusEffect.Stop();
 
-                if (!grabbed) {
-                    StopCoroutine(pulseCoroutine);
-                }
+                //if (!grabbed) {
+                //    StopCoroutine(pulseCoroutine);
+                //}
             }
         }
 
@@ -167,9 +167,9 @@ namespace VRVis.Interaction.Telekinesis {
 
             if (grabbed) {
                 grabEffect.Stop();
-                if (!focused) {
-                    StopCoroutine(pulseCoroutine);
-                }
+                //if (!focused) {
+                //    StopCoroutine(pulseCoroutine);
+                //}
             }
 
             grabbed = false;
