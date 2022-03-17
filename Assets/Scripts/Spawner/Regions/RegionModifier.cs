@@ -29,8 +29,8 @@ namespace VRVis.Spawner.Regions {
         //private readonly VisualPropertiesLoader visPropLoader;
 
         // heightmap scale from and to
-        private readonly float hm_scaleFrom = 0; // means: minimum scale for value = 0
-        private readonly float hm_scaleTo = 1;
+        private readonly float hm_scaleFrom = -0.5f; // means: minimum scale for value = 0
+        private readonly float hm_scaleTo = 0.5f;
 
 
         // CONSTRUCTOR
@@ -258,7 +258,7 @@ namespace VRVis.Spawner.Regions {
                     if (setting.IsUnitSet()) { valueStr += " " + setting.GetUnit(); }
 
                     string error = "";
-                    bool success = ApplyHeightmapRegionMapping(obj, valuePercentage, valueStr, regionColor, out error);
+                    bool success = ApplyHeightmapRegionMapping(obj, minMax, valuePercentage, valueStr, regionColor, out error);
                     if (!success) {
                         Debug.LogError("Failed to apply heightmap mapping - " + error +
                            " (region: " + region.GetID() + ", property: " + nfpProperty.GetName() + ")!");
@@ -273,7 +273,7 @@ namespace VRVis.Spawner.Regions {
         /// </summary>
         /// <param name="error">Holds the error reason for the failure.</param>
         /// <param name="regionValue">The value to show that this region represents</param>
-        private bool ApplyHeightmapRegionMapping(GameObject obj, float percentage, string regionValue, Color color, out string error) {
+        private bool ApplyHeightmapRegionMapping(GameObject obj, MinMaxValue minMax, float percentage, string regionValue, Color color, out string error) {
 
             error = "";
 
@@ -299,9 +299,26 @@ namespace VRVis.Spawner.Regions {
             // set the value text
             if (info.textValueOut) { info.textValueOut.text = regionValue; }
 
+            // set width to 1
+            rt.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, 1f);
+
+            // move rt so that the left side is at the zero position
+            float padding = 1f;
+            float heightmapRegionWidth = obj.GetComponent<RectTransform>().rect.width;
+            float rtMaxWidth = heightmapRegionWidth - 2 * padding;
+
+            float relativePosOfZero = minMax.GetRangePercentage(0f);            
+            float leftOffsetZeroPos = rtMaxWidth * relativePosOfZero + padding;
+            
+            var newPos = rt.localPosition;
+            newPos.x = leftOffsetZeroPos;
+            rt.localPosition = newPos;
+
             // apply scaling
             Vector3 newScale = rt.localScale;
-            newScale.x = hm_scaleFrom + percentage * (hm_scaleTo - hm_scaleFrom);
+
+            //newScale.x = hm_scaleFrom + percentage * (hm_scaleTo - hm_scaleFrom);
+            newScale.x = Mathf.Lerp(-relativePosOfZero * rtMaxWidth, (1.0f - relativePosOfZero) * rtMaxWidth, percentage);
             rt.localScale = newScale;
             return true;
         }
