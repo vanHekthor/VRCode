@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Experimental.VFX;
 using VRVis.Effects;
 using VRVis.Elements;
 using VRVis.IO;
@@ -33,6 +34,9 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Size of the attachment spheres")]
         public Vector3 attachmentSphereSize = new Vector3(0.05f, 0.05f, 0.05f);
 
+        [Tooltip("The vfx control flow effect indicating direction and nfp value")]
+        public VisualEffect vfxControlFlow;
+
         [Tooltip("Material of attachment spheres")]
         public Material attachmentSphereMat;
 
@@ -61,6 +65,11 @@ namespace VRVis.Spawner.Edges {
         public bool showControlPointGizmos = false;
 
         public LineHighlight LineHighlight { get; set; }
+
+        public Vector3 LineStart { get; private set; }
+        public Vector3 ControlPoint1 { get; private set; }
+        public Vector3 ControlPoint2 { get; private set; }
+        public Vector3 LineEnd { get; private set; }
 
         private Transform startPoint;
         private Transform endPoint;
@@ -109,10 +118,6 @@ namespace VRVis.Spawner.Edges {
 
         private Vector3 debug_pos = Vector3.zero;
         private Vector3 debug_pos_edge = Vector3.zero;
-
-        // mainly for debug (gizmos)
-        private Vector3 controlPoint1;
-        private Vector3 controlPoint2;
 
         // GETTER AND SETTER
 
@@ -195,6 +200,16 @@ namespace VRVis.Spawner.Edges {
                 // is this edge from and to the same file?
                 zLineRenderer.SetSameFileMode(fromToSameFile);
             }
+
+            // get vfx control flow
+            if (!vfxControlFlow) {
+                vfxControlFlow = transform.Find("ControlFlowFx").GetComponent<VisualEffect>();
+
+                if (!vfxControlFlow) {
+                    Debug.LogError("VFX Effect is missing! Probably not set in the inspector!");
+                }
+            }
+
 
             // create attachment spheres
             startSphere = CreateAttachmentSphere("startSphere");
@@ -427,7 +442,7 @@ namespace VRVis.Spawner.Edges {
 
             // get position left and right next to the "to" window [UPDATE: no longer affected by hor. scroll]
             Vector3 to_ea_left = toWindowRefs.GetLeftEdgeConnection(); // edge attachment left
-            
+
             correction = Vector3.Dot(toWindowRefs.GetEdgePoints().topLeft.position - endPoint.position, endPoint.right) * endPoint.right;
             Vector3 to_leftPos = endPoint.position + correction;
             Vector3 to_rightPos = to_leftPos + endPoint.right * to_leftRightDist;
@@ -459,8 +474,8 @@ namespace VRVis.Spawner.Edges {
             }
 
             // line start is position at "from-window" and end at "to-window"
-            Vector3 lineStart = attachFromLeft ? from_leftPos : from_rightPos;
-            Vector3 lineEnd = attachToLeft ? to_leftPos : to_rightPos;
+            LineStart = attachFromLeft ? from_leftPos : from_rightPos;
+            LineEnd = attachToLeft ? to_leftPos : to_rightPos;
 
             // check if the position / region is in the "content bounds" and adjust accordingly
             bool startOutOfBounds = false;
@@ -468,18 +483,18 @@ namespace VRVis.Spawner.Edges {
 
             if (startSpan > 0) {
                 float startSpanFinal = startSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
-                lineStart = ValidateBoundsRegion(true, lineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
+                LineStart = ValidateBoundsRegion(true, LineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
             }
             else {
-                lineStart = ValidateBounds(lineStart, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
+                LineStart = ValidateBounds(LineStart, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
             }
 
             if (endSpan > 0) {
                 float endSpanFinal = endSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
-                lineEnd = ValidateBoundsRegion(false, lineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
+                LineEnd = ValidateBoundsRegion(false, LineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
             }
             else {
-                lineEnd = ValidateBounds(lineEnd, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
+                LineEnd = ValidateBounds(LineEnd, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
             }
 
 
@@ -546,29 +561,30 @@ namespace VRVis.Spawner.Edges {
             if (!fromToSameFile) {
 
                 // if dist is 0, then its a linear line - 2 steps speed up calculation
-                float dist = Vector3.Distance(lineStart, lineEnd);
+                float dist = Vector3.Distance(LineStart, LineEnd);
                 if (dist == 0) { bezierCurve.SetSteps(2); }
 
                 float multiplier = finalCurveStrength * dist;
-                controlPoint1 = lineStart + startSide * multiplier;
-                controlPoint2 = lineEnd + endSide * multiplier;
+                ControlPoint1 = LineStart + startSide * multiplier;
+                ControlPoint2 = LineEnd + endSide * multiplier;
             }
             else {
-                float windowWidth = Vector3.Distance(fromWindowRefs.GetEdgePoints().topLeft.position, 
+                float windowWidth = Vector3.Distance(fromWindowRefs.GetEdgePoints().topLeft.position,
                     fromWindowRefs.GetEdgePoints().topRight.position);
                 float windowHeight = Vector3.Distance(fromWindowRefs.GetEdgePoints().topLeft.position,
                     fromWindowRefs.GetEdgePoints().bottomLeft.position);
                 float min = Mathf.Min(windowWidth, windowHeight);
-                controlPoint1 = lineStart + startPoint.up * 0.025f + startSide * (finalCurveStrength * min * 0.67f);
-                controlPoint2 = lineEnd + endPoint.up * -0.025f + endSide * (finalCurveStrength * min * 0.67f);
+                ControlPoint1 = LineStart + startPoint.up * 0.025f + startSide * (finalCurveStrength * min * 0.67f);
+                ControlPoint2 = LineEnd + endPoint.up * -0.025f + endSide * (finalCurveStrength * min * 0.67f);
             }
 
-            Vector3[] curvePoints = bezierCurve.CalculatePoints(lineStart, controlPoint1, controlPoint2, lineEnd);
+            Vector3[] curvePoints = bezierCurve.CalculatePoints(LineStart, ControlPoint1, ControlPoint2, LineEnd);
+            UpdateVFXControlFlow(LineStart, ControlPoint1, ControlPoint2, LineEnd);
 
 
             // ToDo: remove unity line renderer if no longer required
             if (lineRenderer) {
-                lineRenderer.positionCount = (int) curveSteps;
+                lineRenderer.positionCount = (int)curveSteps;
                 lineRenderer.SetPositions(curvePoints);
             }
 
@@ -578,7 +594,7 @@ namespace VRVis.Spawner.Edges {
                 int keyCount = zLineRenderer.widthCurve.keys.Length;
                 Keyframe[] keys = zLineRenderer.widthCurve.keys;
                 if (startSpan > 0) { keys[0].value = GetEdgeStartWidth(); }
-                if (endSpan > 0) { keys[keyCount-1].value = GetEdgeEndWidth(); }
+                if (endSpan > 0) { keys[keyCount - 1].value = GetEdgeEndWidth(); }
                 zLineRenderer.widthCurve.keys = keys;
 
                 // calculate scale direction vector
@@ -590,6 +606,13 @@ namespace VRVis.Spawner.Edges {
                 // set new curve positions -> curve will be refreshed
                 zLineRenderer.SetPositions(curvePoints, scaleDirection);
             }
+        }
+
+        private void UpdateVFXControlFlow(Vector3 controlPoint0, Vector3 controlPoint1, Vector3 controlPoint2, Vector3 controlPoint3) {
+            vfxControlFlow.SetVector3("ControlPoint0", controlPoint0);
+            vfxControlFlow.SetVector3("ControlPoint1", controlPoint1);
+            vfxControlFlow.SetVector3("ControlPoint2", controlPoint2);
+            vfxControlFlow.SetVector3("ControlPoint3", controlPoint3);
         }
 
 
@@ -995,10 +1018,10 @@ namespace VRVis.Spawner.Edges {
 
             if (showControlPointGizmos) {
                 Gizmos.color = Color.magenta;
-                Gizmos.DrawWireSphere(controlPoint1, 0.05f);
+                Gizmos.DrawWireSphere(ControlPoint1, 0.05f);
 
                 Gizmos.color = Color.blue;
-                Gizmos.DrawWireSphere(controlPoint2, 0.05f);
+                Gizmos.DrawWireSphere(ControlPoint2, 0.05f);
             }
         }
 
