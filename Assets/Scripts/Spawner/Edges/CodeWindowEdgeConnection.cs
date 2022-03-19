@@ -7,7 +7,10 @@ using VRVis.Effects;
 using VRVis.Elements;
 using VRVis.IO;
 using VRVis.Mappings;
+using VRVis.Mappings.Methods;
+using VRVis.RegionProperties;
 using VRVis.Spawner.File;
+using VRVis.Spawner.Regions;
 using VRVis.Utilities;
 
 namespace VRVis.Spawner.Edges {
@@ -73,6 +76,7 @@ namespace VRVis.Spawner.Edges {
         public Vector3 ControlPoint1 { get; private set; }
         public Vector3 ControlPoint2 { get; private set; }
         public Vector3 LineEnd { get; private set; }
+        public Region TargetRegion { get; private set; }
 
         private Transform startPoint;
         private Transform endPoint;
@@ -336,6 +340,12 @@ namespace VRVis.Spawner.Edges {
             // get according code files (null if not found)
             CodeFile cf1 = fromCodeFileInstance.GetCodeFile();
             CodeFile cf2 = toCodeFileInstance.GetCodeFile();
+
+            // get target region
+            TargetRegion = cf2.GetRegion(edge.GetTo().lines.from);
+            if (TargetRegion == null) {
+                Debug.LogError("Target region was not found!");
+            }
 
             // code file error handling
             string file1_err = "(file: " + file1 + ")";
@@ -621,6 +631,7 @@ namespace VRVis.Spawner.Edges {
             return length;
         }
 
+        private GradientColorKey[] colorKeys = new GradientColorKey[2];
         private void UpdateVFXControlFlow(Vector3 controlPoint0, Vector3 controlPoint1, Vector3 controlPoint2, Vector3 controlPoint3, float length) {
             vfxControlFlow.SetVector3("ControlPoint0", controlPoint0);
             vfxControlFlow.SetVector3("ControlPoint1", controlPoint1);
@@ -630,7 +641,53 @@ namespace VRVis.Spawner.Edges {
             vfxControlFlow.SetFloat("TimePerRun", length / vfxParticleSpeed);
 
             Gradient gradient = vfxControlFlow.GetGradient("Gradient");
-            //gradient.colorKeys[1].color = 
+
+            colorKeys = gradient.colorKeys;
+            colorKeys[1].color = GetRegionColor(TargetRegion);
+            gradient.SetKeys(colorKeys, gradient.alphaKeys);
+            vfxControlFlow.SetGradient("Gradient", gradient);
+        }
+
+        private Color GetRegionColor(Region region) {
+
+            var defaultColor = vfxControlFlow.GetGradient("Gradient").colorKeys[0].color;            
+
+            if (region == null) {
+                Debug.LogError("Region is null!");
+                return defaultColor;
+            }
+
+            // get the currently selected property to show
+            string activeNFP = ApplicationLoader.GetInstance().GetAppSettings().GetSelectedNFP().ToLower();
+            var nfpProp = region.GetProperty(ARProperty.TYPE.NFP, activeNFP) as RProperty_NFP;
+            if (nfpProp == null || !nfpProp.GotValue()) { return defaultColor; }
+
+            var vml = ApplicationLoader.GetInstance().GetMappingsLoader();
+            var setting = vml.GetNFPSetting(activeNFP);
+
+            // get color method and method min/max                
+            var minMax = RegionModifier.GetMinMaxValues(
+                nfpProp.GetName(), toWindowRefs.GetCodeFile(), setting.GetMinMaxValue());
+
+            if (minMax == null) {
+                Debug.LogError("Failed to get MinMaxValue from RegionModifier!");
+                return defaultColor;
+            }
+
+            AColorMethod colMethod;
+            if (ApplicationLoader.GetApplicationSettings().ComparisonMode) {
+                colMethod = setting.GetMinMaxColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_MARKING, minMax.GetMinValue(), minMax.GetMaxValue());
+            }
+            else {
+                colMethod = setting.GetColorMethod(Settings.ApplicationSettings.NFP_VIS.CODE_MARKING);
+            }
+
+            // get absolute value and crop it to the bounds
+            float absValue = minMax.CropToBounds(nfpProp.GetValue());
+
+            // return relative color
+            float valuePercentage = minMax.GetRangePercentage(absValue);
+            return colMethod.Evaluate(valuePercentage);
         }
 
 
