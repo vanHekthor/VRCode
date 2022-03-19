@@ -37,6 +37,9 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("The vfx control flow effect indicating direction and nfp value")]
         public VisualEffect vfxControlFlow;
 
+        [Tooltip("Speed of the VFX particles in m/s")]
+        public float vfxParticleSpeed;
+
         [Tooltip("Material of attachment spheres")]
         public Material attachmentSphereMat;
 
@@ -579,7 +582,7 @@ namespace VRVis.Spawner.Edges {
             }
 
             Vector3[] curvePoints = bezierCurve.CalculatePoints(LineStart, ControlPoint1, ControlPoint2, LineEnd);
-            UpdateVFXControlFlow(LineStart, ControlPoint1, ControlPoint2, LineEnd);
+            UpdateVFXControlFlow(LineStart, ControlPoint1, ControlPoint2, LineEnd, CurveLength(curvePoints));
 
 
             // ToDo: remove unity line renderer if no longer required
@@ -608,11 +611,26 @@ namespace VRVis.Spawner.Edges {
             }
         }
 
-        private void UpdateVFXControlFlow(Vector3 controlPoint0, Vector3 controlPoint1, Vector3 controlPoint2, Vector3 controlPoint3) {
+        private float CurveLength(Vector3[] points) {
+            float length = 0f;
+
+            for (int i = 0; i < points.Length - 1; i++) {
+                length += (points[i + 1] - points[i]).magnitude;
+            }
+
+            return length;
+        }
+
+        private void UpdateVFXControlFlow(Vector3 controlPoint0, Vector3 controlPoint1, Vector3 controlPoint2, Vector3 controlPoint3, float length) {
             vfxControlFlow.SetVector3("ControlPoint0", controlPoint0);
             vfxControlFlow.SetVector3("ControlPoint1", controlPoint1);
             vfxControlFlow.SetVector3("ControlPoint2", controlPoint2);
             vfxControlFlow.SetVector3("ControlPoint3", controlPoint3);
+
+            vfxControlFlow.SetFloat("TimePerRun", length / vfxParticleSpeed);
+
+            Gradient gradient = vfxControlFlow.GetGradient("Gradient");
+            //gradient.colorKeys[1].color = 
         }
 
 
