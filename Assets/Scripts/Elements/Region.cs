@@ -50,7 +50,12 @@ namespace VRVis.Elements {
 
             /// <summary>Lines of code this section uses.</summary>
             public int GetLOCs() { return locs; }
+
             public void UpdateLOCs() { locs = end - start; }
+
+            public bool ContainsLine(int line) {
+                return (line >= start && line <= end);
+            }
         }
 
         private List<Section> sections = new List<Section>();
@@ -136,6 +141,15 @@ namespace VRVis.Elements {
 
         /// <summary>Get the lines of code (equal to the amount of nodes).</summary>
         public int GetLOCs() { return locs; }
+
+        public bool ContainsLine(int line) {
+            foreach (var section in sections) {
+                if (section.ContainsLine(line)) {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         public List<Section> GetSections() { return sections; }
 

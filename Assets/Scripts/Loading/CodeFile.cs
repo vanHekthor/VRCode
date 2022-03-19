@@ -113,6 +113,15 @@ namespace VRVis.IO {
             return rl.GetFileRegions(node.GetPath());
         }
 
+        public Region GetRegion(int line) {
+            foreach (var region in GetRegions()) {
+                if (region.ContainsLine(line)) {
+                    return region;
+                }
+            }
+            return null;
+        }
+
         /// <summary>Tells if the references are available that lead to the code window components.</summary>
         public bool IsCodeWindowExisting() { return instances != null; }
 
