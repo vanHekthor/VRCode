@@ -113,9 +113,9 @@ namespace VRVis.IO {
             return rl.GetFileRegions(node.GetPath());
         }
 
-        public Region GetRegion(int line) {
+        public Region GetRegion(int line, ARProperty.TYPE type) {
             foreach (var region in GetRegions()) {
-                if (region.ContainsLine(line)) {
+                if (region.ContainsLine(line) && region.HasPropertyType(type)) {
                     return region;
                 }
             }

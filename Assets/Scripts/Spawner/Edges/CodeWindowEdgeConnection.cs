@@ -342,7 +342,7 @@ namespace VRVis.Spawner.Edges {
             CodeFile cf2 = toCodeFileInstance.GetCodeFile();
 
             // get target region
-            TargetRegion = cf2.GetRegion(edge.GetTo().lines.from);
+            TargetRegion = cf2.GetRegion(edge.GetTo().lines.from, ARProperty.TYPE.NFP);
             if (TargetRegion == null) {
                 Debug.LogError("Target region was not found!");
             }
