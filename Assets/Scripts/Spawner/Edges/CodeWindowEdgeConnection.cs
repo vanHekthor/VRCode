@@ -41,7 +41,10 @@ namespace VRVis.Spawner.Edges {
         public VisualEffect vfxControlFlow;
 
         [Tooltip("Speed of the VFX particles in m/s")]
-        public float vfxParticleSpeed;
+        public float vfxParticleSpeed = 1.4f;
+
+        [Tooltip("Distance between the VFX particles in m")]
+        public float distanceBetweenParticles = 0.4f;
 
         [Tooltip("Material of attachment spheres")]
         public Material attachmentSphereMat;
@@ -639,6 +642,8 @@ namespace VRVis.Spawner.Edges {
             vfxControlFlow.SetVector3("ControlPoint3", controlPoint3);
 
             vfxControlFlow.SetFloat("TimePerRun", length / vfxParticleSpeed);
+            vfxControlFlow.SetFloat("ParticleCount", Mathf.RoundToInt(length / distanceBetweenParticles));
+            vfxControlFlow.SetFloat("SpawnInterval", distanceBetweenParticles / vfxParticleSpeed);
 
             Gradient gradient = vfxControlFlow.GetGradient("Gradient");
 
