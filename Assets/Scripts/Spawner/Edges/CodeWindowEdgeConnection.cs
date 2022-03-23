@@ -345,7 +345,9 @@ namespace VRVis.Spawner.Edges {
             CodeFile cf2 = toCodeFileInstance.GetCodeFile();
 
             // get target region
-            TargetRegion = cf2.GetRegion(edge.GetTo().lines.from, ARProperty.TYPE.NFP);
+            int offset = 1; // dirty offset to handle methods with annotations
+
+            TargetRegion = cf2.GetRegion(edge.GetTo().lines.from + offset, ARProperty.TYPE.NFP);
             if (TargetRegion == null) {
                 Debug.LogError("Target region was not found!");
             }
@@ -497,6 +499,8 @@ namespace VRVis.Spawner.Edges {
             bool startOutOfBounds = false;
             bool endOutofBounds = false;
 
+            // ignore multiple lines for now
+            startSpan = 0;
             if (startSpan > 0) {
                 float startSpanFinal = startSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 LineStart = ValidateBoundsRegion(true, LineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
@@ -505,6 +509,8 @@ namespace VRVis.Spawner.Edges {
                 LineStart = ValidateBounds(LineStart, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
             }
 
+            // ignore multiple lines for now
+            endSpan = 0;
             if (endSpan > 0) {
                 float endSpanFinal = endSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
                 LineEnd = ValidateBoundsRegion(false, LineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
