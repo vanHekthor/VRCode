@@ -229,13 +229,13 @@ namespace VRVis.Spawner.File {
                 return null;
             }
 
-            // get region width for code marking visualization (might change in future)
-            RectTransform scrollRectRT = GetScrollRect().GetComponent<RectTransform>();
-            RectTransform textContainerRT = textContainer.GetComponent<RectTransform>();
-            RectTransform vertScrollbarRT = GetVerticalScrollbarRect();
-            if (scrollRectRT && textContainerRT && vertScrollbarRT) {
-                totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
-            }
+            //// get region width for code marking visualization (might change in future)
+            //RectTransform scrollRectRT = GetScrollRect().GetComponent<RectTransform>();
+            //RectTransform textContainerRT = textContainer.GetComponent<RectTransform>();
+            //RectTransform vertScrollbarRT = GetVerticalScrollbarRect();
+            //if (scrollRectRT && textContainerRT && vertScrollbarRT) {
+            //    totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
+            //}
 
             GameObject lineHighlightObject = Instantiate(lineHighlightPrefab);
             var lineHighlight = lineHighlightObject.GetComponent<LineHighlight>();

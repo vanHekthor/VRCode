@@ -188,13 +188,13 @@ namespace VRVis.Spawner {
             ApplicationSettings appSettings = ApplicationLoader.GetApplicationSettings();
             if (appSettings.IsNFPVisActive(ApplicationSettings.NFP_VIS.CODE_MARKING)) {
 
-                // get region width for code marking visualization (might change in future)
-                RectTransform scrollRectRT = fileInstance.GetScrollRect().GetComponent<RectTransform>();
-                RectTransform textContainerRT = fileInstance.textContainer.GetComponent<RectTransform>();
-                RectTransform vertScrollbarRT = fileInstance.GetVerticalScrollbarRect();
-                if (scrollRectRT && textContainerRT && vertScrollbarRT) {
-                    totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
-                }
+                //// get region width for code marking visualization (might change in future)
+                //RectTransform scrollRectRT = fileInstance.GetScrollRect().GetComponent<RectTransform>();
+                //RectTransform textContainerRT = fileInstance.textContainer.GetComponent<RectTransform>();
+                //RectTransform vertScrollbarRT = fileInstance.GetVerticalScrollbarRect();
+                //if (scrollRectRT && textContainerRT && vertScrollbarRT) {
+                //    totalWidth_codeMarking = scrollRectRT.sizeDelta.x - textContainerRT.anchoredPosition.x - Mathf.Abs(vertScrollbarRT.sizeDelta.x) - 5;
+                //}
             }
 
 
