@@ -433,7 +433,6 @@ namespace VRVis.Interaction.LaserHand {
                 bool isFileSpawned = FileSpawner.GetInstance().IsFileSpawned(node.GetFullPath());
 
                 // now multiple instances of a file can be opened
-                isFileSpawned = false;
                 if (!isFileSpawned) {
 
                     // get the controller selection script
@@ -475,7 +474,7 @@ namespace VRVis.Interaction.LaserHand {
 
                     // ToDo: maybe show some information about the file?
                     // or make it light up for a short amount of time to show where it is?
-
+                    callback?.Invoke(FileSpawner.GetInstance().GetSpawnedFileInstance(node.GetFullPath(), configName));
                     Debug.LogWarning("File already spawned: " + node.GetName());
                     // callback();
                 }

@@ -113,7 +113,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     private void ToDoAfterCodeWindowPlacement(CodeFileReferences spawnedFileInstance) {
         var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, spawnedFileInstance);
 
-        if (edgeConnection != null) {
+        if (edgeConnection != null && edgeConnection.TargetRegion == null) {
             edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
         }
     }
