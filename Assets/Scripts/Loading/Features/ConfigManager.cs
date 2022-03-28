@@ -78,7 +78,7 @@ namespace VRVis.IO.Features {
         
 
         public void AddConfig(Configuration config) {
-            ConfigDict.Add(config.GetConfigID(), config);
+            ConfigDict.Add(config.Name, config);
             NotifySubscribers();
         }
 
@@ -99,10 +99,10 @@ namespace VRVis.IO.Features {
                 if (configPanel.IsComparisonPanel) {
                     configsToCompare++;
                     if (configsToCompare == 1) {
-                        configPanel.SelectedConfigID = Config1.GetConfigID();
+                        configPanel.SelectedConfigName = Config1.Name;
                     }
                     else if (configsToCompare == 2) {
-                        configPanel.SelectedConfigID = Config2.GetConfigID();
+                        configPanel.SelectedConfigName = Config2.Name;
                     }
 
                     if (comparisonPanels == null) {
