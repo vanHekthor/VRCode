@@ -387,6 +387,40 @@ namespace VRVis.Spawner {
             onFileSpawned.Invoke(spawn_file_instance);
         }
 
+        private void SpawnFile(Action<bool, CodeFileReferences, string> callback) {
+            for (uint i = 0; i < 3; i++) {
+
+                switch (i) {
+
+                    case 0:
+                        string failure = SpawnCodeWindow();
+                        if (failure != null) {
+                            Debug.LogError("Spawn step " + i + " failure!");
+                            callback(false, null, failure);
+                            spawning = false;
+                            break;
+                        }
+                        break;
+
+                    case 1:
+                        string msg = SpawnRegions(spawn_file_instance);
+                        if (msg != null) { Debug.LogWarning(msg); }
+                        break;
+
+                    case 2:
+                        // notify edge spawner to take care of spawning node edges
+                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance); }
+                        break;
+                }
+            }
+
+            // when we arrive here, everything completed successfully
+            spawning = false;
+            Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
+            callback(true, spawn_file_instance, "");
+            onFileSpawned.Invoke(spawn_file_instance);
+        }
+
         private bool InitSpawning(SNode fileNode, string configName,Action<bool, CodeFileReferences, string> callback) {
             if (spawning) {
                 callback(false, null, "Currently spawning a file...");
