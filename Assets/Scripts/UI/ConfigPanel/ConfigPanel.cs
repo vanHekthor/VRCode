@@ -21,12 +21,12 @@ namespace VRVis.UI.Config {
 
         public Dictionary<string, Configuration> ConfigDict { get; set; }        
 
-        private string selectedConfigID;
-        public string SelectedConfigID {
-            get => selectedConfigID;
+        private string selectedConfigName;
+        public string SelectedConfigName {
+            get => selectedConfigName;
             set {
-                selectedConfigID = value;
-                SelectedConfig = ConfigDict[selectedConfigID];
+                selectedConfigName = value;
+                SelectedConfig = ConfigDict[selectedConfigName];
                 UpdatePanel();
             }
         }
@@ -96,7 +96,7 @@ namespace VRVis.UI.Config {
 
         public void UpdatePanel() {
             // ConfigDict = configManager.ConfigDict;
-            DisplayConfig(SelectedConfigID);
+            DisplayConfig(SelectedConfigName);
         }
 
         private void DisplayConfig(string id) {
