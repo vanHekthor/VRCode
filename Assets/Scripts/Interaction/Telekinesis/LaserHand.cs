@@ -430,10 +430,10 @@ namespace VRVis.Interaction.LaserHand {
 
                 // old logic
                 // check if already spawned
-                bool isFileSpawned = FileSpawner.GetInstance().IsFileSpawned(node.GetFullPath());
+                bool isFileInstance = FileSpawner.GetInstance().IsFileWithSpecificConfigSpawned(node.GetFullPath(), configName);
 
                 // now multiple instances of a file can be opened
-                if (!isFileSpawned) {
+                if (!isFileInstance) {
 
                     // get the controller selection script
                     ControllerSelection selectionScript = hand.GetComponent<ControllerSelection>();
