@@ -15,6 +15,8 @@ namespace VRVis.UI {
 
         public bool changeParentTransform;
 
+        public bool applyChangesToReceiversAutomatically = true;
+
         public Transform parent;
 
         public Transform positionAnchor;
@@ -76,7 +78,41 @@ namespace VRVis.UI {
         /**
          * Called if the rect transform dimension changes.
          */
+        public void DimensionsChanged() {
+
+            // do nothing if no receiver is set or RectTransform is missing
+            //Debug.Log("Rect Transform Dimension changed!");
+            if (sendTo.Length == 0 || !thisRT) { return; }
+
+            //Debug.Log("Sending Update to receiver!");
+            foreach (Receiver receiver in sendTo) {
+                receiver.link.UpdateThisRectTransform(thisRT, receiver);
+            }
+
+            if (!changeParentTransform) {
+                return;
+            }
+
+            parentCollider.size = new Vector3(
+                parentCollider.size.x,
+                thisRT.sizeDelta.y * thisRT.localScale.y,
+                parentCollider.size.z);
+
+            if (keepRelativePositionToParent) {
+                positionAnchor.localPosition = new Vector3(
+                    positionAnchor.localPosition.x,
+                    thisRT.sizeDelta.y * initialYRatio - thisRT.localPosition.y,
+                    positionAnchor.localPosition.z);
+            }
+        }
+
+        /**
+         * Called if the rect transform dimension changes.
+         */
         private void OnRectTransformDimensionsChange() {
+            if (!applyChangesToReceiversAutomatically) {
+                return;
+            }
 
             // do nothing if no receiver is set or RectTransform is missing
             //Debug.Log("Rect Transform Dimension changed!");
@@ -103,6 +139,7 @@ namespace VRVis.UI {
                     positionAnchor.localPosition.z);
             }
         }
+        
 
         /// <summary>Called by the sender if there is an update available.</summary>
         /// <param name="other">RectTransform of the sender</param>

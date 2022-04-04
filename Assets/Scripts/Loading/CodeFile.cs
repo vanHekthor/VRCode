@@ -164,55 +164,55 @@ namespace VRVis.IO {
         public void UpdateLineInfo() {
 
             foreach (var instance in GetInstances()) {
-                instance.StartCoroutine(UpdateLineInfoCoroutine(instance));
-                //int totalLineCount = 0;
-                //float lineHeight = -1;
-                //float lineWidth = -1;
-                ////int textNo = 0;
-                //float characterWidth = -1; // monospace character
+                // instance.StartCoroutine(UpdateLineInfoCoroutine(instance));
+                int totalLineCount = 0;
+                float lineHeight = -1;
+                float lineWidth = -1;
+                //int textNo = 0;
+                float characterWidth = -1; // monospace character
 
-                //foreach (TMP_TextInfo textInfo in instance.GetTextElements()) {
+                foreach (TMP_TextInfo textInfo in instance.GetTextElements()) {
 
-                //    // force a mesh update before reading the properties
-                //    textInfo.textComponent.ForceMeshUpdate();
-                //    totalLineCount += textInfo.lineCount;
-                //    //Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount); // debug
+                    // force a mesh update before reading the properties
+                    textInfo.textComponent.ForceMeshUpdate();
+                    totalLineCount += textInfo.lineCount;
+                    //Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount); // debug
 
-                //    if (lineHeight <= 0) {
-                //        TMP_Text text = textInfo.textComponent;
-                //        if (text != null) {
-                //            lineHeight = text.fontScale * text.font.faceInfo.lineHeight;
-                //        }
-                //        else {
-                //            Debug.LogError("TextInfo textComponent is null!");
-                //        }
-                //    }
+                    if (lineHeight <= 0) {
+                        TMP_Text text = textInfo.textComponent;
+                        if (text != null) {
+                            lineHeight = text.fontScale * text.font.faceInfo.lineHeight;
+                        }
+                        else {
+                            Debug.LogError("TextInfo textComponent is null!");
+                        }
+                    }
 
-                //    /*
-                //    // Debug to check if we gather correct line information
-                //    int x = 0;
-                //    foreach (TMP_LineInfo li in textInfo.lineInfo) {
-                //        Debug.Log((x++) + " width: " + li.width + ", characters: " + li.characterCount);
-                //    }
-                //    */
+                    /*
+                    // Debug to check if we gather correct line information
+                    int x = 0;
+                    foreach (TMP_LineInfo li in textInfo.lineInfo) {
+                        Debug.Log((x++) + " width: " + li.width + ", characters: " + li.characterCount);
+                    }
+                    */
 
-                //    // getting the value of the first line is sufficient
-                //    // because the total width is the same for all lines of this text instance
-                //    float thisWidth = textInfo.lineInfo[0].width;
-                //    if (lineWidth <= 0 || thisWidth > lineWidth) {
-                //        lineWidth = thisWidth;
-                //    }
+                    // getting the value of the first line is sufficient
+                    // because the total width is the same for all lines of this text instance
+                    float thisWidth = textInfo.lineInfo[0].width;
+                    if (lineWidth <= 0 || thisWidth > lineWidth) {
+                        lineWidth = thisWidth;
+                    }
 
-                //    if (characterWidth <= 0) {
-                //        characterWidth = textInfo.characterInfo[0].xAdvance;
-                //    }
-                //}
+                    if (characterWidth <= 0) {
+                        characterWidth = textInfo.characterInfo[0].xAdvance;
+                    }
+                }
 
-                //lineInfo.lineCount = totalLineCount;
-                //lineInfo.lineHeight = lineHeight > 0 ? lineHeight : 0;
-                //lineInfo.lineWidth = lineWidth > 0 ? lineWidth : 0;
-                //lineInfo.characterWidth = characterWidth;
-                //lineInfo.isSet = true;
+                lineInfo.lineCount = totalLineCount;
+                lineInfo.lineHeight = lineHeight > 0 ? lineHeight : 0;
+                lineInfo.lineWidth = lineWidth > 0 ? lineWidth : 0;
+                lineInfo.characterWidth = characterWidth;
+                lineInfo.isSet = true;
             }
         }
 

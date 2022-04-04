@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using TMPro;
@@ -12,6 +13,7 @@ using VRVis.RegionProperties;
 using VRVis.Settings;
 using VRVis.Spawner.File;
 using VRVis.Spawner.Regions;
+using VRVis.UI;
 using VRVis.UI.Helper;
 using VRVis.Utilities;
 
@@ -483,7 +485,19 @@ namespace VRVis.Spawner {
             }
 
             // load the actual file content
-            if (!LoadFileContent(spawn_node, textPrefab)) {
+            //if (!LoadFileContent(spawn_node, textPrefab)) {
+            //    spawn_file.DeleteInstance(fileInstance);
+            //    DestroyImmediate(spawn_window);
+            //    return "Failed to load content of file: " + spawn_node.GetFullPath();
+            //}
+
+            bool wasSuccessful = false;
+            StartCoroutine(LoadFileContent(spawn_node, textPrefab, (success) =>
+            {
+                wasSuccessful = success;
+            }));
+
+            if (!wasSuccessful) {
                 spawn_file.DeleteInstance(fileInstance);
                 DestroyImmediate(spawn_window);
                 return "Failed to load content of file: " + spawn_node.GetFullPath();
@@ -587,7 +601,10 @@ namespace VRVis.Spawner {
 
                     // characer limit exceeded, so add this line to the next element
                     if (charactersRead > LIMIT_CHARACTERS_PER_TEXT) {
-                    
+
+                        // set the element parent without keeping world coordinates
+                        currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+
                         // save the source code in the text object
                         SaveTextObject(currentTextObject, sourceCode);
                         Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
@@ -610,12 +627,108 @@ namespace VRVis.Spawner {
 
                 // save last instance if not done yet
                 if (!saved) {
+                    // set the element parent without keeping world coordinates
+                    currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+
                     SaveTextObject(currentTextObject, sourceCode);
                     Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
                 }
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Loads the highlighted source code from the file.<para/>
+        /// Returns true on success and false otherwise.
+        /// </summary>
+        private IEnumerator LoadFileContent(SNode fileNode, GameObject textPrefab, Action<bool> wasSuccessful) {
+
+            // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.-ctor?view=netframework-4.7.2
+            string filePath = fileNode.GetFullPath();
+            FileInfo fi = new FileInfo(filePath);
+
+            if (!fi.Exists) {
+                Debug.LogError("File does not exist! (" + filePath + ")");
+                wasSuccessful(false);
+                yield break;
+            }
+
+
+            List<Tuple<GameObject, string>> textObjectPairs = new List<Tuple<GameObject, string>>();
+
+            Debug.Log("Reading file contents...");
+            // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.opentext?view=netframework-4.7.2
+            using (StreamReader sr = fi.OpenText()) {
+
+                // get and clear possible old content information
+                CodeFile.ReadInformation contentInfo = new CodeFile.ReadInformation();
+                contentInfo.Clear();
+
+                // local and temp. information
+                string curLine = "";
+                string sourceCode = "";
+                int charactersRead = 0;
+                int linesRead = 0;
+                int elementNo = 0;
+                bool saved = false;
+                GameObject currentTextObject = CreateNewTextElement(fileNode.GetName() + "_" + elementNo);
+
+                while ((curLine = sr.ReadLine()) != null) {
+
+                    // update counts and source code
+                    sourceCode += curLine + "\n";
+                    linesRead++;
+                    contentInfo.linesRead_total++;
+                    charactersRead += curLine.Length + 1; // "+ 1" because of the added "\n" (line break)
+                    contentInfo.charactersRead_total += curLine.Length + 1;
+                    saved = false;
+
+                    // characer limit exceeded, so add this line to the next element
+                    if (charactersRead > LIMIT_CHARACTERS_PER_TEXT) {
+
+                        // set the element parent without keeping world coordinates
+                        currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+
+                        // save the source code in the text object
+                        textObjectPairs.Add(Tuple.Create(currentTextObject, sourceCode));
+                        
+                        Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
+                        saved = true;
+
+                        // use another text element
+                        elementNo++;
+                        currentTextObject = CreateNewTextElement(fileNode.GetName() + "_" + elementNo);
+
+                        // reset "local" counts
+                        sourceCode = "";
+                        linesRead = 0;
+                        charactersRead = 0;
+                    }                                       
+                }
+
+                Debug.Log("Lines read: " + contentInfo.linesRead_total);
+                spawn_file_instance.SetLinesTotal(contentInfo.linesRead_total);
+                spawn_file.SetContentInfo(contentInfo);
+
+                // save last instance if not done yet
+                if (!saved) {
+                    // set the element parent without keeping world coordinates
+                    currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+
+                    textObjectPairs.Add(Tuple.Create(currentTextObject, sourceCode));
+                    Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
+                }
+            }
+
+            foreach (var pair in textObjectPairs) {
+                SaveTextObject(pair.Item1, pair.Item2);
+                // Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
+                wasSuccessful(true);
+            }
+
+            yield return new WaitForSeconds(.2f);
+            spawn_file_instance.textContainer.GetComponent<RectTransformDimensionLink>().DimensionsChanged();
         }
 
 
@@ -650,10 +763,7 @@ namespace VRVis.Spawner {
                 tmp.SetText(sourceCode);
                 spawn_file_instance.AddTextElement(tmp.textInfo);
                 tmp.ForceMeshUpdate(); // force mesh update to calculate line heights instantly
-            }
-
-            // set the element parent without keeping world coordinates
-            text.transform.SetParent(spawn_file_instance.textContainer, false);
+            }            
         }
 
 
