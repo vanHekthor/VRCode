@@ -164,19 +164,20 @@ namespace VRVis.IO {
         public void UpdateLineInfo() {
 
             foreach (var instance in GetInstances()) {
-                // instance.StartCoroutine(UpdateLineInfoCoroutine(instance));
+                //instance.StartCoroutine(UpdateLineInfoCoroutine(instance));
+
                 int totalLineCount = 0;
                 float lineHeight = -1;
                 float lineWidth = -1;
-                //int textNo = 0;
+                int textNo = 0;
                 float characterWidth = -1; // monospace character
 
                 foreach (TMP_TextInfo textInfo in instance.GetTextElements()) {
 
-                    // force a mesh update before reading the properties
+                    //force a mesh update before reading the properties
                     textInfo.textComponent.ForceMeshUpdate();
                     totalLineCount += textInfo.lineCount;
-                    //Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount); // debug
+                    Debug.Log("Text " + (textNo++) + " lines: " + textInfo.lineCount); // debug
 
                     if (lineHeight <= 0) {
                         TMP_Text text = textInfo.textComponent;
@@ -189,16 +190,17 @@ namespace VRVis.IO {
                     }
 
                     /*
-                    // Debug to check if we gather correct line information
+                     Debug to check if we gather correct line information
                     int x = 0;
                     foreach (TMP_LineInfo li in textInfo.lineInfo) {
                         Debug.Log((x++) + " width: " + li.width + ", characters: " + li.characterCount);
                     }
                     */
 
-                    // getting the value of the first line is sufficient
-                    // because the total width is the same for all lines of this text instance
-                    float thisWidth = textInfo.lineInfo[0].width;
+                    //getting the value of the first line is sufficient
+                    //because the total width is the same for all lines of this text instance
+
+                   float thisWidth = textInfo.lineInfo[0].width;
                     if (lineWidth <= 0 || thisWidth > lineWidth) {
                         lineWidth = thisWidth;
                     }

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Events;
@@ -369,13 +370,15 @@ namespace VRVis.Spawner {
                         break;
 
                     case 1:
-                        string msg = SpawnRegions(spawn_file_instance);
-                        if (msg != null) { Debug.LogWarning(msg); }
+                        //string msg = SpawnRegions(spawn_file_instance);
+                        //if (msg != null) { Debug.LogWarning(msg); }
                         break;
 
                     case 2:
-                        // notify edge spawner to take care of spawning node edges
-                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance); }
+                        //// notify edge spawner to take care of spawning node edges
+                        //if (edgeSpawner) {
+                        //    edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance);
+                        //}
                         break;
                 }
 
@@ -411,7 +414,9 @@ namespace VRVis.Spawner {
 
                     case 2:
                         // notify edge spawner to take care of spawning node edges
-                        if (edgeSpawner) { edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance); }
+                        if (edgeSpawner) {
+                            edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance);
+                        }
                         break;
                 }
             }
@@ -634,7 +639,7 @@ namespace VRVis.Spawner {
                     Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
                 }
             }
-
+            spawn_file_instance.textContainer.GetComponent<RectTransformDimensionLink>().DimensionsChanged();
             return true;
         }
 
@@ -654,11 +659,18 @@ namespace VRVis.Spawner {
                 yield break;
             }
 
-
+            List<GameObject> textObjects = new List<GameObject>();
             List<Tuple<GameObject, string>> textObjectPairs = new List<Tuple<GameObject, string>>();
 
             Debug.Log("Reading file contents...");
             // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.opentext?view=netframework-4.7.2
+            //int totalLines = 0;
+            //using (StreamReader sr = fi.OpenText()) {
+                
+            //    while (sr.ReadLine() != null) { totalLines++; }
+            //}
+            //yield return null;
+
             using (StreamReader sr = fi.OpenText()) {
 
                 // get and clear possible old content information
@@ -686,14 +698,14 @@ namespace VRVis.Spawner {
 
                     // characer limit exceeded, so add this line to the next element
                     if (charactersRead > LIMIT_CHARACTERS_PER_TEXT) {
-
-                        // set the element parent without keeping world coordinates
-                        currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+                        //// set the element parent without keeping world coordinates
+                        //currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
 
                         // save the source code in the text object
+                        textObjects.Add(currentTextObject);
                         textObjectPairs.Add(Tuple.Create(currentTextObject, sourceCode));
                         
-                        Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
+                        // Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
                         saved = true;
 
                         // use another text element
@@ -707,17 +719,18 @@ namespace VRVis.Spawner {
                     }                                       
                 }
 
-                Debug.Log("Lines read: " + contentInfo.linesRead_total);
+                // Debug.Log("Lines read: " + contentInfo.linesRead_total);
                 spawn_file_instance.SetLinesTotal(contentInfo.linesRead_total);
                 spawn_file.SetContentInfo(contentInfo);
 
                 // save last instance if not done yet
                 if (!saved) {
-                    // set the element parent without keeping world coordinates
-                    currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
+                    //// set the element parent without keeping world coordinates
+                    //currentTextObject.transform.SetParent(spawn_file_instance.textContainer, false);
 
+                    textObjects.Add(currentTextObject);
                     textObjectPairs.Add(Tuple.Create(currentTextObject, sourceCode));
-                    Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
+                    // Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
                 }
             }
 
@@ -725,10 +738,22 @@ namespace VRVis.Spawner {
                 SaveTextObject(pair.Item1, pair.Item2);
                 // Debug.Log("Saved text element " + elementNo + " (lines: " + linesRead + ", chars: " + charactersRead + ")");
                 wasSuccessful(true);
+                yield return null;
             }
 
-            yield return new WaitForSeconds(.2f);
+            spawn_file_instance.textContainer.GetComponent<VerticalLayoutManager>().AddElements(textObjects);
+            yield return null;
+
             spawn_file_instance.textContainer.GetComponent<RectTransformDimensionLink>().DimensionsChanged();
+            yield return null;
+
+            string msg = SpawnRegions(spawn_file_instance);
+            if (msg != null) { Debug.LogWarning(msg); }
+            yield return null;
+
+            if (edgeSpawner) {
+                edgeSpawner.CodeWindowSpawnedEvent(spawn_file_instance);
+            }
         }
 
 
