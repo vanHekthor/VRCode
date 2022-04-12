@@ -62,7 +62,7 @@ namespace VRVis.Interaction.LaserHand {
 
 
         // now assigned by pickup event
-        public  Hand hand;
+        public Hand hand;
         private bool lastToggleState = false;
 
         // PROPERTIES

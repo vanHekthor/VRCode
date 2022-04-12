@@ -35,7 +35,7 @@ namespace VRVis.Spawner.Edges {
         public float ERROR_PER_ELEMENT = 0.2f; // 0.2 seems to be a good value for font-size 8-14
 
         [Tooltip("Size of the attachment spheres")]
-        public Vector3 attachmentSphereSize = new Vector3(0.05f, 0.05f, 0.05f);
+        public Vector3 attachmentSphereSize = new Vector3(0.15f, 0.15f, 0.15f);
 
         [Tooltip("The vfx control flow effect indicating direction and nfp value")]
         public VisualEffect vfxControlFlow;
@@ -227,8 +227,8 @@ namespace VRVis.Spawner.Edges {
             }
 
             // create attachment
-            startHoverPoint = CreateHoverPoint("startHoverPoint");
-            endHoverPoint = CreateHoverPoint("endHoverPoint");
+            startHoverPoint = CreateHoverPoint("startHoverPoint", fromWindowRefs);
+            endHoverPoint = CreateHoverPoint("endHoverPoint", toWindowRefs);
 
             // prepare bezier curve and mappings
             PrepareAfterStart();
@@ -263,7 +263,7 @@ namespace VRVis.Spawner.Edges {
         /// <summary>
         /// Creates the hover point and returns it.
         /// </summary>
-        private GameObject CreateHoverPoint(string name) {
+        private GameObject CreateHoverPoint(string name, CodeFileReferences codeFileInstance) {
             
             // create hover point from prefab
             var hoverPoint = Instantiate(hoverPointPrefab);
@@ -271,11 +271,12 @@ namespace VRVis.Spawner.Edges {
 
             // attach to this GameObject instance
             hoverPoint.transform.SetParent(transform);
-            hoverPoint.transform.rotation = transform.rotation;
+            hoverPoint.transform.rotation = codeFileInstance.transform.rotation;
 
             // set size of spheres
+            var hoverPointComponent = hoverPoint.GetComponent<HoverPoint>();
             if (attachmentSphereSize.magnitude > 0) {
-                hoverPoint.transform.localScale = attachmentSphereSize;
+                hoverPointComponent.ChangeSize(attachmentSphereSize.x / 2);
             }
 
             //// set material of spheres

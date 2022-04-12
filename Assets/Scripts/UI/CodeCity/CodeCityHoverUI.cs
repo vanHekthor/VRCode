@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Valve.VR.InteractionSystem;
+using VRVis.Interaction.LaserHand;
+using VRVis.Interaction.LaserPointer;
 using VRVis.Spawner.CodeCity;
 
 namespace VRVis.UI.CodeCity {
@@ -30,7 +32,7 @@ namespace VRVis.UI.CodeCity {
         public float uiCollisionRadius = 0.15f;
 
         private GameObject uiInstance;
-        private Hand attachedHand;
+        private Transform laserOrigin;
 
 
         void Update() {
@@ -44,7 +46,7 @@ namespace VRVis.UI.CodeCity {
                 // ToDo: maybe use "Physics.BoxCast()" to improve behaviour
                 // perform raycast from hand position to the desired UI position
                 // and check if there is anything between to avoid putting the UI inside an element
-                Vector3 handPos = attachedHand.transform.position;
+                Vector3 handPos = laserOrigin.transform.position;
                 Vector3 handToPos = pos - handPos;
                 Ray ray = new Ray(handPos, handToPos);
                 RaycastHit hitInfo = new RaycastHit();
@@ -66,10 +68,10 @@ namespace VRVis.UI.CodeCity {
         /// Calculate the UI position.
         /// </summary>
         private Vector3 CalculatePosition(float distance) {
-            Vector3 fw = attachedHand.transform.forward;
+            Vector3 fw = laserOrigin.transform.forward;
             Vector3 u = Vector3.up;
             Vector3 r = -Vector3.Cross(fw, u); // direction "to the right"
-            return attachedHand.transform.position + (fw * uiPosition.z + r * uiPosition.x + u * uiPosition.y).normalized * distance;
+            return laserOrigin.transform.position + (fw * uiPosition.z + r * uiPosition.x + u * uiPosition.y).normalized * distance;
         }
 
 
@@ -94,9 +96,19 @@ namespace VRVis.UI.CodeCity {
         private void AttachUI(Hand hand) {
 
             // parent to controller or to hand itself
-            attachedHand = hand;
-            Transform parentTo = hand.transform;
-            if (hand.currentAttachedObject != null) { parentTo = hand.currentAttachedObject.transform; }
+            laserOrigin = hand.transform;                       
+
+            var laser = hand.transform.GetComponentInChildren<LaserHand>().transform;
+            if (!laser) {
+                if (hand.currentAttachedObject != null) {
+                    laser = hand.currentAttachedObject.transform;
+                }
+            }
+            else {
+                laserOrigin = laser;
+            }
+        
+
             uiInstance = Instantiate(uiPrefab);//, parentTo);
             uiInstance.transform.localPosition = uiPosition;
             uiInstance.transform.localRotation = Quaternion.Euler(uiRotation);
