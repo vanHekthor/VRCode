@@ -278,6 +278,7 @@ namespace VRVis.Spawner.Edges {
             if (attachmentSphereSize.magnitude > 0) {
                 hoverPointComponent.ChangeSize(attachmentSphereSize.x / 2);
             }
+            hoverPointComponent.AttachToControlFlowEdge(this);
 
             //// set material of spheres
             //if (attachmentSphereMat) {

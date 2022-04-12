@@ -17,12 +17,12 @@ namespace VRVis.UI.CodeCity {
         public Transform textContainer;
 
         // ToDo: improved versions possible with nice layout
-	    public void AddText(string headline, string content) {
+        public void AddText(string headline, string content, bool noHeadline = false) {
 
             if (!textPrefab || !textContainer) { return; }
             
             GameObject t = Instantiate(textPrefab, textContainer);
-            string text = headline + ": " + content;
+            string text = noHeadline ? content : headline + ": " + content;
             t.SendMessage("ChangeText", text, SendMessageOptions.RequireReceiver);
         }
 
