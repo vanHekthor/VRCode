@@ -46,6 +46,8 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Distance between the VFX particles in m")]
         public float distanceBetweenParticles = 0.4f;
 
+        public GameObject hoverPointPrefab;
+
         [Tooltip("Material of attachment spheres")]
         public Material attachmentSphereMat;
 
@@ -102,9 +104,9 @@ namespace VRVis.Spawner.Edges {
         private BezierCurve bezierCurve;
         private float rndCurveStrengthNoise = 0;
 
-        // represent the attachment points as spheres
-        private GameObject startSphere;
-        private GameObject endSphere;
+        // represent the attachment points
+        private GameObject startHoverPoint;
+        private GameObject endHoverPoint;
 
         // Store previous attributes to check if update is required.
         // The window rotation and scroll will affect the positions as well,
@@ -220,10 +222,13 @@ namespace VRVis.Spawner.Edges {
                 }
             }
 
+            if (!hoverPointPrefab) {
+                Debug.LogError("Hover point prefab is null and probably needs to be assigned using the inspector!");
+            }
 
-            // create attachment spheres
-            startSphere = CreateAttachmentSphere("startSphere");
-            endSphere = CreateAttachmentSphere("endSphere");
+            // create attachment
+            startHoverPoint = CreateHoverPoint("startHoverPoint");
+            endHoverPoint = CreateHoverPoint("endHoverPoint");
 
             // prepare bezier curve and mappings
             PrepareAfterStart();
@@ -245,9 +250,9 @@ namespace VRVis.Spawner.Edges {
             
             updateEdge = false;
 
-            // take care of cleaning up the start and endpoint spheres
-            if (startSphere) { Destroy(startSphere); }
-            if (endSphere) { Destroy(endSphere); }
+            // take care of cleaning up the start and end hover points 
+            if (startHoverPoint) { Destroy(startHoverPoint); }
+            if (endHoverPoint) { Destroy(endHoverPoint); }
 
             if (LineHighlight != null) {
                 Destroy(LineHighlight.gameObject);
@@ -256,35 +261,35 @@ namespace VRVis.Spawner.Edges {
 
 
         /// <summary>
-        /// Creates the attachment sphere and returns it.
+        /// Creates the hover point and returns it.
         /// </summary>
-        private GameObject CreateAttachmentSphere(string name) {
+        private GameObject CreateHoverPoint(string name) {
             
-            // create attachment sphere from sphere primitive
-            GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            sphere.name = name;
+            // create hover point from prefab
+            var hoverPoint = Instantiate(hoverPointPrefab);
+            hoverPoint.name = name;
 
             // attach to this GameObject instance
-            sphere.transform.SetParent(transform);
-            sphere.transform.rotation = transform.rotation;
+            hoverPoint.transform.SetParent(transform);
+            hoverPoint.transform.rotation = transform.rotation;
 
             // set size of spheres
             if (attachmentSphereSize.magnitude > 0) {
-                sphere.transform.localScale = attachmentSphereSize;
+                hoverPoint.transform.localScale = attachmentSphereSize;
             }
 
-            // set material of spheres
-            if (attachmentSphereMat) {
-                sphere.GetComponent<Renderer>().material = attachmentSphereMat;
-            }
+            //// set material of spheres
+            //if (attachmentSphereMat) {
+            //    hoverPoint.GetComponent<Renderer>().material = attachmentSphereMat;
+            //}
 
-            // remove colliders
-            Destroy(sphere.GetComponent<Collider>());
+            //// remove colliders
+            //Destroy(hoverPoint.GetComponent<Collider>());
 
             // set invisible
-            sphere.SetActive(false);
+            hoverPoint.SetActive(false);
 
-            return sphere;
+            return hoverPoint;
         }
 
 
@@ -503,20 +508,20 @@ namespace VRVis.Spawner.Edges {
             startSpan = 0;
             if (startSpan > 0) {
                 float startSpanFinal = startSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
-                LineStart = ValidateBoundsRegion(true, LineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
+                LineStart = ValidateBoundsRegion(true, LineStart, startSpanFinal, fromWindowRefs, attachFromLeft, out startOutOfBounds, startHoverPoint);
             }
             else {
-                LineStart = ValidateBounds(LineStart, fromWindowRefs, attachFromLeft, out startOutOfBounds, startSphere);
+                LineStart = ValidateBounds(LineStart, fromWindowRefs, attachFromLeft, out startOutOfBounds, startHoverPoint);
             }
 
             // ignore multiple lines for now
             endSpan = 0;
             if (endSpan > 0) {
                 float endSpanFinal = endSpan * GetLineHeight() * toWindowRefs.transform.lossyScale.y * canvasScale;
-                LineEnd = ValidateBoundsRegion(false, LineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
+                LineEnd = ValidateBoundsRegion(false, LineEnd, endSpanFinal, toWindowRefs, attachToLeft, out endOutofBounds, endHoverPoint);
             }
             else {
-                LineEnd = ValidateBounds(LineEnd, toWindowRefs, attachToLeft, out endOutofBounds, endSphere);
+                LineEnd = ValidateBounds(LineEnd, toWindowRefs, attachToLeft, out endOutofBounds, endHoverPoint);
             }
 
 
@@ -533,8 +538,8 @@ namespace VRVis.Spawner.Edges {
 
                     // hide spheres
                     if (!lineRendererState) {
-                        if (startSphere) { startSphere.SetActive(false); }
-                        if (endSphere) { endSphere.SetActive(false); }
+                        if (startHoverPoint) { startHoverPoint.SetActive(false); }
+                        if (endHoverPoint) { endHoverPoint.SetActive(false); }
                     }
                 }
 
