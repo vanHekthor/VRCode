@@ -107,6 +107,7 @@ namespace VRVis.Spawner.Edges {
         // represent the attachment points
         private GameObject startHoverPoint;
         private GameObject endHoverPoint;
+        private GameObject midHoverPoint;
 
         // Store previous attributes to check if update is required.
         // The window rotation and scroll will affect the positions as well,
@@ -227,8 +228,10 @@ namespace VRVis.Spawner.Edges {
             }
 
             // create attachment
-            startHoverPoint = CreateHoverPoint("startHoverPoint", fromWindowRefs);
-            endHoverPoint = CreateHoverPoint("endHoverPoint", toWindowRefs);
+            startHoverPoint = CreateOuterHoverPoint("startHoverPoint", fromWindowRefs.transform);
+            endHoverPoint = CreateOuterHoverPoint("endHoverPoint", toWindowRefs.transform);
+
+            midHoverPoint = CreateMidHoverPoint("midHoverPoint", startHoverPoint.transform, endHoverPoint.transform);
 
             // prepare bezier curve and mappings
             PrepareAfterStart();
@@ -263,15 +266,15 @@ namespace VRVis.Spawner.Edges {
         /// <summary>
         /// Creates the hover point and returns it.
         /// </summary>
-        private GameObject CreateHoverPoint(string name, CodeFileReferences codeFileInstance) {
+        private GameObject CreateOuterHoverPoint(string name, Transform t) {
             
             // create hover point from prefab
             var hoverPoint = Instantiate(hoverPointPrefab);
             hoverPoint.name = name;
 
             // attach to this GameObject instance
-            hoverPoint.transform.SetParent(transform);
-            hoverPoint.transform.rotation = codeFileInstance.transform.rotation;
+            hoverPoint.transform.SetParent(t);
+            hoverPoint.transform.rotation = t.rotation;
 
             // set size of spheres
             var hoverPointComponent = hoverPoint.GetComponent<HoverPoint>();
@@ -290,6 +293,30 @@ namespace VRVis.Spawner.Edges {
 
             // set invisible
             hoverPoint.SetActive(false);
+
+            return hoverPoint;
+        }
+
+        /// <summary>
+        /// Creates the hover point and returns it.
+        /// </summary>
+        private GameObject CreateMidHoverPoint(string name, Transform startHoverPoint, Transform endHoverPoint) {
+
+            // create hover point from prefab
+            var hoverPoint = Instantiate(hoverPointPrefab);
+            hoverPoint.name = name;
+
+            hoverPoint.transform.SetParent(startHoverPoint.parent);
+            hoverPoint.transform.rotation = Quaternion.Lerp(startHoverPoint.rotation, endHoverPoint.rotation, 0.5f);
+            hoverPoint.transform.position = Vector3.Lerp(startHoverPoint.position, endHoverPoint.position, 0.5f);
+
+            // set size of spheres
+            var hoverPointComponent = hoverPoint.GetComponent<HoverPoint>();
+            if (attachmentSphereSize.magnitude > 0) {
+                hoverPointComponent.ChangeSize(attachmentSphereSize.x / 2);
+            }
+            hoverPointComponent.AttachToControlFlowEdge(this);
+            hoverPoint.SetActive(true);
 
             return hoverPoint;
         }
@@ -608,6 +635,7 @@ namespace VRVis.Spawner.Edges {
             }
 
             Vector3[] curvePoints = bezierCurve.CalculatePoints(LineStart, ControlPoint1, ControlPoint2, LineEnd);
+            UpdateMidHoverPoint(curvePoints[curvePoints.Length / 2]);
             UpdateVFXControlFlow(LineStart, ControlPoint1, ControlPoint2, LineEnd, CurveLength(curvePoints));
 
 
@@ -671,7 +699,7 @@ namespace VRVis.Spawner.Edges {
             var defaultColor = vfxControlFlow.GetGradient("Gradient").colorKeys[0].color;            
 
             if (region == null) {
-                Debug.LogError("Region is null!");
+                // Debug.LogError("Region is null!");
                 return defaultColor;
             }
 
@@ -901,6 +929,11 @@ namespace VRVis.Spawner.Edges {
                 sphere.transform.position = position;
                 sphere.SetActive(true);
             }
+        }
+
+        private void UpdateMidHoverPoint(Vector3 position) {
+            midHoverPoint.transform.rotation = Quaternion.Lerp(startHoverPoint.transform.rotation, endHoverPoint.transform.rotation, 0.5f);
+            midHoverPoint.transform.position = position;
         }
 
 
