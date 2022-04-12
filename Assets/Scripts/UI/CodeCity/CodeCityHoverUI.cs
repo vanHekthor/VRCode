@@ -46,11 +46,11 @@ namespace VRVis.UI.CodeCity {
                 // ToDo: maybe use "Physics.BoxCast()" to improve behaviour
                 // perform raycast from hand position to the desired UI position
                 // and check if there is anything between to avoid putting the UI inside an element
-                Vector3 handPos = laserOrigin.transform.position;
-                Vector3 handToPos = pos - handPos;
-                Ray ray = new Ray(handPos, handToPos);
+                Vector3 laserOriginPos = laserOrigin.transform.position;
+                Vector3 laserOriginToPos = pos - laserOriginPos;
+                Ray ray = new Ray(laserOriginPos, laserOriginToPos);
                 RaycastHit hitInfo = new RaycastHit();
-                float max_ray_dist = handToPos.magnitude;
+                float max_ray_dist = laserOriginToPos.magnitude;
                 float radius = uiCollisionRadius;
                 if (Physics.SphereCast(ray, radius, out hitInfo, max_ray_dist - uiCollisionRadius * 0.5f, collisionLayerMask)) {
                     if (hitInfo.collider.gameObject != uiInstance) { pos = CalculatePosition(hitInfo.distance); }
