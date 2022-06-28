@@ -1,0 +1,445 @@
+<color=#75715e>/*</color>
+<color=#75715e> * Copyright (c) 2008, Harald Kuhr</color>
+<color=#75715e> * All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * Redistribution and use in source and binary forms, with or without</color>
+<color=#75715e> * modification, are permitted provided that the following conditions are met:</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Redistributions of source code must retain the above copyright notice, this</color>
+<color=#75715e> *   list of conditions and the following disclaimer.</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Redistributions in binary form must reproduce the above copyright notice,</color>
+<color=#75715e> *   this list of conditions and the following disclaimer in the documentation</color>
+<color=#75715e> *   and/or other materials provided with the distribution.</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Neither the name of the copyright holder nor the names of its</color>
+<color=#75715e> *   contributors may be used to endorse or promote products derived from</color>
+<color=#75715e> *   this software without specific prior written permission.</color>
+<color=#75715e> *</color>
+<color=#75715e> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</color>
+<color=#75715e> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</color>
+<color=#75715e> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE</color>
+<color=#75715e> * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE</color>
+<color=#75715e> * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL</color>
+<color=#75715e> * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR</color>
+<color=#75715e> * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER</color>
+<color=#75715e> * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,</color>
+<color=#75715e> * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE</color>
+<color=#75715e> * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.twelvemonkeys.util</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.Serializable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A {@code Map} implementation that removes (exipres) its elements after</color>
+<color=#75715e> * a given period. The map is by default backed by a {@link HashMap},</color>
+<color=#75715e> * or can be instantiated with any given {@code Map} as backing.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * Notes to consider when using this map:</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *  <li>Elements may not expire on the exact millisecond as expected.</li></color>
+<color=#75715e> *  <li>The value returned by the {@code size()} method  of the map, or any of</color>
+<color=#75715e> *      its collection views, may not represent</color>
+<color=#75715e> *      the exact number of entries in the map at any given time.</li></color>
+<color=#75715e> *  <li>Elements in this map may expire at any time</color>
+<color=#75715e> *      (but never between invocations of {@code Iterator.hasNext()}</color>
+<color=#75715e> *      and {@code Iterator.next()} or {@code Iterator.remove()},</color>
+<color=#75715e> *      when iterating the collection views).</li></color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author <a href="mailto:harald.kuhr@gmail.com">Harald Kuhr</a></color>
+<color=#75715e> * @version $Id: //depot/branches/personal/haraldk/twelvemonkeys/release-2/twelvemonkeys-core/src/main/java/com/twelvemonkeys/util/TimeoutMap.java#2 $</color>
+<color=#75715e> * @todo Consider have this Map extend LinkedMap.. That way the removeExpired</color>
+<color=#75715e> * method only have to run from the first element, until it finds an element</color>
+<color=#75715e> * that should not expire, as elements are in insertion order.</color>
+<color=#75715e> * and next expiry time would be the time of the first element.</color>
+<color=#75715e> * @todo Consider running the removeExpiredEntries method in a separate (deamon) thread</color>
+<color=#75715e> * @todo - or document why it is not such a good idea.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>TimeoutMap</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#66d9ef>extends</color> <color=#f8f8f2>AbstractDecoratedMap</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>ExpiringMap</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>,</color> <color=#f8f8f2>Serializable</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/**</color>
+<color=#75715e>     * Expiry time</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#f8f8f2>expiryTime</color> <color=#f92672>=</color> <color=#ae81ff>60000L</color><color=#f8f8f2>;</color>  <color=#75715e>// 1 minute</color>
+
+    <color=#75715e>//////////////////////</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>long</color> <color=#f8f8f2>nextExpiryTime</color><color=#f8f8f2>;</color>
+    <color=#75715e>//////////////////////</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Creates a {@code TimeoutMap} with the default expiry time of 1 minute.</color>
+<color=#75715e>     * This {@code TimeoutMap} will be backed by a new {@code HashMap} instance.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <small>This is constructor is here to comply with the reccomendations for</color>
+<color=#75715e>     * "standard" constructors in the {@code Map} interface.</small></color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @see #TimeoutMap(long)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>TimeoutMap</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Creates a {@code TimeoutMap} containing the same elements as the given map</color>
+<color=#75715e>     * with the default expiry time of 1 minute.</color>
+<color=#75715e>     * This {@code TimeoutMap} will be backed by a new {@code HashMap} instance,</color>
+<color=#75715e>     * and <em>not</em> the map passed in as a paramter.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <small>This is constructor is here to comply with the reccomendations for</color>
+<color=#75715e>     * "standard" constructors in the {@code Map} interface.</small></color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pContents the map whose mappings are to be placed in this map.</color>
+<color=#75715e>     *                  May be {@code null}.</color>
+<color=#75715e>     * @see #TimeoutMap(Map, Map, long)</color>
+<color=#75715e>     * @see Map</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>TimeoutMap</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f92672>?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>pContents</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>pContents</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Creates a {@code TimeoutMap} with the given expiry time (milliseconds).</color>
+<color=#75715e>     * This {@code TimeoutMap} will be backed by a new {@code HashMap} instance.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pExpiryTime the expiry time (time to live) for elements in this map</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>TimeoutMap</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>expiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Creates a {@code TimeoutMap} with the given expiry time (milliseconds).</color>
+<color=#75715e>     * This {@code TimeoutMap} will be backed by the given {@code Map}.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <EM>Note that structurally modifying the backing map directly (not</color>
+<color=#75715e>     * through this map or its collection views), is not allowed, and will</color>
+<color=#75715e>     * produce undeterministic exceptions.</EM></color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pBacking    the map that will be used as backing.</color>
+<color=#75715e>     * @param pContents   the map whose mappings are to be placed in this map.</color>
+<color=#75715e>     *                    May be {@code null}.</color>
+<color=#75715e>     * @param pExpiryTime the expiry time (time to live) for elements in this map</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>TimeoutMap</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#f8f8f2>pBacking</color><color=#f8f8f2>,</color> <color=#f8f8f2>Map</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f92672>?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>pContents</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>pBacking</color><color=#f8f8f2>,</color> <color=#f8f8f2>pContents</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>expiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Gets the maximum time any value will be kept in the map, before it expires.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the expiry time</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getExpiryTime</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>expiryTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Sets the maximum time any value will be kept in the map, before it expires.</color>
+<color=#75715e>     * Removes any items that are older than the specified time.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pExpiryTime the expiry time (time to live) for elements in this map</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setExpiryTime</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>oldEexpiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>expiryTime</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>expiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>pExpiryTime</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expiryTime</color> <color=#f92672><</color> <color=#f8f8f2>oldEexpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>// Expire now</color>
+            <color=#f8f8f2>nextExpiryTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the number of key-value mappings in this map.  If the</color>
+<color=#75715e>     * map contains more than {@code Integer.MAX_VALUE} elements, returns</color>
+<color=#75715e>     * {@code Integer.MAX_VALUE}.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the number of key-value mappings in this map.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns {@code true} if this map contains no key-value mappings.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return {@code true} if this map contains no key-value mappings.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>()</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns {@code true} if this map contains a mapping for the specified</color>
+<color=#75715e>     * pKey.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pKey pKey whose presence in this map is to be tested.</color>
+<color=#75715e>     * @return {@code true} if this map contains a mapping for the specified</color>
+<color=#75715e>     * pKey.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the value to which this map maps the specified pKey.  Returns</color>
+<color=#75715e>     * {@code null} if the map contains no mapping for this pKey.  A return</color>
+<color=#75715e>     * value of {@code null} does not <i>necessarily</i> indicate that the</color>
+<color=#75715e>     * map contains no mapping for the pKey; it's also possible that the map</color>
+<color=#75715e>     * explicitly maps the pKey to {@code null}.  The {@code containsKey}</color>
+<color=#75715e>     * operation may be used to distinguish these two cases.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pKey pKey whose associated value is to be returned.</color>
+<color=#75715e>     * @return the value to which this map maps the specified pKey, or</color>
+<color=#75715e>     * {@code null} if the map contains no mapping for this pKey.</color>
+<color=#75715e>     * @see #containsKey(Object)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>isExpired</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#75715e>//noinspection SuspiciousMethodCalls</color>
+            <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>processRemoved</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Associates the specified pValue with the specified pKey in this map</color>
+<color=#75715e>     * (optional operation).  If the map previously contained a mapping for</color>
+<color=#75715e>     * this pKey, the old pValue is replaced.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pKey   pKey with which the specified pValue is to be associated.</color>
+<color=#75715e>     * @param pValue pValue to be associated with the specified pKey.</color>
+<color=#75715e>     * @return previous pValue associated with specified pKey, or {@code null}</color>
+<color=#75715e>     * if there was no mapping for pKey.  A {@code null} return can</color>
+<color=#75715e>     * also indicate that the map previously associated {@code null}</color>
+<color=#75715e>     * with the specified pKey, if the implementation supports</color>
+<color=#75715e>     * {@code null} values.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>K</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>V</color> <color=#f8f8f2>oldValue</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>oldValue</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+            <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>createEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>entry</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>oldValue</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>mValue</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>setValue</color><color=#f8f8f2>(</color><color=#f8f8f2>pValue</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>recordAccess</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>// Need to remove expired objects every now and then</color>
+        <color=#75715e>// We do it in the put method, to avoid resource leaks over time.</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>modCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>oldValue</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes the mapping for this pKey from this map if present (optional</color>
+<color=#75715e>     * operation).</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pKey pKey whose mapping is to be removed from the map.</color>
+<color=#75715e>     * @return previous value associated with specified pKey, or {@code null}</color>
+<color=#75715e>     * if there was no mapping for pKey.  A {@code null} return can</color>
+<color=#75715e>     * also indicate that the map previously associated {@code null}</color>
+<color=#75715e>     * with the specified pKey, if the implementation supports</color>
+<color=#75715e>     * {@code null} values.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes all mappings from this map.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>clear</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>  <color=#75715e>// Finally something straightforward.. :-)</color>
+        <color=#f8f8f2>init</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*protected*/</color> <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>createEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>K</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes any expired mappings.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>removeExpiredEntries</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// Remove any expired elements</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>now</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>now</color> <color=#f92672>></color> <color=#f8f8f2>nextExpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>removeExpiredEntriesSynced</color><color=#f8f8f2>(</color><color=#f8f8f2>now</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Okay, I guess this do resemble DCL...</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pTime now</color>
+<color=#75715e>     * @todo Write some exhausting multi-threaded unit-tests.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>removeExpiredEntriesSynced</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>pTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pTime</color> <color=#f92672>></color> <color=#f8f8f2>nextExpiryTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>////</color>
+            <color=#66d9ef>long</color> <color=#f8f8f2>next</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>nextExpiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>next</color><color=#f8f8f2>;</color> <color=#75715e>// Avoid multiple runs...</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#f8f8f2>iterator</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntryIterator</color><color=#f8f8f2>();</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+                <color=#75715e>////</color>
+                <color=#66d9ef>long</color> <color=#f8f8f2>expires</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>expires</color><color=#f8f8f2>();</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expires</color> <color=#f92672><</color> <color=#f8f8f2>next</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>next</color> <color=#f92672>=</color> <color=#f8f8f2>expires</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+                <color=#75715e>////</color>
+            <color=#f8f8f2>}</color>
+            <color=#75715e>////</color>
+            <color=#f8f8f2>nextExpiryTime</color> <color=#f92672>=</color> <color=#f8f8f2>next</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>values</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#a6e22e>entrySet</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f92672>></color> <color=#a6e22e>keySet</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeExpiredEntries</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>// Subclass overrides these to alter behavior of views' iterator() method</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f92672>></color> <color=#a6e22e>newKeyIterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>KeyIterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>newValueIterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>ValueIterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#a6e22e>newEntryIterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntryIterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>processRemoved</color><color=#f8f8f2>(</color><color=#f8f8f2>Entry</color> <color=#f8f8f2>pRemoved</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Note: Iterating through this iterator will remove any expired values.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>TimeoutMapIterator</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>>></color> <color=#f8f8f2>mIterator</color> <color=#f92672>=</color> <color=#f8f8f2>entries</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>BasicEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>mNext</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>mNow</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>mNext</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color> <color=#75715e>// advance</color>
+            <color=#f8f8f2>mIterator</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasNext</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>mNext</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color> <color=#75715e>// Never expires between hasNext and next/remove!</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>mNext</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>mIterator</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>mIterator</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+                <color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>timed</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timed</color><color=#f8f8f2>.</color><color=#a6e22e>isExpiredBy</color><color=#f8f8f2>(</color><color=#f8f8f2>mNow</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                    <color=#75715e>// Remove from map, and continue</color>
+                    <color=#f8f8f2>mIterator</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+                    <color=#f8f8f2>processRemoved</color><color=#f8f8f2>(</color><color=#f8f8f2>timed</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+                    <color=#75715e>// Go with this entry</color>
+                    <color=#f8f8f2>mNext</color> <color=#f92672>=</color> <color=#f8f8f2>timed</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>BasicEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>nextEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>NoSuchElementException</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#f8f8f2>BasicEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>mNext</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>mNext</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color> <color=#75715e>// advance</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>KeyIterator</color> <color=#66d9ef>extends</color> <color=#f8f8f2>TimeoutMapIterator</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>public</color> <color=#f8f8f2>K</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>nextEntry</color><color=#f8f8f2>().</color><color=#a6e22e>mKey</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>ValueIterator</color> <color=#66d9ef>extends</color> <color=#f8f8f2>TimeoutMapIterator</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>nextEntry</color><color=#f8f8f2>().</color><color=#a6e22e>mValue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>EntryIterator</color> <color=#66d9ef>extends</color> <color=#f8f8f2>TimeoutMapIterator</color><color=#f92672><</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>>></color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>public</color> <color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>nextEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Keeps track of timed objects</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>TimedEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#66d9ef>extends</color> <color=#f8f8f2>BasicEntry</color><color=#f92672><</color><color=#f8f8f2>K</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>mTimestamp</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>TimedEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>K</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>V</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>mTimestamp</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>setValue</color><color=#f8f8f2>(</color><color=#f8f8f2>V</color> <color=#f8f8f2>pValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>mTimestamp</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>setValue</color><color=#f8f8f2>(</color><color=#f8f8f2>pValue</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isExpired</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>isExpiredBy</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isExpiredBy</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>pTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>pTime</color> <color=#f92672>></color> <color=#f8f8f2>expires</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#a6e22e>expires</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>mTimestamp</color> <color=#f92672>+</color> <color=#f8f8f2>expiryTime</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

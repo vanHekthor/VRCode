@@ -1,0 +1,573 @@
+<color=#f92672>package</color> <color=#f8f8f2>org.imgscalr</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>org.imgscalr.Scalr.Method</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>org.imgscalr.Scalr.Mode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>org.imgscalr.Scalr.Rotation</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.image.BufferedImage</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.image.BufferedImageOp</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.image.ImagingOpException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicInteger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Class used to provide the asynchronous versions of all the methods defined in</color>
+<color=#75715e> * {@link Scalr} for the purpose of efficiently handling large amounts of image</color>
+<color=#75715e> * operations via a select number of processing threads asynchronously.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * Given that image-scaling operations, especially when working with large</color>
+<color=#75715e> * images, can be very hardware-intensive (both CPU and memory), in large-scale</color>
+<color=#75715e> * deployments (e.g. a busy web application) it becomes increasingly important</color>
+<color=#75715e> * that the scale operations performed by imgscalr be manageable so as not to</color>
+<color=#75715e> * fire off too many simultaneous operations that the JVM's heap explodes and</color>
+<color=#75715e> * runs out of memory or pegs the CPU on the host machine, staving all other</color>
+<color=#75715e> * running processes.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * Up until now it was left to the caller to implement their own serialization</color>
+<color=#75715e> * or limiting logic to handle these use-cases. Given imgscalr's popularity in</color>
+<color=#75715e> * web applications it was determined that this requirement be common enough</color>
+<color=#75715e> * that it should be integrated directly into the imgscalr library for everyone</color>
+<color=#75715e> * to benefit from.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * Every method in this class wraps the matching methods in the {@link Scalr}</color>
+<color=#75715e> * class in new {@link Callable} instances that are submitted to an internal</color>
+<color=#75715e> * {@link ExecutorService} for execution at a later date. A {@link Future} is</color>
+<color=#75715e> * returned to the caller representing the task that is either currently</color>
+<color=#75715e> * performing the scale operation or will at a future date depending on where it</color>
+<color=#75715e> * is in the {@link ExecutorService}'s queue. {@link Future#get()} or</color>
+<color=#75715e> * {@link Future#get(long, TimeUnit)} can be used to block on the</color>
+<color=#75715e> * <code>Future</code>, waiting for the scale operation to complete and return</color>
+<color=#75715e> * the resultant {@link BufferedImage} to the caller.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * This design provides the following features:</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> * <li>Non-blocking, asynchronous scale operations that can continue execution</color>
+<color=#75715e> * while waiting on the scaled result.</li></color>
+<color=#75715e> * <li>Serialize all scale requests down into a maximum number of</color>
+<color=#75715e> * <em>simultaneous</em> scale operations with no additional/complex logic. The</color>
+<color=#75715e> * number of simultaneous scale operations is caller-configurable (see</color>
+<color=#75715e> * {@link #THREAD_COUNT}) so as best to optimize the host system (e.g. 1 scale</color>
+<color=#75715e> * thread per core).</li></color>
+<color=#75715e> * <li>No need to worry about overloading the host system with too many scale</color>
+<color=#75715e> * operations, they will simply queue up in this class and execute in-order.</li></color>
+<color=#75715e> * <li>Synchronous/blocking behavior can still be achieved (if desired) by</color>
+<color=#75715e> * calling <code>get()</code> or <code>get(long, TimeUnit)</code> immediately on</color>
+<color=#75715e> * the returned {@link Future} from any of the methods below.</li></color>
+<color=#75715e> * </ul></color>
+<color=#75715e> * <h3>Performance</h3></color>
+<color=#75715e> * When tuning this class for optimal performance, benchmarking your particular</color>
+<color=#75715e> * hardware is the best approach. For some rough guidelines though, there are</color>
+<color=#75715e> * two resources you want to watch closely:</color>
+<color=#75715e> * <ol></color>
+<color=#75715e> * <li>JVM Heap Memory (Assume physical machine memory is always sufficiently</color>
+<color=#75715e> * large)</li></color>
+<color=#75715e> * <li># of CPU Cores</li></color>
+<color=#75715e> * </ol></color>
+<color=#75715e> * You never want to allocate more scaling threads than you have CPU cores and</color>
+<color=#75715e> * on a sufficiently busy host where some of the cores may be busy running a</color>
+<color=#75715e> * database or a web server, you will want to allocate even less scaling</color>
+<color=#75715e> * threads.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * So as a maximum you would never want more scaling threads than CPU cores in</color>
+<color=#75715e> * any situation and less so on a busy server.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * If you allocate more threads than you have available CPU cores, your scaling</color>
+<color=#75715e> * operations will slow down as the CPU will spend a considerable amount of time</color>
+<color=#75715e> * context-switching between threads on the same core trying to finish all the</color>
+<color=#75715e> * tasks in parallel. You might still be tempted to do this because of the I/O</color>
+<color=#75715e> * delay some threads will encounter reading images off disk, but when you do</color>
+<color=#75715e> * your own benchmarking you'll likely find (as I did) that the actual disk I/O</color>
+<color=#75715e> * necessary to pull the image data off disk is a much smaller portion of the</color>
+<color=#75715e> * execution time than the actual scaling operations.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * If you are executing on a storage medium that is unexpectedly slow and I/O is</color>
+<color=#75715e> * a considerable portion of the scaling operation (e.g. S3 or EBS volumes),</color>
+<color=#75715e> * feel free to try using more threads than CPU cores to see if that helps; but</color>
+<color=#75715e> * in most normal cases, it will only slow down all other parallel scaling</color>
+<color=#75715e> * operations.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * As for memory, every time an image is scaled it is decoded into a</color>
+<color=#75715e> * {@link BufferedImage} and stored in the JVM Heap space (decoded image</color>
+<color=#75715e> * instances are always larger than the source images on-disk). For larger</color>
+<color=#75715e> * images, that can use up quite a bit of memory. You will need to benchmark</color>
+<color=#75715e> * your particular use-cases on your hardware to get an idea of where the sweet</color>
+<color=#75715e> * spot is for this; if you are operating within tight memory bounds, you may</color>
+<color=#75715e> * want to limit simultaneous scaling operations to 1 or 2 regardless of the</color>
+<color=#75715e> * number of cores just to avoid having too many {@link BufferedImage} instances</color>
+<color=#75715e> * in JVM Heap space at the same time.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * These are rough metrics and behaviors to give you an idea of how best to tune</color>
+<color=#75715e> * this class for your deployment, but nothing can replacement writing a small</color>
+<color=#75715e> * Java class that scales a handful of images in a number of different ways and</color>
+<color=#75715e> * testing that directly on your deployment hardware.</color>
+<color=#75715e> * <h3>Resource Overhead</h3></color>
+<color=#75715e> * The {@link ExecutorService} utilized by this class won't be initialized until</color>
+<color=#75715e> * one of the operation methods are called, at which point the</color>
+<color=#75715e> * <code>service</code> will be instantiated for the first time and operation</color>
+<color=#75715e> * queued up.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * More specifically, if you have no need for asynchronous image processing</color>
+<color=#75715e> * offered by this class, you don't need to worry about wasted resources or</color>
+<color=#75715e> * hanging/idle threads as they will never be created if you never use this</color>
+<color=#75715e> * class.</color>
+<color=#75715e> * <h3>Cleaning up Service Threads</h3></color>
+<color=#75715e> * By default the {@link Thread}s created by the internal</color>
+<color=#75715e> * {@link ThreadPoolExecutor} do not run in <code>daemon</code> mode; which</color>
+<color=#75715e> * means they will block the host VM from exiting until they are explicitly shut</color>
+<color=#75715e> * down in a client application; in a server application the container will shut</color>
+<color=#75715e> * down the pool forcibly.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * If you have used the {@link AsyncScalr} class and are trying to shut down a</color>
+<color=#75715e> * client application, you will need to call {@link #getService()} then</color>
+<color=#75715e> * {@link ExecutorService#shutdown()} or {@link ExecutorService#shutdownNow()}</color>
+<color=#75715e> * to have the threads terminated; you may also want to look at the</color>
+<color=#75715e> * {@link ExecutorService#awaitTermination(long, TimeUnit)} method if you'd like</color>
+<color=#75715e> * to more closely monitor the shutting down process (and finalization of</color>
+<color=#75715e> * pending scale operations).</color>
+<color=#75715e> * <h3>Reusing Shutdown AsyncScalr</h3></color>
+<color=#75715e> * If you have previously called <code>shutdown</code> on the underlying service</color>
+<color=#75715e> * utilized by this class, subsequent calls to any of the operations this class</color>
+<color=#75715e> * provides will invoke the internal {@link #checkService()} method which will</color>
+<color=#75715e> * replace the terminated underlying {@link ExecutorService} with a new one via</color>
+<color=#75715e> * the {@link #createService()} method.</color>
+<color=#75715e> * <h3>Custom Implementations</h3></color>
+<color=#75715e> * If a subclass wants to customize the {@link ExecutorService} or</color>
+<color=#75715e> * {@link ThreadFactory} used under the covers, this can be done by overriding</color>
+<color=#75715e> * the {@link #createService()} method which is invoked by this class anytime a</color>
+<color=#75715e> * new {@link ExecutorService} is needed.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * By default the {@link #createService()} method delegates to the</color>
+<color=#75715e> * {@link #createService(ThreadFactory)} method with a new instance of</color>
+<color=#75715e> * {@link DefaultThreadFactory}. Either of these methods can be overridden and</color>
+<color=#75715e> * customized easily if desired.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * <strong>TIP</strong>: A common customization to this class is to make the</color>
+<color=#75715e> * {@link Thread}s generated by the underlying factory more server-friendly, in</color>
+<color=#75715e> * which case the caller would want to use an instance of the</color>
+<color=#75715e> * {@link ServerThreadFactory} when creating the new {@link ExecutorService}.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * This can be done in one line by overriding {@link #createService()} and</color>
+<color=#75715e> * returning the result of:</color>
+<color=#75715e> * <code>return createService(new ServerThreadFactory());</code></color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * By default this class uses an {@link ThreadPoolExecutor} internally to handle</color>
+<color=#75715e> * execution of queued image operations. If a different type of</color>
+<color=#75715e> * {@link ExecutorService} is desired, again, simply overriding the</color>
+<color=#75715e> * {@link #createService()} method of choice is the right way to do that.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Riyad Kalla (software@thebuzzmedia.com)</color>
+<color=#75715e> * @since 3.2</color>
+<color=#75715e> */</color>
+<color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"javadoc"</color><color=#f8f8f2>)</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>AsyncScalr</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/**</color>
+<color=#75715e>     * System property name used to set the number of threads the default</color>
+<color=#75715e>     * underlying {@link ExecutorService} will use to process async image</color>
+<color=#75715e>     * operations.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * Value is "<code>imgscalr.async.threadCount</code>".</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>THREAD_COUNT_PROPERTY_NAME</color> <color=#f92672>=</color> <color=#e6db74>"imgscalr.async.threadCount"</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Number of threads the internal {@link ExecutorService} will use to</color>
+<color=#75715e>     * simultaneously execute scale requests.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * This value can be changed by setting the</color>
+<color=#75715e>     * <code>imgscalr.async.threadCount</code> system property (see</color>
+<color=#75715e>     * {@link #THREAD_COUNT_PROPERTY_NAME}) to a valid integer value &gt; 0.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * Default value is <code>2</code>.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>THREAD_COUNT</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>getInteger</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>THREAD_COUNT_PROPERTY_NAME</color><color=#f8f8f2>,</color> <color=#ae81ff>2</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Initializer used to verify the THREAD_COUNT system property.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>THREAD_COUNT</color> <color=#f92672><</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#e6db74>"System property '"</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>THREAD_COUNT_PROPERTY_NAME</color> <color=#f92672>+</color> <color=#e6db74>"' set THREAD_COUNT to "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>THREAD_COUNT</color> <color=#f92672>+</color> <color=#e6db74>", but THREAD_COUNT must be > 0."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#f8f8f2>ExecutorService</color> <color=#f8f8f2>service</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Used to get access to the internal {@link ExecutorService} used by this</color>
+<color=#75715e>     * class to process scale operations.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <strong>NOTE</strong>: You will need to explicitly shutdown any service</color>
+<color=#75715e>     * currently set on this class before the host JVM exits.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * You can call {@link ExecutorService#shutdown()} to wait for all scaling</color>
+<color=#75715e>     * operations to complete first or call</color>
+<color=#75715e>     * {@link ExecutorService#shutdownNow()} to kill any in-process operations</color>
+<color=#75715e>     * and purge all pending operations before exiting.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * Additionally you can use</color>
+<color=#75715e>     * {@link ExecutorService#awaitTermination(long, TimeUnit)} after issuing a</color>
+<color=#75715e>     * shutdown command to try and wait until the service has finished all</color>
+<color=#75715e>     * tasks.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the current {@link ExecutorService} used by this class to process</color>
+<color=#75715e>     * scale operations.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>ExecutorService</color> <color=#a6e22e>getService</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#apply(BufferedImage, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>apply</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                              <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>apply</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#crop(BufferedImage, int, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>crop</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                             <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>width</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>height</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>crop</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>width</color><color=#f8f8f2>,</color> <color=#f8f8f2>height</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#crop(BufferedImage, int, int, int, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>crop</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                             <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>x</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>y</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>width</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>height</color><color=#f8f8f2>,</color>
+                                             <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>crop</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>x</color><color=#f8f8f2>,</color> <color=#f8f8f2>y</color><color=#f8f8f2>,</color> <color=#f8f8f2>width</color><color=#f8f8f2>,</color> <color=#f8f8f2>height</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#pad(BufferedImage, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>padding</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>padding</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#pad(BufferedImage, int, Color, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>padding</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Color</color> <color=#f8f8f2>color</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>padding</color><color=#f8f8f2>,</color> <color=#f8f8f2>color</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Method, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Method</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Mode, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Mode</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Method, Mode, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Method</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Mode</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetSize</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, int, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Method, int, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Method</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Mode, int, int, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Mode</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#resize(BufferedImage, Method, Mode, int, int,</color>
+<color=#75715e>     * BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Method</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Mode</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>scalingMethod</color><color=#f8f8f2>,</color> <color=#f8f8f2>resizeMode</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>targetWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetHeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @see Scalr#rotate(BufferedImage, Rotation, BufferedImageOp...)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Future</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color> <color=#a6e22e>rotate</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>src</color><color=#f8f8f2>,</color>
+                                               <color=#66d9ef>final</color> <color=#f8f8f2>Rotation</color> <color=#f8f8f2>rotation</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImageOp</color><color=#f8f8f2>...</color> <color=#f8f8f2>ops</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ImagingOpException</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkService</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>submit</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Callable</color><color=#f92672><</color><color=#f8f8f2>BufferedImage</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>call</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>Scalr</color><color=#f8f8f2>.</color><color=#a6e22e>rotate</color><color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>,</color> <color=#f8f8f2>rotation</color><color=#f8f8f2>,</color> <color=#f8f8f2>ops</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#f8f8f2>ExecutorService</color> <color=#a6e22e>createService</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>createService</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>DefaultThreadFactory</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#f8f8f2>ExecutorService</color> <color=#a6e22e>createService</color><color=#f8f8f2>(</color><color=#f8f8f2>ThreadFactory</color> <color=#f8f8f2>factory</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>factory</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"factory cannot be null"</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>Executors</color><color=#f8f8f2>.</color><color=#a6e22e>newFixedThreadPool</color><color=#f8f8f2>(</color><color=#f8f8f2>THREAD_COUNT</color><color=#f8f8f2>,</color> <color=#f8f8f2>factory</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Used to verify that the underlying <code>service</code> points at an</color>
+<color=#75715e>     * active {@link ExecutorService} instance that can be used by this class.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * If <code>service</code> is <code>null</code>, has been shutdown or</color>
+<color=#75715e>     * terminated then this method will replace it with a new</color>
+<color=#75715e>     * {@link ExecutorService} by calling the {@link #createService()} method</color>
+<color=#75715e>     * and assigning the returned value to <code>service</code>.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * Any subclass that wants to customize the {@link ExecutorService} or</color>
+<color=#75715e>     * {@link ThreadFactory} used internally by this class should override the</color>
+<color=#75715e>     * {@link #createService()}.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>checkService</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>service</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdown</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>isTerminated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/*</color>
+<color=#75715e>             * If service was shutdown or terminated, assigning a new value will</color>
+<color=#75715e>             * free the reference to the instance, allowing it to be GC'ed when</color>
+<color=#75715e>             * it is done shutting down (assuming it hadn't already).</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>service</color> <color=#f92672>=</color> <color=#f8f8f2>createService</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Default {@link ThreadFactory} used by the internal</color>
+<color=#75715e>     * {@link ExecutorService} to creates execution {@link Thread}s for image</color>
+<color=#75715e>     * scaling.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * More or less a copy of the hidden class backing the</color>
+<color=#75715e>     * {@link Executors#defaultThreadFactory()} method, but exposed here to make</color>
+<color=#75715e>     * it easier for implementors to extend and customize.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @author Doug Lea</color>
+<color=#75715e>     * @author Riyad Kalla (software@thebuzzmedia.com)</color>
+<color=#75715e>     * @since 4.0</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>DefaultThreadFactory</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ThreadFactory</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>poolNumber</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>ThreadGroup</color> <color=#f8f8f2>group</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>threadNumber</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>namePrefix</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>DefaultThreadFactory</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>SecurityManager</color> <color=#f8f8f2>manager</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>getSecurityManager</color><color=#f8f8f2>();</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Determine the group that threads created by this factory will be</color>
+<color=#75715e>             * in.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>group</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>manager</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>().</color><color=#a6e22e>getThreadGroup</color><color=#f8f8f2>()</color>
+                    <color=#f8f8f2>:</color> <color=#f8f8f2>manager</color><color=#f8f8f2>.</color><color=#a6e22e>getThreadGroup</color><color=#f8f8f2>());</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Define a common name prefix for the threads created by this</color>
+<color=#75715e>             * factory.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>namePrefix</color> <color=#f92672>=</color> <color=#e6db74>"pool-"</color> <color=#f92672>+</color> <color=#f8f8f2>poolNumber</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>"-thread-"</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/**</color>
+<color=#75715e>         * Used to create a {@link Thread} capable of executing the given</color>
+<color=#75715e>         * {@link Runnable}.</color>
+<color=#75715e>         * <p/></color>
+<color=#75715e>         * Thread created by this factory are utilized by the parent</color>
+<color=#75715e>         * {@link ExecutorService} when processing queued up scale operations.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>public</color> <color=#f8f8f2>Thread</color> <color=#a6e22e>newThread</color><color=#f8f8f2>(</color><color=#f8f8f2>Runnable</color> <color=#f8f8f2>r</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/*</color>
+<color=#75715e>             * Create a new thread in our specified group with a meaningful</color>
+<color=#75715e>             * thread name so it is easy to identify.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>Thread</color> <color=#f8f8f2>thread</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>,</color> <color=#f8f8f2>r</color><color=#f8f8f2>,</color> <color=#f8f8f2>namePrefix</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>threadNumber</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>(),</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>// Configure thread according to class or subclass</color>
+            <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>setDaemon</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>setPriority</color><color=#f8f8f2>(</color><color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>NORM_PRIORITY</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>return</color> <color=#f8f8f2>thread</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * An extension of the {@link DefaultThreadFactory} class that makes two</color>
+<color=#75715e>     * changes to the execution {@link Thread}s it generations:</color>
+<color=#75715e>     * <ol></color>
+<color=#75715e>     * <li>Threads are set to be daemon threads instead of user threads.</li></color>
+<color=#75715e>     * <li>Threads execute with a priority of {@link Thread#MIN_PRIORITY} to</color>
+<color=#75715e>     * make them more compatible with server environment deployments.</li></color>
+<color=#75715e>     * </ol></color>
+<color=#75715e>     * This class is provided as a convenience for subclasses to use if they</color>
+<color=#75715e>     * want this (common) customization to the {@link Thread}s used internally</color>
+<color=#75715e>     * by {@link AsyncScalr} to process images, but don't want to have to write</color>
+<color=#75715e>     * the implementation.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @author Riyad Kalla (software@thebuzzmedia.com)</color>
+<color=#75715e>     * @since 4.0</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ServerThreadFactory</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DefaultThreadFactory</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/**</color>
+<color=#75715e>         * Overridden to set <code>daemon</code> property to <code>true</code></color>
+<color=#75715e>         * and decrease the priority of the new thread to</color>
+<color=#75715e>         * {@link Thread#MIN_PRIORITY} before returning it.</color>
+<color=#75715e>         */</color>
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#f8f8f2>Thread</color> <color=#a6e22e>newThread</color><color=#f8f8f2>(</color><color=#f8f8f2>Runnable</color> <color=#f8f8f2>r</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Thread</color> <color=#f8f8f2>thread</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>newThread</color><color=#f8f8f2>(</color><color=#f8f8f2>r</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>setDaemon</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>setPriority</color><color=#f8f8f2>(</color><color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_PRIORITY</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>return</color> <color=#f8f8f2>thread</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

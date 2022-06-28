@@ -1,0 +1,545 @@
+<color=#75715e>/*</color>
+<color=#75715e> * Copyright (c) 2008, Harald Kuhr</color>
+<color=#75715e> * All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * Redistribution and use in source and binary forms, with or without</color>
+<color=#75715e> * modification, are permitted provided that the following conditions are met:</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Redistributions of source code must retain the above copyright notice, this</color>
+<color=#75715e> *   list of conditions and the following disclaimer.</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Redistributions in binary form must reproduce the above copyright notice,</color>
+<color=#75715e> *   this list of conditions and the following disclaimer in the documentation</color>
+<color=#75715e> *   and/or other materials provided with the distribution.</color>
+<color=#75715e> *</color>
+<color=#75715e> * * Neither the name of the copyright holder nor the names of its</color>
+<color=#75715e> *   contributors may be used to endorse or promote products derived from</color>
+<color=#75715e> *   this software without specific prior written permission.</color>
+<color=#75715e> *</color>
+<color=#75715e> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</color>
+<color=#75715e> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</color>
+<color=#75715e> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE</color>
+<color=#75715e> * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE</color>
+<color=#75715e> * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL</color>
+<color=#75715e> * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR</color>
+<color=#75715e> * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER</color>
+<color=#75715e> * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,</color>
+<color=#75715e> * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE</color>
+<color=#75715e> * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.twelvemonkeys.util.service</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.twelvemonkeys.lang.Validate</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.twelvemonkeys.util.FilterIterator</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.URL</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A registry for service provider objects.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * Service providers are looked up from the classpath, under the path</color>
+<color=#75715e> * {@code META-INF/services/}&lt;full-class-name&gt;.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * For example:<br/></color>
+<color=#75715e> * {@code META-INF/services/com.company.package.spi.MyService}.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * The file should contain a list of fully-qualified concrete class names,</color>
+<color=#75715e> * one per line.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * The <em>full-class-name</em> represents an interface or (typically) an</color>
+<color=#75715e> * abstract class, and is the same class used as the category for this registry.</color>
+<color=#75715e> * Note that only one instance of a concrete subclass may be registered with a</color>
+<color=#75715e> * specific category at a time.</color>
+<color=#75715e> * <p/></color>
+<color=#75715e> * <small>Implementation detail: This class is a clean room implementation of</color>
+<color=#75715e> * a service registry and does not use the proprietary {@code sun.misc.Service}</color>
+<color=#75715e> * class that is referred to in the <em>JAR File specification</em>.</color>
+<color=#75715e> * This class should work on any Java platform.</color>
+<color=#75715e> * </small></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author <a href="mailto:harald.kuhr@gmail.com">Harald Kuhr</a></color>
+<color=#75715e> * @version $Id: com/twelvemonkeys/util/service/ServiceRegistry.java#2 $</color>
+<color=#75715e> * @see RegisterableService</color>
+<color=#75715e> * @see <a href="http://java.sun.com/j2se/1.3/docs/guide/jar/jar.html#Service%20Provider">JAR File Specification</a></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ServiceRegistry</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// TODO: Security issues?</color>
+    <color=#75715e>// TODO: Application contexts? Probably use instance per thread group..</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * "META-INF/services/"</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SERVICES</color> <color=#f92672>=</color> <color=#e6db74>"META-INF/services/"</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>// Class to CategoryRegistry mapping</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?></color><color=#f8f8f2>,</color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672>></color> <color=#f8f8f2>categoryMap</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Creates a {@code ServiceRegistry} instance with a set of categories</color>
+<color=#75715e>     * taken from the {@code pCategories} argument.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * The categories are constant during the lifetime of the registry, and may</color>
+<color=#75715e>     * not be changed after initial creation.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pCategories an {@code Iterator} containing</color>
+<color=#75715e>     *                    {@code Class} objects that defines this registry's categories.</color>
+<color=#75715e>     * @throws IllegalArgumentException if {@code pCategories} is {@code null}.</color>
+<color=#75715e>     * @throws ClassCastException       if {@code pCategories} contains anything</color>
+<color=#75715e>     *                                  but {@code Class} objects.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>ServiceRegistry</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Iterator</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>pCategories</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Validate</color><color=#f8f8f2>.</color><color=#a6e22e>notNull</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategories</color><color=#f8f8f2>,</color> <color=#e6db74>"categories"</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?></color><color=#f8f8f2>,</color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672>></color> <color=#f8f8f2>map</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedHashMap</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?></color><color=#f8f8f2>,</color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>pCategories</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>putCategory</color><color=#f8f8f2>(</color><color=#f8f8f2>map</color><color=#f8f8f2>,</color> <color=#f8f8f2>pCategories</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>// NOTE: Categories are constant for the lifetime of a registry</color>
+        <color=#f8f8f2>categoryMap</color> <color=#f92672>=</color> <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>unmodifiableMap</color><color=#f8f8f2>(</color><color=#f8f8f2>map</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>void</color> <color=#a6e22e>putCategory</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?></color><color=#f8f8f2>,</color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672>></color> <color=#f8f8f2>pMap</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>registry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>,</color> <color=#f8f8f2>registry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Registers all provider implementations for this {@code ServiceRegistry}</color>
+<color=#75715e>     * found in the application classpath.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @throws ServiceConfigurationError if an error occurred during registration</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>registerApplicationClasspathSPIs</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ClassLoader</color> <color=#f8f8f2>loader</color> <color=#f92672>=</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>().</color><color=#a6e22e>getContextClassLoader</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>categories</color> <color=#f92672>=</color> <color=#f8f8f2>categories</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>category</color> <color=#f92672>=</color> <color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+                <color=#75715e>// Find all META-INF/services/ + name on class path</color>
+                <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>SERVICES</color> <color=#f92672>+</color> <color=#f8f8f2>category</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+                <color=#f8f8f2>Enumeration</color><color=#f92672><</color><color=#f8f8f2>URL</color><color=#f92672>></color> <color=#f8f8f2>spiResources</color> <color=#f92672>=</color> <color=#f8f8f2>loader</color><color=#f8f8f2>.</color><color=#a6e22e>getResources</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+
+                <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>spiResources</color><color=#f8f8f2>.</color><color=#a6e22e>hasMoreElements</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>URL</color> <color=#f8f8f2>resource</color> <color=#f92672>=</color> <color=#f8f8f2>spiResources</color><color=#f8f8f2>.</color><color=#a6e22e>nextElement</color><color=#f8f8f2>();</color>
+                    <color=#f8f8f2>registerSPIs</color><color=#f8f8f2>(</color><color=#f8f8f2>resource</color><color=#f8f8f2>,</color> <color=#f8f8f2>category</color><color=#f8f8f2>,</color> <color=#f8f8f2>loader</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Registers all SPIs listed in the given resource.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pResource the resource to load SPIs from</color>
+<color=#75715e>     * @param pCategory the category class</color>
+<color=#75715e>     * @param pLoader   the class loader to use</color>
+<color=#75715e>     */</color>
+    <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>void</color> <color=#a6e22e>registerSPIs</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>URL</color> <color=#f8f8f2>pResource</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>ClassLoader</color> <color=#f8f8f2>pLoader</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Properties</color> <color=#f8f8f2>classNames</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Properties</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>classNames</color><color=#f8f8f2>.</color><color=#a6e22e>load</color><color=#f8f8f2>(</color><color=#f8f8f2>pResource</color><color=#f8f8f2>.</color><color=#a6e22e>openStream</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>classNames</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>({</color><color=#e6db74>"unchecked"</color><color=#f8f8f2>})</color>
+            <color=#f8f8f2>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>registry</color> <color=#f92672>=</color> <color=#f8f8f2>categoryMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>Set</color> <color=#f8f8f2>providerClassNames</color> <color=#f92672>=</color> <color=#f8f8f2>classNames</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>();</color>
+
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>providerClassName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>providerClassNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>String</color> <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>providerClassName</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+                    <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>({</color><color=#e6db74>"unchecked"</color><color=#f8f8f2>})</color>
+                    <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>providerClass</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>)</color> <color=#f8f8f2>Class</color><color=#f8f8f2>.</color><color=#a6e22e>forName</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#f8f8f2>pLoader</color><color=#f8f8f2>);</color>
+                    <color=#f8f8f2>T</color> <color=#f8f8f2>provider</color> <color=#f92672>=</color> <color=#f8f8f2>providerClass</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>();</color>
+                    <color=#f8f8f2>registry</color><color=#f8f8f2>.</color><color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>provider</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalAccessException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InstantiationException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceConfigurationError</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns an {@code Iterator} containing all providers in the given</color>
+<color=#75715e>     * category.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * The iterator supports removal.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <small></color>
+<color=#75715e>     * NOTE: Removing a provider from the iterator, deregisters the current</color>
+<color=#75715e>     * provider (as returned by the last invocation of {@code next()}) from</color>
+<color=#75715e>     * {@code pCategory}, it does <em>not</em> remove the provider</color>
+<color=#75715e>     * from other categories in the registry.</color>
+<color=#75715e>     * </small></color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pCategory the category class</color>
+<color=#75715e>     * @return an {@code Iterator} containing all providers in the given</color>
+<color=#75715e>     * category.</color>
+<color=#75715e>     * @throws IllegalArgumentException if {@code pCategory} is not a valid</color>
+<color=#75715e>     *                                  category in this registry</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#a6e22e>providers</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>).</color><color=#a6e22e>providers</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns an {@code Iterator} containing all categories in this registry.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * The iterator does not support removal.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return an {@code Iterator} containing all categories in this registry.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>categories</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>categoryMap</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns an {@code Iterator} containing all categories in this registry</color>
+<color=#75715e>     * the given {@code pProvider} <em>may be registered with</em>.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * The iterator does not support removal.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @return an {@code Iterator} containing all categories in this registry</color>
+<color=#75715e>     * the given {@code pProvider} may be registered with</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>compatibleCategories</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FilterIterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color><color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>(),</color>
+                <color=#66d9ef>new</color> <color=#f8f8f2>FilterIterator</color><color=#f8f8f2>.</color><color=#a6e22e>Filter</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>accept</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>pElement</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#66d9ef>return</color> <color=#f8f8f2>pElement</color><color=#f8f8f2>.</color><color=#a6e22e>isInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+                    <color=#f8f8f2>}</color>
+                <color=#f8f8f2>});</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns an {@code Iterator} containing all categories in this registry</color>
+<color=#75715e>     * the given {@code pProvider} <em>is currently registered with</em>.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * The iterator supports removal.</color>
+<color=#75715e>     * <p/></color>
+<color=#75715e>     * <small></color>
+<color=#75715e>     * NOTE: Removing a category from the iterator, de-registers</color>
+<color=#75715e>     * {@code pProvider} from the current category (as returned by the last</color>
+<color=#75715e>     * invocation of {@code next()}), it does <em>not</em> remove the category</color>
+<color=#75715e>     * itself from the registry.</color>
+<color=#75715e>     * </small></color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @return an {@code Iterator} containing all categories in this registry</color>
+<color=#75715e>     * the given {@code pProvider} may be registered with</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>containingCategories</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// TODO: Is removal using the iterator really a good idea?</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FilterIterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color><color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>(),</color>
+                <color=#66d9ef>new</color> <color=#f8f8f2>FilterIterator</color><color=#f8f8f2>.</color><color=#a6e22e>Filter</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>accept</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>pElement</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#66d9ef>return</color> <color=#f8f8f2>getRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>pElement</color><color=#f8f8f2>).</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+                    <color=#f8f8f2>}</color>
+                <color=#f8f8f2>})</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>current</color><color=#f8f8f2>;</color>
+
+            <color=#66d9ef>public</color> <color=#f8f8f2>Class</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>current</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>current</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"No current element"</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#f8f8f2>getRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>current</color><color=#f8f8f2>).</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>current</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>};</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Gets the category registry for the given category.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pCategory the category class</color>
+<color=#75715e>     * @return the {@code CategoryRegistry} for the given category</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#a6e22e>getRegistry</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>({</color><color=#e6db74>"unchecked"</color><color=#f8f8f2>})</color>
+        <color=#f8f8f2>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>registry</color> <color=#f92672>=</color> <color=#f8f8f2>categoryMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>registry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"No such category: "</color> <color=#f92672>+</color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>registry</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Registers the given provider for all categories it matches.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @return {@code true} if {@code pProvider} is now registered in</color>
+<color=#75715e>     * one or more categories it was not registered in before.</color>
+<color=#75715e>     * @see #compatibleCategories(Object)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>categories</color> <color=#f92672>=</color> <color=#f8f8f2>compatibleCategories</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>registered</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>category</color> <color=#f92672>=</color> <color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>registerImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#f8f8f2>category</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>registered</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>registered</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>registered</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>boolean</color> <color=#a6e22e>registerImpl</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>).</color><color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>.</color><color=#a6e22e>cast</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Registers the given provider for the given category.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @param pCategory the category class</color>
+<color=#75715e>     * @return {@code true} if {@code pProvider} is now registered in</color>
+<color=#75715e>     * the given category</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>boolean</color> <color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>super</color> <color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>registerImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * De-registers the given provider from all categories it's currently</color>
+<color=#75715e>     * registered in.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @return {@code true} if {@code pProvider} was previously registered in</color>
+<color=#75715e>     * any category and is now de-registered.</color>
+<color=#75715e>     * @see #containingCategories(Object)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>categories</color> <color=#f92672>=</color> <color=#f8f8f2>containingCategories</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>deregistered</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>category</color> <color=#f92672>=</color> <color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#f8f8f2>category</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>deregistered</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>deregistered</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>deregistered</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Deregisters the given provider from the given category.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param pProvider the provider instance</color>
+<color=#75715e>     * @param pCategory the category class</color>
+<color=#75715e>     * @return {@code true} if {@code pProvider} was previously registered in</color>
+<color=#75715e>     * the given category</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>).</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Keeps track of each individual category.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>class</color> <color=#a6e22e>CategoryRegistry</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>category</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f8f8f2>,</color> <color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>providers</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedHashMap</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f8f8f2>,</color> <color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>CategoryRegistry</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Validate</color><color=#f8f8f2>.</color><color=#a6e22e>notNull</color><color=#f8f8f2>(</color><color=#f8f8f2>pCategory</color><color=#f8f8f2>,</color> <color=#e6db74>"category"</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>category</color> <color=#f92672>=</color> <color=#f8f8f2>pCategory</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkCategory</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>category</color><color=#f8f8f2>.</color><color=#a6e22e>isInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color> <color=#f92672>+</color> <color=#e6db74>" not instance of category "</color> <color=#f92672>+</color> <color=#f8f8f2>category</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>checkCategory</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>// NOTE: We only register the new instance, if we don't already have an instance of pProvider's class.</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>(),</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>processRegistration</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>void</color> <color=#a6e22e>processRegistration</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RegisterableService</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>RegisterableService</color> <color=#f8f8f2>service</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RegisterableService</color><color=#f8f8f2>)</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>onRegistration</color><color=#f8f8f2>(</color><color=#f8f8f2>ServiceRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>category</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>checkCategory</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>// NOTE: We remove any provider of the same class, this may or may</color>
+            <color=#75715e>// not be the same instance as pProvider.</color>
+            <color=#f8f8f2>T</color> <color=#f8f8f2>oldProvider</color> <color=#f92672>=</color> <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>());</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldProvider</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>processDeregistration</color><color=#f8f8f2>(</color><color=#f8f8f2>oldProvider</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>void</color> <color=#a6e22e>processDeregistration</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>pOldProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pOldProvider</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RegisterableService</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>RegisterableService</color> <color=#f8f8f2>service</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RegisterableService</color><color=#f8f8f2>)</color> <color=#f8f8f2>pOldProvider</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>service</color><color=#f8f8f2>.</color><color=#a6e22e>onDeregistration</color><color=#f8f8f2>(</color><color=#f8f8f2>ServiceRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>category</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>pProvider</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#f8f8f2>pProvider</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#a6e22e>providers</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#75715e>// NOTE: The iterator must support removal because deregistering</color>
+            <color=#75715e>// using the deregister method will result in</color>
+            <color=#75715e>// ConcurrentModificationException in the iterator..</color>
+            <color=#75715e>// We wrap the iterator to track deregistration right.</color>
+            <color=#66d9ef>final</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>iterator</color> <color=#f92672>=</color> <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>T</color> <color=#f8f8f2>current</color><color=#f8f8f2>;</color>
+
+                <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasNext</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>return</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>();</color>
+
+                <color=#f8f8f2>}</color>
+
+                <color=#66d9ef>public</color> <color=#f8f8f2>T</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>current</color> <color=#f92672>=</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>());</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>iterator</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+                    <color=#f8f8f2>processDeregistration</color><color=#f8f8f2>(</color><color=#f8f8f2>current</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>};</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>({</color><color=#e6db74>"UnnecessaryFullyQualifiedName"</color><color=#f8f8f2>})</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>pArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Spi</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>class</color> <color=#a6e22e>One</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Spi</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>class</color> <color=#a6e22e>Two</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Spi</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>ServiceRegistry</color> <color=#f8f8f2>testRegistry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceRegistry</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color><color=#f8f8f2>asList</color><color=#f8f8f2>(</color>
+                        <color=#f8f8f2>java</color><color=#f8f8f2>.</color><color=#a6e22e>nio</color><color=#f8f8f2>.</color><color=#a6e22e>charset</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>CharsetProvider</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>java</color><color=#f8f8f2>.</color><color=#a6e22e>nio</color><color=#f8f8f2>.</color><color=#a6e22e>channels</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>SelectorProvider</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>javax</color><color=#f8f8f2>.</color><color=#a6e22e>imageio</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>ImageReaderSpi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>javax</color><color=#f8f8f2>.</color><color=#a6e22e>imageio</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>ImageWriterSpi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>,</color>
+                        <color=#f8f8f2>Spi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color>
+                <color=#f8f8f2>).</color><color=#a6e22e>iterator</color><color=#f8f8f2>()</color>
+        <color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>registerApplicationClasspathSPIs</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>One</color> <color=#f8f8f2>one</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>One</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>Two</color> <color=#f8f8f2>two</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Two</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>one</color><color=#f8f8f2>,</color> <color=#f8f8f2>Spi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>two</color><color=#f8f8f2>,</color> <color=#f8f8f2>Spi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>one</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>one</color><color=#f8f8f2>,</color> <color=#f8f8f2>Spi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>two</color><color=#f8f8f2>,</color> <color=#f8f8f2>Spi</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>deregister</color><color=#f8f8f2>(</color><color=#f8f8f2>two</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Class</color><color=#f92672><?>></color> <color=#f8f8f2>categories</color> <color=#f92672>=</color> <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>categories</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Categories: "</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>category</color> <color=#f92672>=</color> <color=#f8f8f2>categories</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color> <color=#f92672>+</color> <color=#f8f8f2>category</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>":"</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>Iterator</color><color=#f92672><?></color> <color=#f8f8f2>providers</color> <color=#f92672>=</color> <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>providers</color><color=#f8f8f2>(</color><color=#f8f8f2>category</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>Object</color> <color=#f8f8f2>provider</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>provider</color> <color=#f92672>=</color> <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+                <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"    "</color> <color=#f92672>+</color> <color=#f8f8f2>provider</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>provider</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>javax</color><color=#f8f8f2>.</color><color=#a6e22e>imageio</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>ImageReaderWriterSpi</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"    - "</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>javax</color><color=#f8f8f2>.</color><color=#a6e22e>imageio</color><color=#f8f8f2>.</color><color=#a6e22e>spi</color><color=#f8f8f2>.</color><color=#a6e22e>ImageReaderWriterSpi</color><color=#f8f8f2>)</color> <color=#f8f8f2>provider</color><color=#f8f8f2>).</color><color=#a6e22e>getDescription</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>));</color>
+                <color=#f8f8f2>}</color>
+                <color=#75715e>//                javax.imageio.spi.ImageReaderWriterSpi provider = (javax.imageio.spi.ImageReaderWriterSpi) providers.next();</color>
+                <color=#75715e>//                System.out.println("    " + provider);</color>
+                <color=#75715e>//                System.out.println("    " + provider.getVendorName());</color>
+                <color=#75715e>//                System.out.println("    Formats:");</color>
+                <color=#75715e>//</color>
+                <color=#75715e>//                System.out.print("      ");</color>
+                <color=#75715e>//                String[] formatNames = provider.getFormatNames();</color>
+                <color=#75715e>//                for (int i = 0; i < formatNames.length; i++) {</color>
+                <color=#75715e>//                    if (i != 0) {</color>
+                <color=#75715e>//                        System.out.print(", ");</color>
+                <color=#75715e>//                    }</color>
+                <color=#75715e>//                    System.out.print(formatNames[i]);</color>
+                <color=#75715e>//                }</color>
+                <color=#75715e>//                System.out.println();</color>
+
+                <color=#75715e>// Don't remove last one, it's removed later to exercise more code :-)</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#75715e>// Remove the last item from all categories</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>provider</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>Iterator</color> <color=#f8f8f2>containers</color> <color=#f92672>=</color> <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>containingCategories</color><color=#f8f8f2>(</color><color=#f8f8f2>provider</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>count</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>containers</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>category</color> <color=#f92672>==</color> <color=#f8f8f2>containers</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>containers</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+                        <color=#f8f8f2>count</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>count</color> <color=#f92672>!=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Removed "</color> <color=#f92672>+</color> <color=#f8f8f2>provider</color> <color=#f92672>+</color> <color=#e6db74>" from "</color> <color=#f92672>+</color> <color=#f8f8f2>count</color> <color=#f92672>+</color> <color=#e6db74>" categories"</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#75715e>// Remove all using providers iterator</color>
+            <color=#f8f8f2>providers</color> <color=#f92672>=</color> <color=#f8f8f2>testRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>providers</color><color=#f8f8f2>(</color><color=#f8f8f2>category</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"All providers successfully deregistered"</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Not removed: "</color> <color=#f92672>+</color> <color=#f8f8f2>providers</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>//*/</color>
+<color=#f8f8f2>}</color>

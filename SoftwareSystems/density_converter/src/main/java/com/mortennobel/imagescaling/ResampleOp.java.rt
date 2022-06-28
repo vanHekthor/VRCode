@@ -1,0 +1,505 @@
+<color=#75715e>/*</color>
+<color=#75715e> * Copyright 2013, Morten Nobel-Joergensen</color>
+<color=#75715e> *</color>
+<color=#75715e> * License: The BSD 3-Clause License</color>
+<color=#75715e> * http://opensource.org/licenses/BSD-3-Clause</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.mortennobel.imagescaling</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.image.BufferedImage</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.awt.image.DataBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicInteger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Based on work from Java Image Util ( http://schmidt.devlib.org/jiu/ )</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that the filter method is not thread safe</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Morten Nobel-Joergensen</color>
+<color=#75715e> * @author Heinz Doerr</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ResampleOp</color> <color=#66d9ef>extends</color> <color=#f8f8f2>AdvancedResizeOp</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MAX_CHANNEL_VALUE</color> <color=#f92672>=</color> <color=#ae81ff>255</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>srcWidth</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>srcHeight</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>SubSamplingData</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrN</color><color=#f8f8f2>;</color> <color=#75715e>// individual - per row or per column - nr of contributions</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>;</color> <color=#75715e>// 2Dim: [wid or hei][contrib]</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>float</color><color=#f92672>[]</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color> <color=#75715e>// 2Dim: [wid or hei][contrib]</color>
+        <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color>
+                <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color> <color=#75715e>// the primary index length for the 2Dim arrays : arrPixel and arrWeight</color>
+
+        <color=#66d9ef>private</color> <color=#a6e22e>SubSamplingData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrN</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>,</color> <color=#66d9ef>float</color><color=#f92672>[]</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>arrN</color> <color=#f92672>=</color> <color=#f8f8f2>arrN</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>arrPixel</color> <color=#f92672>=</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>arrWeight</color> <color=#f92672>=</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>numContributors</color> <color=#f92672>=</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNumContributors</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#a6e22e>getArrN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>arrN</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#a6e22e>getArrPixel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>public</color> <color=#66d9ef>float</color><color=#f92672>[]</color> <color=#a6e22e>getArrWeight</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>SubSamplingData</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>SubSamplingData</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>processedItems</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>float</color> <color=#f8f8f2>totalItems</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>numberOfThreads</color> <color=#f92672>=</color> <color=#f8f8f2>Runtime</color><color=#f8f8f2>.</color><color=#a6e22e>getRuntime</color><color=#f8f8f2>().</color><color=#a6e22e>availableProcessors</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>multipleInvocationLock</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>ResampleFilter</color> <color=#f8f8f2>filter</color> <color=#f92672>=</color> <color=#f8f8f2>ResampleFilters</color><color=#f8f8f2>.</color><color=#a6e22e>getLanczos3Filter</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ResampleOp</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>destWidth</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>destHeight</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>DimensionConstrain</color><color=#f8f8f2>.</color><color=#a6e22e>createAbsolutionDimension</color><color=#f8f8f2>(</color><color=#f8f8f2>destWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>destHeight</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>ResampleFilter</color> <color=#a6e22e>getFilter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>filter</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setFilter</color><color=#f8f8f2>(</color><color=#f8f8f2>ResampleFilter</color> <color=#f8f8f2>filter</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>filter</color> <color=#f92672>=</color> <color=#f8f8f2>filter</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNumberOfThreads</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setNumberOfThreads</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>numberOfThreads</color> <color=#f92672>=</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>BufferedImage</color> <color=#a6e22e>doFilter</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>dest</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dstWidth</color> <color=#f92672>=</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dstHeight</color> <color=#f92672>=</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dstWidth</color> <color=#f92672><</color> <color=#ae81ff>3</color> <color=#f92672>||</color> <color=#f8f8f2>dstHeight</color> <color=#f92672><</color> <color=#ae81ff>3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color>
+                    <color=#e6db74>"Error doing rescale. Target size was "</color>
+                            <color=#f92672>+</color> <color=#f8f8f2>dstWidth</color>
+                            <color=#f92672>+</color> <color=#e6db74>"x"</color>
+                            <color=#f92672>+</color> <color=#f8f8f2>dstHeight</color>
+                            <color=#f92672>+</color> <color=#e6db74>" but must be at least 3x3."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>multipleInvocationLock</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>1</color>
+                <color=#f8f8f2>:</color> <color=#e6db74>"Multiple concurrent invocations detected"</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_BYTE_BINARY</color>
+                <color=#f92672>||</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_BYTE_INDEXED</color>
+                <color=#f92672>||</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_CUSTOM</color><color=#f8f8f2>)</color>
+            <color=#f8f8f2>srcImg</color> <color=#f92672>=</color>
+                    <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>convert</color><color=#f8f8f2>(</color>
+                            <color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color>
+                            <color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getColorModel</color><color=#f8f8f2>().</color><color=#a6e22e>hasAlpha</color><color=#f8f8f2>()</color>
+                                    <color=#f92672>?</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_4BYTE_ABGR</color>
+                                    <color=#f8f8f2>:</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_3BYTE_BGR</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nrChannels</color> <color=#f92672>=</color> <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>nrChannels</color><color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>nrChannels</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>srcWidth</color> <color=#f92672>=</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getWidth</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>srcHeight</color> <color=#f92672>=</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getHeight</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixels</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>srcHeight</color><color=#f92672>][</color><color=#f8f8f2>dstWidth</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>processedItems</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>totalItems</color> <color=#f92672>=</color> <color=#f8f8f2>srcHeight</color> <color=#f92672>+</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>// Pre-calculate  sub-sampling</color>
+        <color=#f8f8f2>horizontalSubsamplingData</color> <color=#f92672>=</color> <color=#f8f8f2>createSubSampling</color><color=#f8f8f2>(</color><color=#f8f8f2>filter</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>verticalSubsamplingData</color> <color=#f92672>=</color> <color=#f8f8f2>createSubSampling</color><color=#f8f8f2>(</color><color=#f8f8f2>filter</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcHeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>scrImgCopy</color> <color=#f92672>=</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixelsCopy</color> <color=#f92672>=</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>Thread</color><color=#f92672>[]</color> <color=#f8f8f2>threads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Thread</color><color=#f92672>[</color><color=#f8f8f2>numberOfThreads</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>finalI</color> <color=#f92672>=</color> <color=#f8f8f2>i</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color>
+                    <color=#66d9ef>new</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>(</color>
+                            <color=#66d9ef>new</color> <color=#f8f8f2>Runnable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                                <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                                    <color=#f8f8f2>horizontallyFromSrcToWork</color><color=#f8f8f2>(</color><color=#f8f8f2>scrImgCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>workPixelsCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>finalI</color><color=#f8f8f2>,</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>);</color>
+                                <color=#f8f8f2>}</color>
+                            <color=#f8f8f2>});</color>
+            <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>horizontallyFromSrcToWork</color><color=#f8f8f2>(</color><color=#f8f8f2>scrImgCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>workPixelsCopy</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>waitForAllThreads</color><color=#f8f8f2>(</color><color=#f8f8f2>threads</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>outPixels</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>dstWidth</color> <color=#f92672>*</color> <color=#f8f8f2>dstHeight</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#75715e>// --------------------------------------------------</color>
+        <color=#75715e>// Apply filter to sample vertically from Work to Dst</color>
+        <color=#75715e>// --------------------------------------------------</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>outPixelsCopy</color> <color=#f92672>=</color> <color=#f8f8f2>outPixels</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>finalI</color> <color=#f92672>=</color> <color=#f8f8f2>i</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color>
+                    <color=#66d9ef>new</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>(</color>
+                            <color=#66d9ef>new</color> <color=#f8f8f2>Runnable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                                <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                                    <color=#f8f8f2>verticalFromWorkToDst</color><color=#f8f8f2>(</color><color=#f8f8f2>workPixelsCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>outPixelsCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>finalI</color><color=#f8f8f2>,</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>);</color>
+                                <color=#f8f8f2>}</color>
+                            <color=#f8f8f2>});</color>
+            <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>verticalFromWorkToDst</color><color=#f8f8f2>(</color><color=#f8f8f2>workPixelsCopy</color><color=#f8f8f2>,</color> <color=#f8f8f2>outPixelsCopy</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>waitForAllThreads</color><color=#f8f8f2>(</color><color=#f8f8f2>threads</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>//noinspection UnusedAssignment</color>
+        <color=#f8f8f2>workPixels</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color> <color=#75715e>// free memory</color>
+        <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>out</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dest</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>dstWidth</color> <color=#f92672>==</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getWidth</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>dstHeight</color> <color=#f92672>==</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getHeight</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#f8f8f2>dest</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>int</color> <color=#f8f8f2>nrDestChannels</color> <color=#f92672>=</color> <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>nrChannels</color><color=#f8f8f2>(</color><color=#f8f8f2>dest</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nrDestChannels</color> <color=#f92672>!=</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>String</color> <color=#f8f8f2>errorMgs</color> <color=#f92672>=</color>
+                        <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+                                <color=#e6db74>"Destination image must be compatible width source image. Source image had %d channels destination image had %d channels"</color><color=#f8f8f2>,</color>
+                                <color=#f8f8f2>nrChannels</color><color=#f8f8f2>,</color> <color=#f8f8f2>nrDestChannels</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#f8f8f2>errorMgs</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>(</color><color=#f8f8f2>dstWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>getResultBufferedImageType</color><color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>setBGRPixels</color><color=#f8f8f2>(</color><color=#f8f8f2>outPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>dstHeight</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>multipleInvocationLock</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color>
+                <color=#f8f8f2>:</color> <color=#e6db74>"Multiple concurrent invocations detected"</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>out</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>waitForAllThreads</color><color=#f8f8f2>(</color><color=#f8f8f2>Thread</color><color=#f92672>[]</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Thread</color> <color=#f8f8f2>t</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>t</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>().</color><color=#a6e22e>interrupt</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>static</color> <color=#f8f8f2>SubSamplingData</color> <color=#a6e22e>createSubSampling</color><color=#f8f8f2>(</color><color=#f8f8f2>ResampleFilter</color> <color=#f8f8f2>filter</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>dstSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>float</color> <color=#f8f8f2>scale</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>float</color><color=#f8f8f2>)</color> <color=#f8f8f2>dstSize</color> <color=#f92672>/</color> <color=#f8f8f2>(</color><color=#66d9ef>float</color><color=#f8f8f2>)</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>dstSize</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>float</color><color=#f92672>[]</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>fwidth</color> <color=#f92672>=</color> <color=#f8f8f2>filter</color><color=#f8f8f2>.</color><color=#a6e22e>getSamplingRadius</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>float</color> <color=#f8f8f2>centerOffset</color> <color=#f92672>=</color> <color=#ae81ff>0.5f</color> <color=#f92672>/</color> <color=#f8f8f2>scale</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>scale</color> <color=#f92672><</color> <color=#ae81ff>1.0f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>width</color> <color=#f92672>=</color> <color=#f8f8f2>fwidth</color> <color=#f92672>/</color> <color=#f8f8f2>scale</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>numContributors</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>width</color> <color=#f92672>*</color> <color=#ae81ff>2.0f</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f8f8f2>);</color> <color=#75715e>// Heinz: added 1 to be save with the ceilling</color>
+            <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>float</color><color=#f92672>[</color><color=#f8f8f2>dstSize</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>arrPixel</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>dstSize</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+            <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>fNormFac</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>float</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#ae81ff>1f</color> <color=#f92672>/</color> <color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>ceil</color><color=#f8f8f2>(</color><color=#f8f8f2>width</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>fwidth</color><color=#f8f8f2>));</color>
+            <color=#75715e>//</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>dstSize</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>subindex</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>center</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>/</color> <color=#f8f8f2>scale</color> <color=#f92672>+</color> <color=#f8f8f2>centerOffset</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>left</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>floor</color><color=#f8f8f2>(</color><color=#f8f8f2>center</color> <color=#f92672>-</color> <color=#f8f8f2>width</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>right</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>ceil</color><color=#f8f8f2>(</color><color=#f8f8f2>center</color> <color=#f92672>+</color> <color=#f8f8f2>width</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>left</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672><=</color> <color=#f8f8f2>right</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>weight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>weight</color> <color=#f92672>=</color> <color=#f8f8f2>filter</color><color=#f8f8f2>.</color><color=#a6e22e>apply</color><color=#f8f8f2>((</color><color=#f8f8f2>center</color> <color=#f92672>-</color> <color=#f8f8f2>j</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>fNormFac</color><color=#f8f8f2>);</color>
+
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>weight</color> <color=#f92672>==</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>n</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>j</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#f8f8f2>j</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>srcSize</color> <color=#f92672>-</color> <color=#f8f8f2>j</color> <color=#f92672>+</color> <color=#f8f8f2>srcSize</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>j</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#75715e>// assert k == j-left:String.format("%s = %s %s", k,j,left);</color>
+                    <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]++</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>n</color> <color=#f92672><</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>n</color> <color=#f92672>>=</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>weight</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color> <color=#75715e>// Flag that cell should not be used</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#f8f8f2>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>n</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>weight</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+                <color=#75715e>// normalize the filter's weight's so the sum equals to 1.0, very important for avoiding box</color>
+                <color=#75715e>// type of artifacts</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>tot</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>max</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>tot</color> <color=#f92672>+=</color> <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>tot</color> <color=#f92672>!=</color> <color=#ae81ff>0f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// 0 should never happen except bug in filter</color>
+                    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>max</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>/=</color> <color=#f8f8f2>tot</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color>
+        <color=#75715e>// super-sampling</color>
+        <color=#75715e>// Scales from smaller to bigger height</color>
+        <color=#f8f8f2>{</color>
+            <color=#f8f8f2>numContributors</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>fwidth</color> <color=#f92672>*</color> <color=#ae81ff>2.0f</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>float</color><color=#f92672>[</color><color=#f8f8f2>dstSize</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>arrPixel</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>dstSize</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+            <color=#75715e>//</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>dstSize</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>subindex</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>*</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>center</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>/</color> <color=#f8f8f2>scale</color> <color=#f92672>+</color> <color=#f8f8f2>centerOffset</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>left</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>floor</color><color=#f8f8f2>(</color><color=#f8f8f2>center</color> <color=#f92672>-</color> <color=#f8f8f2>fwidth</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>right</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>ceil</color><color=#f8f8f2>(</color><color=#f8f8f2>center</color> <color=#f92672>+</color> <color=#f8f8f2>fwidth</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>left</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672><=</color> <color=#f8f8f2>right</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>weight</color> <color=#f92672>=</color> <color=#f8f8f2>filter</color><color=#f8f8f2>.</color><color=#a6e22e>apply</color><color=#f8f8f2>(</color><color=#f8f8f2>center</color> <color=#f92672>-</color> <color=#f8f8f2>j</color><color=#f8f8f2>);</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>weight</color> <color=#f92672>==</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>n</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>j</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#f8f8f2>j</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>srcSize</color> <color=#f92672>-</color> <color=#f8f8f2>j</color> <color=#f92672>+</color> <color=#f8f8f2>srcSize</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>j</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]++</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>n</color> <color=#f92672><</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>n</color> <color=#f92672>>=</color> <color=#f8f8f2>srcSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>weight</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color> <color=#75715e>// Flag that cell should not be used</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#f8f8f2>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>n</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>weight</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+                <color=#75715e>// normalize the filter's weight's so the sum equals to 1.0, very important for avoiding box</color>
+                <color=#75715e>// type of artifacts</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>tot</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>max</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>tot</color> <color=#f92672>+=</color> <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>assert</color> <color=#f8f8f2>tot</color> <color=#f92672>!=</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#e6db74>"should never happen except bug in filter"</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>tot</color> <color=#f92672>!=</color> <color=#ae81ff>0f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>max</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>subindex</color> <color=#f92672>+</color> <color=#f8f8f2>k</color><color=#f92672>]</color> <color=#f92672>/=</color> <color=#f8f8f2>tot</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>SubSamplingData</color><color=#f8f8f2>(</color><color=#f8f8f2>arrN</color><color=#f8f8f2>,</color> <color=#f8f8f2>arrPixel</color><color=#f8f8f2>,</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>,</color> <color=#f8f8f2>numContributors</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>verticalFromWorkToDst</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>outPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nrChannels</color> <color=#f92672>==</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>verticalFromWorkToDstGray</color><color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>outPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>numberOfThreads</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>useChannel3</color> <color=#f92672>=</color> <color=#f8f8f2>nrChannels</color> <color=#f92672>></color> <color=#ae81ff>3</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>x</color> <color=#f92672>=</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color> <color=#f8f8f2>x</color> <color=#f92672><</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dstWidth</color><color=#f8f8f2>;</color> <color=#f8f8f2>x</color> <color=#f92672>+=</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// Influenced by: FRACTION</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>xLocation</color> <color=#f92672>=</color> <color=#f8f8f2>x</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>y</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dstHeight</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>y</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>y</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// Influenced by: FRACTION</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>yTimesNumContributors</color> <color=#f92672>=</color> <color=#f8f8f2>y</color> <color=#f92672>*</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrN</color><color=#f92672>[</color><color=#f8f8f2>y</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>sampleLocation</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>y</color> <color=#f92672>*</color> <color=#f8f8f2>dstWidth</color> <color=#f92672>+</color> <color=#f8f8f2>x</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>;</color>
+
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample0</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample1</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample2</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample3</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>yTimesNumContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>max</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>valueLocation</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample0</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>valueLocation</color><color=#f92672>][</color><color=#f8f8f2>xLocation</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample1</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>valueLocation</color><color=#f92672>][</color><color=#f8f8f2>xLocation</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample2</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>valueLocation</color><color=#f92672>][</color><color=#f8f8f2>xLocation</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useChannel3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>sample3</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>valueLocation</color><color=#f92672>][</color><color=#f8f8f2>xLocation</color> <color=#f92672>+</color> <color=#ae81ff>3</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+
+                    <color=#f8f8f2>index</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#f8f8f2>outPixels</color><color=#f92672>[</color><color=#f8f8f2>sampleLocation</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample0</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>outPixels</color><color=#f92672>[</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample1</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>outPixels</color><color=#f92672>[</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample2</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useChannel3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>outPixels</color><color=#f92672>[</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>3</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample3</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>processedItems</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>start</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// only update progress listener from main thread</color>
+                <color=#f8f8f2>setProgress</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>verticalFromWorkToDstGray</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>outPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>x</color> <color=#f92672>=</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color> <color=#f8f8f2>x</color> <color=#f92672><</color> <color=#f8f8f2>dstWidth</color><color=#f8f8f2>;</color> <color=#f8f8f2>x</color> <color=#f92672>+=</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>xLocation</color> <color=#f92672>=</color> <color=#f8f8f2>x</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>y</color> <color=#f92672>=</color> <color=#f8f8f2>dstHeight</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>y</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>y</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>yTimesNumContributors</color> <color=#f92672>=</color> <color=#f8f8f2>y</color> <color=#f92672>*</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrN</color><color=#f92672>[</color><color=#f8f8f2>y</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>sampleLocation</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>y</color> <color=#f92672>*</color> <color=#f8f8f2>dstWidth</color> <color=#f92672>+</color> <color=#f8f8f2>x</color><color=#f8f8f2>);</color>
+
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample0</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>yTimesNumContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>max</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>valueLocation</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#f8f8f2>verticalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample0</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>valueLocation</color><color=#f92672>][</color><color=#f8f8f2>xLocation</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+
+                    <color=#f8f8f2>index</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#f8f8f2>outPixels</color><color=#f92672>[</color><color=#f8f8f2>sampleLocation</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample0</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>processedItems</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>start</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// only update progress listener from main thread</color>
+                <color=#f8f8f2>setProgress</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Apply filter to sample horizontally from Src to Work</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param srcImg</color>
+<color=#75715e>     * @param workPixels</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>horizontallyFromSrcToWork</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nrChannels</color> <color=#f92672>==</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>horizontallyFromSrcToWorkGray</color><color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>delta</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>tempPixels</color> <color=#f92672>=</color>
+                <color=#66d9ef>new</color> <color=#66d9ef>int</color>
+                        <color=#f92672>[</color><color=#f8f8f2>srcWidth</color><color=#f92672>]</color><color=#f8f8f2>;</color> <color=#75715e>// Used if we work on int based bitmaps, later used to keep channel values</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>srcPixels</color> <color=#f92672>=</color>
+                <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>srcWidth</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f92672>]</color><color=#f8f8f2>;</color> <color=#75715e>// create reusable row to minimize memory overhead</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>useChannel3</color> <color=#f92672>=</color> <color=#f8f8f2>nrChannels</color> <color=#f92672>></color> <color=#ae81ff>3</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>srcHeight</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>k</color> <color=#f92672>+</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPixelsBGR</color><color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#f8f8f2>k</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>tempPixels</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>dstWidth</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>sampleLocation</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample0</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample1</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample2</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample3</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>*</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>max</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>pixelIndex</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color> <color=#f92672>*</color> <color=#f8f8f2>nrChannels</color><color=#f8f8f2>;</color>
+
+                    <color=#f8f8f2>sample0</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcPixels</color><color=#f92672>[</color><color=#f8f8f2>pixelIndex</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample1</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcPixels</color><color=#f92672>[</color><color=#f8f8f2>pixelIndex</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>sample2</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcPixels</color><color=#f92672>[</color><color=#f8f8f2>pixelIndex</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useChannel3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                        <color=#f8f8f2>sample3</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcPixels</color><color=#f92672>[</color><color=#f8f8f2>pixelIndex</color> <color=#f92672>+</color> <color=#ae81ff>3</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>}</color>
+                    <color=#f8f8f2>index</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>k</color><color=#f92672>][</color><color=#f8f8f2>sampleLocation</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample0</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>k</color><color=#f92672>][</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample1</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>k</color><color=#f92672>][</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample2</color><color=#f8f8f2>);</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useChannel3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>k</color><color=#f92672>][</color><color=#f8f8f2>sampleLocation</color> <color=#f92672>+</color> <color=#ae81ff>3</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample3</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>processedItems</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>start</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// only update progress listener from main thread</color>
+                <color=#f8f8f2>setProgress</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Apply filter to sample horizontally from Src to Work</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param srcImg</color>
+<color=#75715e>     * @param workPixels</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>horizontallyFromSrcToWorkGray</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>workPixels</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>tempPixels</color> <color=#f92672>=</color>
+                <color=#66d9ef>new</color> <color=#66d9ef>int</color>
+                        <color=#f92672>[</color><color=#f8f8f2>srcWidth</color><color=#f92672>]</color><color=#f8f8f2>;</color> <color=#75715e>// Used if we work on int based bitmaps, later used to keep channel values</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>srcPixels</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>srcWidth</color><color=#f92672>]</color><color=#f8f8f2>;</color> <color=#75715e>// create reusable row to minimize memory overhead</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672><</color> <color=#f8f8f2>srcHeight</color><color=#f8f8f2>;</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>k</color> <color=#f92672>+</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>ImageUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPixelsBGR</color><color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>,</color> <color=#f8f8f2>k</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcWidth</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcPixels</color><color=#f8f8f2>,</color> <color=#f8f8f2>tempPixels</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>dstWidth</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>sampleLocation</color> <color=#f92672>=</color> <color=#f8f8f2>i</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrN</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+                <color=#66d9ef>float</color> <color=#f8f8f2>sample0</color> <color=#f92672>=</color> <color=#ae81ff>0.0f</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>i</color> <color=#f92672>*</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>numContributors</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#f8f8f2>max</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                    <color=#66d9ef>float</color> <color=#f8f8f2>arrWeight</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrWeight</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+                    <color=#66d9ef>int</color> <color=#f8f8f2>pixelIndex</color> <color=#f92672>=</color> <color=#f8f8f2>horizontalSubsamplingData</color><color=#f8f8f2>.</color><color=#a6e22e>arrPixel</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+                    <color=#f8f8f2>sample0</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcPixels</color><color=#f92672>[</color><color=#f8f8f2>pixelIndex</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>arrWeight</color><color=#f8f8f2>;</color>
+                    <color=#f8f8f2>index</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+
+                <color=#f8f8f2>workPixels</color><color=#f92672>[</color><color=#f8f8f2>k</color><color=#f92672>][</color><color=#f8f8f2>sampleLocation</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>toByte</color><color=#f8f8f2>(</color><color=#f8f8f2>sample0</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>processedItems</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>start</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// only update progress listener from main thread</color>
+                <color=#f8f8f2>setProgress</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>byte</color> <color=#a6e22e>toByte</color><color=#f8f8f2>(</color><color=#66d9ef>float</color> <color=#f8f8f2>f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>f</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>f</color> <color=#f92672>></color> <color=#f8f8f2>MAX_CHANNEL_VALUE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>MAX_CHANNEL_VALUE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>f</color> <color=#f92672>+</color> <color=#ae81ff>0.5f</color><color=#f8f8f2>);</color> <color=#75715e>// add 0.5 same as Math.round</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setProgress</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fireProgressChanged</color><color=#f8f8f2>(</color><color=#f8f8f2>processedItems</color> <color=#f92672>/</color> <color=#f8f8f2>totalItems</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#a6e22e>getResultBufferedImageType</color><color=#f8f8f2>(</color><color=#f8f8f2>BufferedImage</color> <color=#f8f8f2>srcImg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>nrChannels</color> <color=#f92672>==</color> <color=#ae81ff>3</color>
+                <color=#f92672>?</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_3BYTE_BGR</color>
+                <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>nrChannels</color> <color=#f92672>==</color> <color=#ae81ff>4</color>
+                <color=#f92672>?</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_4BYTE_ABGR</color>
+                <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcImg</color><color=#f8f8f2>.</color><color=#a6e22e>getSampleModel</color><color=#f8f8f2>().</color><color=#a6e22e>getDataType</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>DataBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_USHORT</color>
+                <color=#f92672>?</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_USHORT_GRAY</color>
+                <color=#f8f8f2>:</color> <color=#f8f8f2>BufferedImage</color><color=#f8f8f2>.</color><color=#a6e22e>TYPE_BYTE_GRAY</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>
