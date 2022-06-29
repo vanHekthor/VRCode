@@ -68,7 +68,7 @@ namespace VRVis.IO.Features {
             }
 
             ConfigDict = new Dictionary<string, Configuration>();
-            ConfigDict.Add(DefaultConfig.Name, DefaultConfig);
+            //ConfigDict.Add(DefaultConfig.Name, DefaultConfig);
             ConfigDict.Add(Config1.Name, Config1);
             ConfigDict.Add(Config2.Name, Config2);
         }

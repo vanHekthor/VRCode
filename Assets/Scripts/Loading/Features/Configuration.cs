@@ -20,6 +20,7 @@ namespace VRVis.IO.Features {
 
         private Dictionary<string, bool> binaryOptions;
         private Dictionary<string, float> numericOptions;
+        private Dictionary<string, string> selectOptions;
 
         //public List<Feature_Boolean> BinaryOptionList { get; set; }
         //public List<Feature_Range> NumericOptionList { get; set; }
@@ -37,10 +38,11 @@ namespace VRVis.IO.Features {
         //    }
         //}
 
-        public Configuration(string configID, Dictionary<string, bool> binaryOptions, Dictionary<string, float> numericOptions) {
+        public Configuration(string configID, Dictionary<string, bool> binaryOptions, Dictionary<string, float> numericOptions, Dictionary<string, string> selectOptions) {
             this.configID = configID;
             this.binaryOptions = binaryOptions;
             this.numericOptions = numericOptions;
+            this.selectOptions = selectOptions;
         }
 
         public string GetConfigID() {
@@ -71,9 +73,17 @@ namespace VRVis.IO.Features {
                 optionExists = true;
                 return binaryOptions[optionName] ? 1 : 0;
             }
+            if (binaryOptions.ContainsKey(optionName.ToUpper())) {
+                optionExists = true;
+                return binaryOptions[optionName.ToUpper()] ? 1 : 0;
+            }
             if (numericOptions.ContainsKey(optionName)) {
                 optionExists = true;
                 return numericOptions[optionName];
+            }
+            if (numericOptions.ContainsKey(optionName.ToUpper())) {
+                optionExists = true;
+                return numericOptions[optionName.ToUpper()];
             }
 
             Debug.LogError("Invalid option name! The configuration does not have an option called: " + optionName);
@@ -124,6 +134,10 @@ namespace VRVis.IO.Features {
 
             foreach (KeyValuePair<string, float> numOption in result.numericOptions) {
                 Debug.Log("Key: " + numOption.Key + " Value: " + numOption.Value);
+            }
+
+            foreach (KeyValuePair<string, string> selectOption in result.selectOptions) {
+                Debug.Log("Key: " + selectOption.Key + " Value: " + selectOption.Value);
             }
 
             result.Name = new DirectoryInfo(filePath).Parent.Name;

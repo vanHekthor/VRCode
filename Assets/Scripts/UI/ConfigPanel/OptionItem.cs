@@ -13,11 +13,12 @@ namespace VRVis.UI.Config {
 
         public OptionType optionType;
 
-        public enum OptionColor { standard, turnedOff, turnedOn };
+        public enum OptionColor { standard, turnedOff, turnedOn, modified };
 
         private static readonly Color StandardColor = new Color(1, 1, 1);
         private static readonly Color TurnedOffColor = new Color(1, 0, 0);
         private static readonly Color TurnedOnColor = new Color(0, 1, 0);
+        private static readonly Color ModifiedColor = new Color(1, 0, 1);
 
         public AFeature Feature { get; set; }
 
@@ -64,7 +65,10 @@ namespace VRVis.UI.Config {
                     break;
                 case OptionColor.standard:
                     label.GetComponent<TextMeshProUGUI>().color = StandardColor;
-                    break;              
+                    break;
+                case OptionColor.modified:
+                    label.GetComponent<TextMeshProUGUI>().color = ModifiedColor;
+                    break;
             }
         }
 

@@ -79,17 +79,23 @@ namespace VRVis.UI.Config {
                 }
 
                 if (item.OptionValue != optionValueInReferenceConfig) {
-                    if (item.OptionValue == 0 && optionValueInReferenceConfig == 1) {
-                        // make label red
-                        item.ChangeColor(OptionItem.OptionColor.turnedOff);
+                    if (item.optionType == OptionItem.OptionType.binary) {
+                        if (item.OptionValue == 0 && optionValueInReferenceConfig == 1) {
+                            // make label red
+                            item.ChangeColor(OptionItem.OptionColor.turnedOff);
+                            continue;
+                        }
+                        else if (item.OptionValue == 1 && optionValueInReferenceConfig == 0) {
+                            // make label green
+                            item.ChangeColor(OptionItem.OptionColor.turnedOn);
+                            continue;
+                        }
                     }
-                    else if (item.OptionValue == 1 && optionValueInReferenceConfig == 0) {
-                        // make label green
-                        item.ChangeColor(OptionItem.OptionColor.turnedOn);
+                    else if (item.optionType == OptionItem.OptionType.numeric) {
+                        // make label magenta
+                        item.ChangeColor(OptionItem.OptionColor.modified);
                     }
-                    else if (item.OptionValue == optionValueInReferenceConfig) {
-                        item.ChangeColor(OptionItem.OptionColor.standard);
-                    }
+                    
                 }
             }
         }

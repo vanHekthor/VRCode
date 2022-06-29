@@ -518,35 +518,35 @@ namespace VRVis.IO.Features {
         public Dictionary<string, double> CalculateRegionPropertyValues(string id) {
             bool calcConfigDifferences = ApplicationLoader.GetInstance().GetAppSettings().ComparisonMode;
 
-            if (!calcConfigDifferences) {
-                Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
-                Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
+            //if (!calcConfigDifferences) {
+                //Dictionary<string, bool> binaryOptionConfig = new Dictionary<string, bool>();
+                //Dictionary<string, float> numericOptionConfig = new Dictionary<string, float>();
 
-                foreach (KeyValuePair<string, AFeature> option in options) {
-                    if (option.Value is Feature_Boolean) {
-                        binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
-                    }
-                    else if (option.Value is Feature_Range) {
-                        numericOptionConfig.Add(option.Key, option.Value.GetValue());
-                    }
-                }
+                //foreach (KeyValuePair<string, AFeature> option in options) {
+                //    if (option.Value is Feature_Boolean) {
+                //        binaryOptionConfig.Add(option.Key, option.Value.GetValue() > 0);
+                //    }
+                //    else if (option.Value is Feature_Range) {
+                //        numericOptionConfig.Add(option.Key, option.Value.GetValue());
+                //    }
+                //}
 
-                Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
-                //config.BinaryOptionList = GetBinaryOptions();
-                //config.NumericOptionList = GetNumericOptions();
+                //Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
+                ////config.BinaryOptionList = GetBinaryOptions();
+                ////config.NumericOptionList = GetNumericOptions();
 
-                var result = ApplicationLoader.GetInstance().GetInfluenceModel().EvaluateConfiguration(config, id);
+                //var result = ApplicationLoader.GetInstance().GetInfluenceModel().EvaluateConfiguration(config, id);
 
-                foreach (KeyValuePair<string, double> pair in result) {
-                    Debug.Log("Region ID: " + id + " Prop: " + pair.Key + " Value: " + pair.Value);
-                }
+                //foreach (KeyValuePair<string, double> pair in result) {
+                //    Debug.Log("Region ID: " + id + " Prop: " + pair.Key + " Value: " + pair.Value);
+                //}
 
-                return result;
-            }
-            else {
-                ConfigManager configManager = ConfigManager.GetInstance();
-                return CalculateConfigDifferenceByRegion(id, configManager.Config1, configManager.Config2);
-            }
+                //return result;
+            //}
+            //else {
+            ConfigManager configManager = ConfigManager.GetInstance();
+            return CalculateConfigDifferenceByRegion(id, configManager.Config1, configManager.Config2);
+            //}
 
         }
 
@@ -623,8 +623,8 @@ namespace VRVis.IO.Features {
                 }
             }
 
-            Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
-            config.SaveAsJson("Configurations/config.json");            
+            //Configuration config = new Configuration(Guid.NewGuid().ToString(), binaryOptionConfig, numericOptionConfig);
+            //config.SaveAsJson("Configurations/config.json");            
         }
 
     }
