@@ -5,6 +5,7 @@ using System.IO;
 using System.Xml;
 using UnityEngine;
 using VRVis.RegionProperties;
+using VRVis.Utilities.Glimps;
 
 namespace VRVis.IO.Features {
 
@@ -558,20 +559,27 @@ namespace VRVis.IO.Features {
         /// <param name="config2"></param>
         /// <returns></returns>
         private Dictionary<string, double> CalculateConfigDifferenceByRegion(string id, Configuration config1, Configuration config2) {
-            var influenceModel = ApplicationLoader.GetInstance().GetInfluenceModel();
-            var config1Values = influenceModel.EvaluateConfiguration(config1, id);
-            var config2Values = influenceModel.EvaluateConfiguration(config2, id);
 
-            var configDeltas = new Dictionary<string, double>(); 
-            foreach (string option in config1Values.Keys) {
-                //Debug.Log("Region ID: " + id + "\n Config1 | " + option + ": " + config1Values[option] +
-                //    "\n Config2 |" + option + ": " + config2Values[option] +
-                //    "\n Delta |" + option + ": " + (config2Values[option] - config1Values[option]));
+            var localModel = GlimpsModelLoader.loadModel(id);
 
-                configDeltas.Add(option, config2Values[option] - config1Values[option]);
-            }
+            var configDeltas = new Dictionary<string, double>();
 
             return configDeltas;
+
+            //var influenceModel = ApplicationLoader.GetInstance().GetInfluenceModel();
+            //var config1Values = influenceModel.EvaluateConfiguration(config1, id);
+            //var config2Values = influenceModel.EvaluateConfiguration(config2, id);
+
+            //var configDeltas = new Dictionary<string, double>(); 
+            //foreach (string option in config1Values.Keys) {
+            //    //Debug.Log("Region ID: " + id + "\n Config1 | " + option + ": " + config1Values[option] +
+            //    //    "\n Config2 |" + option + ": " + config2Values[option] +
+            //    //    "\n Delta |" + option + ": " + (config2Values[option] - config1Values[option]));
+
+            //    configDeltas.Add(option, config2Values[option] - config1Values[option]);
+            //}
+
+            //return configDeltas;
         }
 
 

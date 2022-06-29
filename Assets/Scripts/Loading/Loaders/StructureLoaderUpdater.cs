@@ -148,8 +148,10 @@ namespace VRVis.IO {
                 VariabilityModel vm = vml.GetModel();
                 if (vm != null) {
 
-                    bool validationRequired = vm.ChangedSinceLastValidation();
-                    bool invalid = !vm.GetLastValidationStatus();
+                    //bool validationRequired = vm.ChangedSinceLastValidation();
+                    bool validationRequired = false;
+                    //bool invalid = !vm.GetLastValidationStatus();
+                    bool invalid = false;
 
                     if (validationRequired) {
                         Debug.LogWarning("Skipping NFP value update process! Variability Model not validated!");
