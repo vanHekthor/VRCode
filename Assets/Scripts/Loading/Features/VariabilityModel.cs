@@ -562,7 +562,7 @@ namespace VRVis.IO.Features {
 
             var localModel = GlimpsModelLoader.loadModel(id);
 
-            var configDeltas = new Dictionary<string, double>();
+            var configDeltas = localModel.EvaluateConfigurations(config1, config2);
 
             return configDeltas;
 
@@ -570,7 +570,7 @@ namespace VRVis.IO.Features {
             //var config1Values = influenceModel.EvaluateConfiguration(config1, id);
             //var config2Values = influenceModel.EvaluateConfiguration(config2, id);
 
-            //var configDeltas = new Dictionary<string, double>(); 
+            //var configDeltas = new Dictionary<string, double>();
             //foreach (string option in config1Values.Keys) {
             //    //Debug.Log("Region ID: " + id + "\n Config1 | " + option + ": " + config1Values[option] +
             //    //    "\n Config2 |" + option + ": " + config2Values[option] +

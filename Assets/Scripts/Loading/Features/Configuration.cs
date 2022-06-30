@@ -14,6 +14,9 @@ namespace VRVis.IO.Features {
     /// Represents a software configuration containing binary and numery options. It can be evaluated by the Influence Model.   
     /// </summary>
     public class Configuration {
+
+        public enum OptionType { binary, numeric, select, non };
+
         public string Name { get; set; }
 
         private string configID;        
@@ -65,6 +68,35 @@ namespace VRVis.IO.Features {
 
         public Dictionary<string, float> GetNumericOptions() {
             return numericOptions;
+        }
+
+        public bool HasOption(string optionName) {
+            if (binaryOptions.ContainsKey(optionName.ToLower())) {
+                return true;
+            }
+            if (numericOptions.ContainsKey(optionName.ToLower())) {
+                return true;
+            }
+            return false;
+        }
+
+        public OptionType GetOptionType(string optionName) {
+            if (selectOptions.ContainsKey(optionName.ToLower())) {
+                return OptionType.select;
+            }
+
+            if (binaryOptions.ContainsKey(optionName.ToLower())) {
+                return OptionType.binary;
+            }
+            if (numericOptions.ContainsKey(optionName.ToLower())) {
+                return OptionType.numeric;
+            }
+            
+            return OptionType.non;
+        }
+
+        public bool GetBinaryOptionValue(string optionName) {
+            return binaryOptions[optionName.ToLower()];
         }
 
         public float GetOptionValue(string optionName, out bool optionExists) {
@@ -126,19 +158,19 @@ namespace VRVis.IO.Features {
             var result = JsonConvert.DeserializeObject<Configuration>(jsonString); 
             Debug.Log(result.binaryOptions);
 
-            Debug.Log("ID: " + result.configID);
+            //Debug.Log("ID: " + result.configID);
 
-            foreach (KeyValuePair<string, bool> binOption in result.binaryOptions) {
-                Debug.Log("Key: " + binOption.Key + " Value: " + binOption.Value);
-            }
+            //foreach (KeyValuePair<string, bool> binOption in result.binaryOptions) {
+            //    Debug.Log("Key: " + binOption.Key + " Value: " + binOption.Value);
+            //}
 
-            foreach (KeyValuePair<string, float> numOption in result.numericOptions) {
-                Debug.Log("Key: " + numOption.Key + " Value: " + numOption.Value);
-            }
+            //foreach (KeyValuePair<string, float> numOption in result.numericOptions) {
+            //    Debug.Log("Key: " + numOption.Key + " Value: " + numOption.Value);
+            //}
 
-            foreach (KeyValuePair<string, string> selectOption in result.selectOptions) {
-                Debug.Log("Key: " + selectOption.Key + " Value: " + selectOption.Value);
-            }
+            //foreach (KeyValuePair<string, string> selectOption in result.selectOptions) {
+            //    Debug.Log("Key: " + selectOption.Key + " Value: " + selectOption.Value);
+            //}
 
             result.Name = new DirectoryInfo(filePath).Parent.Name;
 

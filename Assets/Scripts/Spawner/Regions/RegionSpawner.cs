@@ -169,10 +169,10 @@ namespace VRVis.Spawner {
             VariabilityModelLoader vml = ApplicationLoader.GetInstance().GetVariabilityModelLoader();
             if (vml != null && vml.LoadedSuccessful()) {
                 string reason;
-                if (!vml.IsModelValidAndUsed(vml.GetModel(), out reason)) {
-                    Debug.LogWarning("Failed to spawn NFP regions! - " + reason);
-                    return false;
-                }
+                //if (!vml.IsModelValidAndUsed(vml.GetModel(), out reason)) {
+                //    Debug.LogWarning("Failed to spawn NFP regions! - " + reason);
+                //    return false;
+                //}
             }
 
 
