@@ -11,7 +11,7 @@ namespace VRVis.Utilities.Glimps {
 
         const string LOCAL_MODEL_PATH = "glimps_models/";
 
-        public static LocalModel loadModel(string fullQualifiedPath) {
+        public static LocalModel LoadModel(string fullQualifiedPath) {
             string mainPath = ApplicationLoader.GetInstance().mainPath;
             string jsonString = File.ReadAllText(mainPath + LOCAL_MODEL_PATH + fullQualifiedPath + ".json");
 

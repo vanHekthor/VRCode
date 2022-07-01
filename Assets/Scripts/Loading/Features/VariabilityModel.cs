@@ -560,7 +560,7 @@ namespace VRVis.IO.Features {
         /// <returns></returns>
         private Dictionary<string, double> CalculateConfigDifferenceByRegion(string id, Configuration config1, Configuration config2) {
 
-            var localModel = GlimpsModelLoader.loadModel(id);
+            var localModel = GlimpsModelLoader.LoadModel(id);
 
             var configDeltas = localModel.EvaluateConfigurations(config1, config2);
 
