@@ -99,10 +99,10 @@ namespace VRVis.IO.Features {
                 if (configPanel.IsComparisonPanel) {
                     configsToCompare++;
                     if (configsToCompare == 1) {
-                        configPanel.SelectedConfigName = Config1.Name;
+                        configPanel.UpdatePanel();
                     }
                     else if (configsToCompare == 2) {
-                        configPanel.SelectedConfigName = Config2.Name;
+                        configPanel.UpdatePanel();
                     }
 
                     if (comparisonPanels == null) {

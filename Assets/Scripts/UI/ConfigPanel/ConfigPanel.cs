@@ -21,18 +21,12 @@ namespace VRVis.UI.Config {
 
         public Dictionary<string, Configuration> ConfigDict { get; set; }        
 
-        private string selectedConfigName;
-        public string SelectedConfigName {
-            get => selectedConfigName;
-            set {
-                selectedConfigName = value;
-                SelectedConfig = ConfigDict[selectedConfigName];
-                UpdatePanel();
-            }
-        }
         public Configuration SelectedConfig { get; private set; }
         public List<OptionItem> OptionItems { get; private set; }
         public bool FinishedDisplayingConfig { get; private set; }
+
+        [SerializeField]
+        private string selectedConfigName;
 
         private IO.Features.VariabilityModel vm;
         private List<Feature_Boolean> binaryOptions;
@@ -100,9 +94,16 @@ namespace VRVis.UI.Config {
             }
         }
 
+        public void SetSelectedConfig(string selectedConfigName) {
+            this.selectedConfigName = selectedConfigName;
+            SelectedConfig = ConfigDict[selectedConfigName];
+            UpdatePanel();
+        }
+
         public void UpdatePanel() {
             // ConfigDict = configManager.ConfigDict;
-            DisplayConfig(SelectedConfigName);
+            SelectedConfig = ConfigDict[selectedConfigName];
+            DisplayConfig(selectedConfigName);
         }
 
         private void DisplayConfig(string id) {

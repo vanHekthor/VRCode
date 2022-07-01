@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Globalization;
 using Newtonsoft.Json;
 using VRVis.IO.Features;
 
@@ -51,8 +52,8 @@ namespace VRVis.Utilities.Glimps {
         }
 
         private bool CheckSelectOptionChange(Configuration config1, Configuration config2, Option option) {
-            string optionFromKey = $"{option.OptionName}_{option.From}";
-            string optionToKey = $"{option.OptionName}_{option.To}";
+            string optionFromKey = $"{option.OptionName}_{option.From.ToUpper()}";
+            string optionToKey = $"{option.OptionName}_{option.To.ToUpper()}";
 
             bool config1OptionFromValue = config1.GetBinaryOptionValue(optionFromKey);
             bool config1OptionToValue = config1.GetBinaryOptionValue(optionToKey);
@@ -81,12 +82,12 @@ namespace VRVis.Utilities.Glimps {
         }
 
         private bool CheckNumericOptionChange(Configuration config1, Configuration config2, Option option) {
-            string config1OptionValueString = config1.GetOptionValue(option.OptionName, out bool optionExists).ToString();
+            string config1OptionValueString = config1.GetOptionValue(option.OptionName, out bool optionExists).ToString(new CultureInfo("en-US"));
             if (option.From != config1OptionValueString) {
                 return false;
             }
 
-            string config2OptionValueString = config1.GetOptionValue(option.OptionName, out optionExists).ToString();
+            string config2OptionValueString = config2.GetOptionValue(option.OptionName, out optionExists).ToString(new CultureInfo("en-US"));
             if (option.To != config2OptionValueString) {
                 return false;
             }

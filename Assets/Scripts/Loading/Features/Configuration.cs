@@ -71,24 +71,25 @@ namespace VRVis.IO.Features {
         }
 
         public bool HasOption(string optionName) {
-            if (binaryOptions.ContainsKey(optionName.ToLower())) {
+            if (binaryOptions.ContainsKey(optionName)) {
                 return true;
             }
-            if (numericOptions.ContainsKey(optionName.ToLower())) {
+            if (numericOptions.ContainsKey(optionName)) {
                 return true;
             }
             return false;
         }
 
         public OptionType GetOptionType(string optionName) {
-            if (selectOptions.ContainsKey(optionName.ToLower())) {
+            if (selectOptions.ContainsKey(optionName)) {
                 return OptionType.select;
             }
 
-            if (binaryOptions.ContainsKey(optionName.ToLower())) {
+            if (binaryOptions.ContainsKey(optionName)) {
                 return OptionType.binary;
             }
-            if (numericOptions.ContainsKey(optionName.ToLower())) {
+
+            if (numericOptions.ContainsKey(optionName)) {
                 return OptionType.numeric;
             }
             
@@ -96,7 +97,7 @@ namespace VRVis.IO.Features {
         }
 
         public bool GetBinaryOptionValue(string optionName) {
-            return binaryOptions[optionName.ToLower()];
+            return binaryOptions[optionName];
         }
 
         public float GetOptionValue(string optionName, out bool optionExists) {
