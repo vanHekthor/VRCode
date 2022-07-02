@@ -226,6 +226,10 @@ namespace VRVis.Elements {
         /// <summary>Returns the raw dictionary. Some game objects might be null.</summary>
         public Dictionary<ARProperty.TYPE, List<GameObject>> GetUIGameObjects() { return gameObjects; }
 
+        public List<GameObject> GetUIGameObjectOfType(ARProperty.TYPE type) {
+            return gameObjects[type];
+        } 
+
         /// <summary>Returns the list of GameObjects matching this property type or null if type is unknown!</summary>
         public List<GameObject> GetUIGameObjects(ARProperty.TYPE propType) {
             if (!gameObjects.ContainsKey(propType)) { return null; }

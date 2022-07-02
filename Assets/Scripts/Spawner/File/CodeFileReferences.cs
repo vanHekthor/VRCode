@@ -269,6 +269,14 @@ namespace VRVis.Spawner.File {
             return lineHighlight;
         }
 
+        public void ScrollTo(RectTransform target) {
+            Canvas.ForceUpdateCanvases();
+
+            scrollRect.content.anchoredPosition =
+                    (Vector2)scrollRect.transform.InverseTransformPoint(scrollRect.content.position)
+                    - (Vector2)scrollRect.transform.InverseTransformPoint(target.position);
+        }
+
         void OnDrawGizmos() {
             
             // draw edge point gizmos

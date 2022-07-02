@@ -13,6 +13,7 @@ using VRVis.Interaction.LaserHand;
 using VRVis.Interaction.LaserPointer;
 using VRVis.IO;
 using VRVis.IO.Structure;
+using VRVis.RegionProperties;
 using VRVis.Spawner;
 using VRVis.Spawner.Edges;
 using VRVis.Spawner.File;
@@ -113,9 +114,14 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     private void ToDoAfterCodeWindowPlacement(CodeFileReferences spawnedFileInstance) {
         var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, spawnedFileInstance);
 
-        if (edgeConnection != null && edgeConnection.TargetRegion == null) {
-            edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
+        if (edgeConnection == null) {
+            Debug.LogError($"Failed to spawn edge connection from {Link.BaseFile.GetNode().GetName()} to {Link.TargetFile.GetNode().GetName()}!");
+            return;
         }
+
+        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
+        spawnedFileInstance.ScrollTo(edgeConnection.LineHighlight.GetComponent<RectTransform>());
+
     }
 
     private IEnumerator SpawnFileAndEdge() {
