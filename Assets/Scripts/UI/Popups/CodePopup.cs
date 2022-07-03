@@ -20,6 +20,8 @@ using VRVis.Spawner.File;
 
 public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
+    public enum Mode{link, reference};
+
     public Transform classNameTransform;
     public Transform methodDeclarationTransform;
 
@@ -29,6 +31,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     public CodeWindowLink Link { get; set; }
     public CodeWindowMethodRef Ref { get; set; }
 
+    private Mode mode;
 
     private FileSpawner fs;
     private bool windowSpawning = false;
@@ -71,6 +74,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
                 LoadLineFromFile(link.TargetFile.GetNode(), link.EdgeLink.GetTo().lines.from, true);
 
             Link = link;
+            mode = Mode.link;
         }
         else {
             Debug.LogError("Passed link is null!");
@@ -87,6 +91,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
                 LoadLineFromFile(refInstance.CallingFile.GetNode(), refInstance.RefEdge.GetFrom().lines.from, false);
 
             Ref = refInstance;
+            mode = Mode.reference;
         }
         else {
             Debug.LogError("Passed link is null!");
@@ -102,12 +107,15 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         //ClickOnPopup();
         ClickEvent.Invoke();
 
+        var node = mode == Mode.link ? Link.TargetFile.GetNode() : Ref.CallingFile.GetNode();
+        string configName = mode == Mode.link ? Link.BaseFileInstance.Config.Name : Ref.DeclarationFileInstance.Config.Name;
+
         // called from fallback camera (mouse click)
         MouseNodePickup.MousePickupEventData e = eventData as MouseNodePickup.MousePickupEventData;
         if (e != null) {
             MouseNodePickup mnp = e.GetMNP();
             if (e.button.Equals(PointerEventData.InputButton.Left)) {
-                mnp.AttachFileToSpawn(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
+                mnp.AttachFileToSpawn(node, configName, e.pointerCurrentRaycast.worldPosition, ToDoAfterCodeWindowPlacement);
             }
         }
 
@@ -118,28 +126,32 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             var laserHand = d.controller.GetComponent<LaserHand>();
 
             if (laserPointer) {
-                laserPointer.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
+                laserPointer.StartCodeWindowPlacement(node, configName, transform, ToDoAfterCodeWindowPlacement);
             }
 
             if (laserPointer == null) {
                 if (laserHand != null) {
-                    laserHand.StartCodeWindowPlacement(Link.TargetFile.GetNode(), Link.BaseFileInstance.Config.Name, transform, ToDoAfterCodeWindowPlacement);
+                    laserHand.StartCodeWindowPlacement(node, configName, transform, ToDoAfterCodeWindowPlacement);
                 }
             }
         }        
     }
 
     private void ToDoAfterCodeWindowPlacement(CodeFileReferences spawnedFileInstance) {
-        var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, spawnedFileInstance);
+        var startFileInstance = mode == Mode.link ? Link.BaseFileInstance : spawnedFileInstance;
+        var endFileInstance = mode == Mode.link ? spawnedFileInstance : Ref.DeclarationFileInstance;
+
+        var edgeConnection = SpawnEdgeConnection(startFileInstance, endFileInstance);
 
         if (edgeConnection == null) {
-            Debug.LogError($"Failed to spawn edge connection from {Link.BaseFile.GetNode().GetName()} to {Link.TargetFile.GetNode().GetName()}!");
+            Debug.LogError($"Failed to spawn edge connection from {startFileInstance.GetCodeFile().GetNode().GetName()} to {endFileInstance.GetCodeFile().GetNode().GetName()}!");
             return;
         }
 
         edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
-        spawnedFileInstance.ScrollTo(edgeConnection.LineHighlight.GetComponent<RectTransform>());
 
+        var target = mode == Mode.link ? edgeConnection.LineHighlight.GetComponent<RectTransform>() : edgeConnection.GetStart().GetComponent<RectTransform>();
+        spawnedFileInstance.ScrollTo(target);
     }
 
     private IEnumerator SpawnFileAndEdge() {
@@ -182,18 +194,21 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     }
 
         private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
-            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, Link.EdgeLink);
+            var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
+            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, edge);
 
             return edgeConnection;
         }
 
         private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
-            int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
-            int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
+            var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
+
+            int startLineToHighlight = edge.GetTo().lines.from;
+            int endLineToHighlight = edge.GetTo().lines.to;
             var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
             if (highlight == null) {
                 Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
-                    endLineToHighlight + " inside code window for " + Link.TargetFile.GetNode().GetName());
+                    endLineToHighlight + " inside code window for " + fileInstance.GetCodeFile().GetNode().GetName());
             }
 
             return highlight;
