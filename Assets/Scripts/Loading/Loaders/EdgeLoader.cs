@@ -33,8 +33,11 @@ namespace VRVis.IO {
         /// <summary>Key = edge type, Value = list of ids of according edges</summary>
         private Dictionary<string, EdgeTypeInfo> edgeTypes = new Dictionary<string, EdgeTypeInfo>();
 
-        /// <summary>Key = code file instance, Value = list of ids of according edges</summary>
+        /// <summary>Key = base file instance, Value = list of ids of according edges</summary>
         private Dictionary<Tuple<CodeFile, string>, HashSet<uint>> fileEdges = new Dictionary<Tuple<CodeFile, string>, HashSet<uint>>();
+
+        /// <summary>Key = target file instance, Value = list of ids of according edges</summary>
+        private Dictionary<Tuple<CodeFile, string>, HashSet<uint>> refEdges = new Dictionary<Tuple<CodeFile, string>, HashSet<uint>>();
 
         /// <summary>Path of the currently loaded file</summary>
         private string curFile = "";
@@ -106,6 +109,20 @@ namespace VRVis.IO {
             return fileEdges[key].Count;
         }
 
+        public IEnumerable<Edge> GetRefEdgesOfFile(CodeFile codeFile, string configName) {
+            var key = Tuple.Create(codeFile, configName);
+            if (!refEdges.ContainsKey(key)) { return null; }
+
+            // gather all the according edge instances
+            List<Edge> list = new List<Edge>();
+            foreach (uint edgeID in refEdges[key]) {
+                if (!edges.ContainsKey(edgeID)) { continue; }
+                list.Add(edges[edgeID]);
+            }
+
+            return list;
+        }
+
         /// <summary>Returns the edge or null if not found.</summary>
         public Edge GetEdgeByID(uint id) {
             if (!edges.ContainsKey(id)) { return null; }
@@ -163,6 +180,7 @@ namespace VRVis.IO {
             edges.Clear();
             edgeTypes.Clear();
             fileEdges.Clear();
+            refEdges.Clear();
 
             edgeID = 0;
             edgesTotal = 0;
@@ -221,19 +239,35 @@ namespace VRVis.IO {
                 
                 // get according code file (target file wont be checked)
                 string edgeFromFile = edgeInstance.GetFrom().file.ToLower();
-                CodeFile codeFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFileByRelativePath(edgeFromFile);
-                if (codeFile == null) {
+                CodeFile baseFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFileByRelativePath(edgeFromFile);
+                if (baseFile == null) {
                     Debug.LogError("Failed to load edge (file: " + curFile + ", entry: " + i + ") - File is unknown: " + edgeFromFile + "!");
                     continue;
                 }
 
-                // [INDEXING] add edge ID relation to code file
-                var key = Tuple.Create(codeFile, parentDirName);
+                // [INDEXING] add edge ID relation to base file
+                // parentDirName defines the config name
+                var key = Tuple.Create(baseFile, parentDirName);
                 if (!fileEdges.ContainsKey(key)) {
                     fileEdges.Add(key, new HashSet<uint>());
                 }
                 fileEdges[key].Add(edgeID);
 
+                // get target code file
+                string edgeToFile = edgeInstance.GetTo().file.ToLower();
+                CodeFile targetFile = ApplicationLoader.GetInstance().GetStructureLoader().GetFileByRelativePath(edgeToFile);
+                if (targetFile == null) {
+                    Debug.LogError("Failed to load edge (file: " + curFile + ", entry: " + i + ") - File is unknown: " + edgeToFile + "!");
+                    continue;
+                }
+
+                // [INDEXING] add edge ID relation to target file
+                // parentDirName defines the config name
+                key = Tuple.Create(targetFile, parentDirName);
+                if (!refEdges.ContainsKey(key)) {
+                    refEdges.Add(key, new HashSet<uint>());
+                }
+                refEdges[key].Add(edgeID);
 
                 // ToDo: maybe check if there is already an edge leading to exactly the same location
 
