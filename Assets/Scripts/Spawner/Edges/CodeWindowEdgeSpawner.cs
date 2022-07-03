@@ -23,6 +23,8 @@ namespace VRVis.Spawner {
 	    public GameObject edgeConnectionPrefab;
         [Tooltip("The UI element that indicates the existence of an edge to another file and allows opening that file by clicking it.")]
         public GameObject linkPrefab;
+        [Tooltip("The UI element that indicates the existence of references to a method and allows opening those.")]
+        public GameObject refPrefab;
 
         /// <summary>
         /// Stores instances of connection instances of spawned edges.<para/>
@@ -32,8 +34,14 @@ namespace VRVis.Spawner {
 
         private Dictionary<uint, CodeWindowLink> codeWindowLinks = new Dictionary<uint, CodeWindowLink>();
 
-        /// <summary>Stores ids (value) of spawned edges starting from the code file (key)</summary>
+        private Dictionary<uint, CodeWindowMethodRef> codeWindowMethodRefs = new Dictionary<uint, CodeWindowMethodRef>();
+
+
+        /// <summary>Stores ids (value) of spawned edges starting from the code file instance (key)</summary>
         private Dictionary<CodeFileReferences, HashSet<uint>> spawnedLinksAndEdges = new Dictionary<CodeFileReferences, HashSet<uint>>();
+
+        /// <summary>Stores ids (value) of spawned edges ending at the code file instance (key)</summary>
+        private Dictionary<CodeFileReferences, HashSet<uint>> spawnedRefs = new Dictionary<CodeFileReferences, HashSet<uint>>();
 
         /// <summary>Stores all the currently spawned edge types. This is required when active edge types change.</summary>
         //private HashSet<string> spawnedEdgeTypes = new HashSet<string>();
@@ -129,7 +137,13 @@ namespace VRVis.Spawner {
             else {
                 spawnedLinksAndEdges.Add(codeFileInstance, new HashSet<uint>());
             }
-            
+            if (spawnedRefs.ContainsKey(codeFileInstance)) {
+                spawnedRefs[codeFileInstance].Clear();
+            }
+            else {
+                spawnedRefs.Add(codeFileInstance, new HashSet<uint>());
+            }
+
             uint failedSpawns = 0;
 
             // basically unused because a edge connection is now only spawned after pressing the corresponding link button
@@ -139,6 +153,8 @@ namespace VRVis.Spawner {
 
             // add the missing link buttons
             AddMissingLinks(structureLoader, out failedSpawns, out newEdgesSpawned, out newLinkButtons);
+            // add the missing ref buttons
+            AddMissingRefs(structureLoader);
 
             // log infos and warn if some failed to spawn
             string spawnedEdgesMsg = "New edges spawned: " + newEdgesSpawned + " for instance of file: " +
@@ -247,6 +263,7 @@ namespace VRVis.Spawner {
 
                 // edges can be null if there a none defined
                 IEnumerable<Edge> edges = edgeLoader.GetEdgesOfFile(entry.Key.GetCodeFile(), entry.Key.Config.Name);
+
                 if (edges == null) { continue; }
 
                 foreach (Edge edge in edges) {
@@ -273,6 +290,59 @@ namespace VRVis.Spawner {
                             entry.Value.Add(edge.GetID());
                             newLinkButtons++;
                         }                 
+                    }
+                }                
+            }
+
+            // remove entries from spawnedEdges dict. that have no valid references
+            foreach (CodeFileReferences cf in removeFailed) { spawnedLinksAndEdges.Remove(cf); }
+        }
+
+        /// <summary>
+        /// Adds missing link buttons after the spawnedEdges dictionary changed (e.g. new file added).
+        /// </summary>
+        private void AddMissingRefs(StructureLoader sLoader) {
+
+            // keep entries that should be removed from spawnedLinksEdges  
+            var removeFailed = new List<CodeFileReferences>();
+
+            foreach (KeyValuePair<CodeFileReferences, HashSet<uint>> entry in spawnedRefs) {
+
+                // check if references exist - file is probably not spawned so clean up
+                if (!entry.Key) {
+                    removeFailed.Add(entry.Key);
+                    continue;
+                }
+
+                // edges can be null if there a none defined
+                IEnumerable<Edge> refEdges = edgeLoader.GetRefEdgesOfFile(entry.Key.GetCodeFile(), entry.Key.Config.Name);
+
+                if (refEdges == null) { continue; }
+
+                foreach (Edge refEdge in refEdges) {
+
+                    // skip if this edge type is not active/selected to be shown
+                    if (!IsEdgeTypeActive(refEdge.GetEdgeType())) { continue; }
+
+                    // this edge connection already exists / is already spawned
+                    if (entry.Value.Contains(refEdge.GetID())) {
+                        if (edgeConnections.ContainsKey(refEdge.GetID())) {
+                            continue;
+                        }
+                    }
+
+                    // try to create the ref instance
+                    int state = SpawnRef(entry.Key, refEdge, sLoader, out CodeWindowMethodRef refComponent);
+                    if (state < 0) {
+                        if (state == -1) {
+                            Debug.LogError($"Failed to spawn ref link button for '{refEdge.GetLabel()}' in '{refEdge.GetTo().file}'");
+                        }
+                    }
+                    else if (state == 0) {
+                        if (!codeWindowMethodRefs.ContainsKey(refEdge.GetID())) {
+                            codeWindowMethodRefs.Add(refEdge.GetID(), refComponent);
+                            entry.Value.Add(refEdge.GetID());
+                        }
                     }
                 }
             }
@@ -503,6 +573,37 @@ namespace VRVis.Spawner {
             return 2;
         }
 
+        private int SpawnRef(CodeFileReferences declarationCodeFileInstance, Edge edge, StructureLoader sLoader, out CodeWindowMethodRef refComponent) {
+            refComponent = null;
+
+            // find target - just skip if missing
+            string basePath = edge.GetFrom().file.ToLower();
+            CodeFile callingFile = sLoader.GetFileByRelativePath(basePath);
+            if (callingFile == null) { return -1; }
+
+            if (!codeWindowMethodRefs.ContainsKey(edge.GetID())) {
+                // show link button that indicates the existence of the edge and opens the targeted file when pressing it
+                GameObject refInstance = Instantiate(refPrefab, Vector3.zero, Quaternion.identity);
+                refComponent = refInstance.GetComponent<CodeWindowMethodRef>();
+                if (!refComponent) {
+                    DestroyImmediate(refInstance);
+                    return -1;
+                }
+
+                // add instance to the according container
+                Transform refContainer = declarationCodeFileInstance.GetEdgePoints().connectionContainer;
+                refInstance.transform.SetParent(refContainer, false);
+                refInstance.transform.rotation = refContainer.rotation;
+
+                if (!refComponent.InitRef(edge, declarationCodeFileInstance, callingFile)) {
+                    DestroyImmediate(refInstance);
+                    return -1;
+                }
+
+                return 0;
+            }
+            return 2;
+        }
 
         /// <summary>
         /// Updates the currently spawned links and edges by checking if they are marked 
