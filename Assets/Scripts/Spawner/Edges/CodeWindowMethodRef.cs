@@ -19,8 +19,8 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show debug points used for region positioning and rescaling in editor")]
         public bool showRegionDebugGizmos = false;
 
-        private const int START_COLUMN = 1;
-        private const int END_COLUMN = 4;
+        private const int START_COLUMN = 0;
+        private const int END_COLUMN = 3;
         private const string BUTTON_LABEL = "refs";
 
         private Transform refAnchorTransform;
@@ -81,7 +81,8 @@ namespace VRVis.Spawner.Edges {
             RefEdge = edge;
 
             // the span of the enclosed connection region
-            declarationRegionSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;
+            //declarationRegionSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;
+            declarationRegionSpan = 0;
             //endSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;            
 
             updateRef = true;
