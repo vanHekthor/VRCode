@@ -3,13 +3,14 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using Valve.VR.InteractionSystem;
+using VRVis.IO;
 using VRVis.UI;
 
 namespace VRVis.Spawner.Edges {
 
     [RequireComponent(typeof(SphereCollider))]
     [RequireComponent(typeof(ControlFlowHoverUI))]
-    public class HoverPoint : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler {
+    public class HoverPoint : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler, IPointerClickHandler {
 
         public Transform circleTransform;
 
@@ -18,9 +19,12 @@ namespace VRVis.Spawner.Edges {
         private ControlFlowHoverUI hoverUI;
         private SphereCollider sphereCollider;
 
+        private FileSpawner fs;
+
         private void Awake() {
             hoverUI = GetComponent<ControlFlowHoverUI>();
             sphereCollider = GetComponent<SphereCollider>();
+            fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
         }
 
         public void ChangeSize(float radius) {
@@ -58,6 +62,10 @@ namespace VRVis.Spawner.Edges {
             }
             exited = true;
             entered = false;
+        }
+
+        public void OnPointerClick(PointerEventData eventData) {
+            fs.edgeSpawner.RemoveSingleEdgeConnection(EdgeConnection.GetStartCodeFileInstance(), EdgeConnection.GetEdge());
         }
     }
 }

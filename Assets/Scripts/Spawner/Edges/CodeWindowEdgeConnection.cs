@@ -255,6 +255,7 @@ namespace VRVis.Spawner.Edges {
 
             // take care of cleaning up the start and end hover points 
             if (startHoverPoint) { Destroy(startHoverPoint); }
+            if (midHoverPoint) { Destroy(midHoverPoint); }
             if (endHoverPoint) { Destroy(endHoverPoint); }
 
             if (LineHighlight != null) {

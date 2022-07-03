@@ -281,6 +281,39 @@ namespace VRVis.Spawner {
             foreach (CodeFileReferences cf in removeFailed) { spawnedLinksAndEdges.Remove(cf); }
         }
 
+        public void RemoveSingleEdgeConnection(CodeFileReferences codeFileInstance, Edge edge) {
+
+            // structure loader is required to get code files
+            StructureLoader structureLoader = ApplicationLoader.GetInstance().GetStructureLoader();
+            if (structureLoader == null) { return; }
+
+            if (!spawnedLinksAndEdges.ContainsKey(codeFileInstance)) {
+                Debug.LogError("Failed to remove edge connection, because code file instance was not found!");
+                return;
+            }
+
+            var fileInstanceEdges = spawnedLinksAndEdges[codeFileInstance];
+            fileInstanceEdges.Remove(edge.GetID());
+            
+            // try to create the link to replace the edge connection
+            dynamic edgeCon = null;
+            int state = SpawnLink(edgeConnections[edge.GetID()].GetStartCodeFileInstance(), edgeConnections[edge.GetID()].GetEdge(), structureLoader, out edgeCon);
+            if (state < 0) { // failure
+                Debug.LogError("Failed to spawn the link that replaces the edge connection!");
+            }
+            else if (state == 0) {
+                if (!codeWindowLinks.ContainsKey(edge.GetID())) {
+                    codeWindowLinks.Add(edge.GetID(), edgeCon);
+                    spawnedLinksAndEdges[codeFileInstance].Add(edge.GetID());
+                }
+            }
+
+            if (edgeConnections.ContainsKey(edge.GetID())) {
+                Destroy(edgeConnections[edge.GetID()].gameObject);
+                edgeConnections.Remove(edge.GetID());
+            }                
+        }
+
 
         /// <summary>
         /// Called by FileSpawner on code window deletion.<para/>
