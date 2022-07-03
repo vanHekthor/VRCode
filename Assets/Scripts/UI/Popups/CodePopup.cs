@@ -27,6 +27,8 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     public static CodePopupClickEvent ClickEvent = new CodePopupClickEvent();
 
     public CodeWindowLink Link { get; set; }
+    public CodeWindowMethodRef Ref { get; set; }
+
 
     private FileSpawner fs;
     private bool windowSpawning = false;
@@ -66,9 +68,25 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
             tmproClassName.text = link.EdgeLink.GetTo().file;
             tmproMethodDec.text = 
-                LoadLineFromFile(link.TargetFile.GetNode(), link.EdgeLink.GetTo().lines.from);
+                LoadLineFromFile(link.TargetFile.GetNode(), link.EdgeLink.GetTo().lines.from, true);
 
             Link = link;
+        }
+        else {
+            Debug.LogError("Passed link is null!");
+        }
+    }
+
+    public void UpdateContent(CodeWindowMethodRef refInstance) {
+        if (refInstance != null) {
+            var tmproClassName = classNameTransform.GetComponent<TextMeshProUGUI>();
+            var tmproMethodDec = methodDeclarationTransform.GetComponent<TextMeshProUGUI>();
+
+            tmproClassName.text = refInstance.RefEdge.GetFrom().file;
+            tmproMethodDec.text =
+                LoadLineFromFile(refInstance.CallingFile.GetNode(), refInstance.RefEdge.GetFrom().lines.from, false);
+
+            Ref = refInstance;
         }
         else {
             Debug.LogError("Passed link is null!");
@@ -185,7 +203,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
     /// Loads the highlighted source code from the file.<para/>
     /// Returns true on success and false otherwise.
     /// </summary>
-    public string LoadLineFromFile(SNode fileNode, int lineIdx) {
+    public string LoadLineFromFile(SNode fileNode, int lineIdx, bool isDeclaration) {
 
         // https://docs.microsoft.com/en-us/dotnet/api/system.io.fileinfo.-ctor?view=netframework-4.7.2
         string filePath = fileNode.GetFullPath();
@@ -211,32 +229,37 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
                 // sourceCode += curLine + "\n";
                 linesRead++;
                 if (linesRead == lineIdx) {
-                    // check for '{' at the end
-                    if (IsDeclarationEndLine(curLine)) {
-                        return curLine.Trim();
+                    if (isDeclaration) {
+                        // check for '{' at the end
+                        if (IsDeclarationEndLine(curLine)) {
+                            return curLine.Trim();
+                        }
+
+                        // count leading whitespace
+                        int leadingSpaceCount = curLine.TakeWhile(Char.IsWhiteSpace).Count();
+                        output = curLine.TrimStart();
+
+                        //01public
+                        //0123wegwj
+
+                        int declarationLines = 1;
+                        while ((curLine = sr.ReadLine()) != null) {
+                            declarationLines++;
+                            if (!curLine.Equals(string.Empty)) {
+                                output += '\n' + curLine?.Substring(leadingSpaceCount).TrimEnd();
+                            }
+                            else {
+                                output += '\n';
+                            }
+
+                            if (IsDeclarationEndLine(curLine) || declarationLines > 10) {
+                                return output;
+                            }
+                        }
                     }
-                    
-                    // count leading whitespace
-                    int leadingSpaceCount = curLine.TakeWhile(Char.IsWhiteSpace).Count();
-                    output = curLine.TrimStart();
-
-                    //01public
-                    //0123wegwj
-
-                    int declarationLines = 1;
-                    while ((curLine = sr.ReadLine()) != null) {
-                        declarationLines++;
-                        if (!curLine.Equals(string.Empty)) {
-                            output += '\n' + curLine?.Substring(leadingSpaceCount).TrimEnd();
-                        }
-                        else {
-                            output += '\n';
-                        }
-
-                        if (IsDeclarationEndLine(curLine) || declarationLines > 10) {
-                            return output;
-                        }
-                    }
+                    else {
+                        output = curLine.Trim();
+                    }                    
 
                     return output;
                 }

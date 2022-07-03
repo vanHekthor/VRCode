@@ -19,6 +19,7 @@ public class InteractionScreen : MonoBehaviour {
         }
 
         CodeWindowLinkButton.LinkClicked.AddListener(LinkWasClicked);
+        CodeWindowMethodRefButton.RefClicked.AddListener(RefButtonWasClicked);
         CodePopup.ClickEvent.AddListener(CodePopupWasClicked);
 
         gameObject.SetActive(false);
@@ -40,11 +41,25 @@ public class InteractionScreen : MonoBehaviour {
         }
     }
 
+    public void RefButtonWasClicked(List<CodeWindowMethodRef> refs) {
+        Debug.Log("RefButtonWasClicked() was invoked by CodeWindowMethodRefButton.RefClicked!");
+        gameObject.SetActive(true);
+        UpdatePopups(refs);
+    }
+
     public void UpdatePopups(List<CodeWindowLink> links) {
         DeleteCodePopups();
 
         foreach (var link in links) {
             AddCodePopup(link);
+        }
+    }
+
+    public void UpdatePopups(List<CodeWindowMethodRef> refs) {
+        DeleteCodePopups();
+
+        foreach (var refInstance in refs) {
+            AddCodePopup(refInstance);
         }
     }
 
@@ -63,6 +78,13 @@ public class InteractionScreen : MonoBehaviour {
         var codePopup = codePopupObject.GetComponent<CodePopup>();
         codePopupObject.transform.SetParent(codePopupHolder, false);
         codePopup.UpdateContent(link);
+    }
+
+    private void AddCodePopup(CodeWindowMethodRef refInstance) {
+        var codePopupObject = Instantiate(codePopupPrefab);
+        var codePopup = codePopupObject.GetComponent<CodePopup>();
+        codePopupObject.transform.SetParent(codePopupHolder, false);
+        codePopup.UpdateContent(refInstance);
     }
 
     private void DeleteCodePopups() {
