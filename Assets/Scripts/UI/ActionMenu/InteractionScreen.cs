@@ -30,21 +30,15 @@ public class InteractionScreen : MonoBehaviour {
         gameObject.SetActive(true);
         UpdatePopups(links);
 
-
-        if (Player.instance != null && Player.instance.hmdTransform != null) {
-            Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
-            Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
-            transform.position = screenPos;
-            Vector3 direction = screenPos - Player.instance.hmdTransform.position;
-            transform.rotation = Quaternion.LookRotation(direction);
-            transform.position += horizontalOffset * transform.right;
-        }
+        UpdateScreenPosition();
     }
 
     public void RefButtonWasClicked(List<CodeWindowMethodRef> refs) {
         Debug.Log("RefButtonWasClicked() was invoked by CodeWindowMethodRefButton.RefClicked!");
         gameObject.SetActive(true);
         UpdatePopups(refs);
+
+        UpdateScreenPosition();
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
@@ -71,6 +65,17 @@ public class InteractionScreen : MonoBehaviour {
     public void CloseInteractionScreen() {
         Debug.Log("Interaction screen was closed!");
         gameObject.SetActive(false);
+    }
+
+    private void UpdateScreenPosition() {
+        if (Player.instance != null && Player.instance.hmdTransform != null) {
+            Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
+            Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
+            transform.position = screenPos;
+            Vector3 direction = screenPos - Player.instance.hmdTransform.position;
+            transform.rotation = Quaternion.LookRotation(direction);
+            transform.position += horizontalOffset * transform.right;
+        }
     }
 
     private void AddCodePopup(CodeWindowLink link) {

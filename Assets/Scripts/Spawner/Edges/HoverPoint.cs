@@ -14,6 +14,8 @@ namespace VRVis.Spawner.Edges {
 
         public Transform circleTransform;
 
+        public bool closeEdgeOnClick = false;
+
         public CodeWindowEdgeConnection EdgeConnection { get; private set; }
 
         private ControlFlowHoverUI hoverUI;
@@ -25,6 +27,16 @@ namespace VRVis.Spawner.Edges {
             hoverUI = GetComponent<ControlFlowHoverUI>();
             sphereCollider = GetComponent<SphereCollider>();
             fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+        }
+
+        private void Start() {
+            if (closeEdgeOnClick) {
+                //Get the Renderer component from the new cube
+                var circleRenderer = circleTransform.GetComponent<Renderer>();
+
+                //Call SetColor using the shader property name "_Color" and setting the color to red
+                circleRenderer.material.color = new Color(1f, 0.46f, 0.46f);
+            }
         }
 
         public void ChangeSize(float radius) {
@@ -65,7 +77,10 @@ namespace VRVis.Spawner.Edges {
         }
 
         public void OnPointerClick(PointerEventData eventData) {
-            fs.edgeSpawner.RemoveSingleEdgeConnection(EdgeConnection.GetStartCodeFileInstance(), EdgeConnection.GetEdge());
+            if (closeEdgeOnClick) {
+                fs.edgeSpawner.RemoveSingleEdgeConnection(EdgeConnection.GetStartCodeFileInstance(), EdgeConnection.GetEdge());
+                PointerExit(null);
+            }
         }
     }
 }

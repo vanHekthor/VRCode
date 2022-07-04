@@ -311,6 +311,8 @@ namespace VRVis.Spawner.Edges {
             hoverPoint.transform.rotation = Quaternion.Lerp(startHoverPoint.rotation, endHoverPoint.rotation, 0.5f);
             hoverPoint.transform.position = Vector3.Lerp(startHoverPoint.position, endHoverPoint.position, 0.5f);
 
+            hoverPoint.GetComponent<HoverPoint>().closeEdgeOnClick = true;
+
             // set size of spheres
             var hoverPointComponent = hoverPoint.GetComponent<HoverPoint>();
             if (attachmentSphereSize.magnitude > 0) {
