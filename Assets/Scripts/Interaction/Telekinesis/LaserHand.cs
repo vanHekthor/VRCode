@@ -49,7 +49,7 @@ namespace VRVis.Interaction.LaserHand {
         public float scrollActivationThreshold = 0.05f;
 
         [Tooltip("Degree to turn per change unit (the higher the faster)")]
-        [Range(0, 360)] public float scrollWheelTurnDegree = 20;
+        [Range(0, 360)] public float scrollWheelTurnDegree = 24;
 
         [Tooltip("Index of the code window mover controller in radial menu entries")]
         public int cwMoverIndex = 0;
@@ -123,7 +123,8 @@ namespace VRVis.Interaction.LaserHand {
             IsActive = true;
 
             UpdateCall();
-            // CheckScrolling();            
+            CheckScrolling();
+
             pointer.SetActive(false);
             hitPoint.SetActive(false);
             
