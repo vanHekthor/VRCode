@@ -29,6 +29,9 @@ namespace VRVis.Spawner {
         [Tooltip("Basic cube prefab for the city buildings")]
         public GameObject cubePrefab;
 
+        [Tooltip("Spawn mark showing if a file was spawned")]
+        public GameObject spawnMark;
+
         [Tooltip("Total size of the city (width/height)")]
         public Vector2 citySize = new Vector2(10, 10);
 
@@ -597,6 +600,8 @@ namespace VRVis.Spawner {
 
                 // add code city element and information
                 CodeCityElement cce = cube.AddComponent<CodeCityElement>();
+                cce.spawnMark = spawnMark;
+
                 elements_spawned.Add(cce);
                 cce.SetNode(node);
                 

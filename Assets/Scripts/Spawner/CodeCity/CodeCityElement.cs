@@ -21,13 +21,18 @@ namespace VRVis.Spawner.CodeCity {
     /// </summary>
     public class CodeCityElement : MonoBehaviour, IPointerClickHandler {
 
+        public const float MARK_MARGIN = 0.03f;
+
+        public GameObject spawnMark;
+
+        public GameObject SpawnMarkObject { get; private set; }
+
         /// <summary>Node of the partitioning tree</summary>
 	    private CodeCityV1.PNode pNode;
 
         /// <summary>Contains useful information about the element</summary>
         private Dictionary<string, string> info = new Dictionary<string, string>();
         private bool infoBuilt = false;
-
 
         // GETTER/SETTER
 
@@ -83,6 +88,20 @@ namespace VRVis.Spawner.CodeCity {
             return info;
         }
 
+        public void DisplaySpawnMark() {
+            if (SpawnMarkObject == null) {
+                SpawnMarkObject = Instantiate(spawnMark, transform);
+                SpawnMarkObject.transform.localPosition += new Vector3(0, 0.5f, 0);
+                SpawnMarkObject.transform.position += new Vector3(0, MARK_MARGIN, 0);
+            }
+            else {
+                SpawnMarkObject.SetActive(true);
+            }
+        }
+
+        public void HideSpawnMark() {
+            SpawnMarkObject.SetActive(false);
+        }
 
         // FUNCTIONALITY
 

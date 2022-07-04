@@ -33,6 +33,16 @@ namespace VRVis.IO.Structure {
         /// <summary>Path relative to the root folder.</summary>
         public string GetPath() { return path; }
 
+        public string GetRelativePath() {
+            string relativePath = path;
+            int index = relativePath.LastIndexOf("/");
+            if (index >= 0)
+                relativePath = relativePath.Substring(0, index);
+            relativePath += "/" + name;
+
+            return relativePath;
+        }
+
         public string GetFullPath() { return fullPath; }
 
         /// <summary>Original filename as given by the file system (e.g. no lower case)</summary>

@@ -52,9 +52,12 @@ namespace VRVis.Spawner {
         public float SphereScreenRadius { get; set; }
 
         // callbacks for when the file was spawned (e.g. used by content overview)
+        public class CodeFileEvent : UnityEvent<CodeFileReferences> {}
         [HideInInspector]
         public CodeFileEvent onFileSpawned = new CodeFileEvent();
-        public class CodeFileEvent : UnityEvent<CodeFileReferences> {}
+        [HideInInspector]
+        public CodeFileEvent onFileClosed = new CodeFileEvent();
+
 
         // after how many characters we have to split up the text
         // and add the rest to another text element
@@ -707,9 +710,12 @@ namespace VRVis.Spawner {
                 windowGrid.DetachGridElement(ref gridElement);
             }
 
+            onFileClosed.Invoke(codeFileInstance);
+
             // destroy code file references
             codeFileInstance.GetCodeFile().DeleteInstance(codeFileInstance);
-            Destroy(codeFileInstance.gameObject);            
+            Destroy(codeFileInstance.gameObject);
+
             return true;
         }
 
