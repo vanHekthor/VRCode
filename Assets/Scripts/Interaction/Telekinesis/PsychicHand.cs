@@ -103,7 +103,7 @@ namespace VRVis.Interaction.Telekinesis {
             IsActive = true;
 
             if (FocusedTelekinesable == null && GrabbedTelekinesable == null) {
-                if (!CheckHeadAndHandAlignment()) {
+                if (!CheckHeadAndHandAlignment() || !CheckHandRotation()) {
                     IsActive = false;
                     return;
                 }
@@ -173,6 +173,16 @@ namespace VRVis.Interaction.Telekinesis {
         private bool CheckHeadAndHandAlignment() {
             float alignment = Vector3.Dot(transform.forward, head.forward);
             if (alignment < 0.95f) {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool CheckHandRotation() {
+            float handRotation = dominantHand.transform.rotation.eulerAngles.z;
+
+            if (handRotation >= 0f && handRotation <= 40f || handRotation <= 360f && handRotation >= 320f) {
                 return false;
             }
 
@@ -270,6 +280,10 @@ namespace VRVis.Interaction.Telekinesis {
                     StopStretching();                
                     GrabbedTelekinesable = null;
                 }
+            }
+
+            if (grippingDominantHand && !playerWasGrippingBefore) {
+                playerWasGrippingBefore = true;
             }
         }        
 
