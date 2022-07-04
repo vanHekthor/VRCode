@@ -478,6 +478,17 @@ namespace VRVis.Spawner {
             spawnedLinksAndEdges.Remove(codeFileInstance);
             Debug.Log("Finished removing edge connections and link buttons!");
             Debug.Log("Removed " + removedEdges + " edges and " + removedLinks + " link buttons!");
+
+            RemoveRefs(codeFileInstance);
+        }
+
+        private void RemoveRefs(CodeFileReferences codeFileInstance) {
+            foreach (var refID in spawnedRefs[codeFileInstance]) {
+                Destroy(codeWindowMethodRefs[refID].gameObject);
+                codeWindowMethodRefs.Remove(refID);
+            }
+            spawnedRefs[codeFileInstance].Clear();
+            spawnedRefs.Remove(codeFileInstance);
         }
 
         public void UpdateControlFlowInsideCodeWindow(CodeFileReferences fileInstance) {
