@@ -27,12 +27,7 @@ namespace VRVis.UI.CodeCity {
         }
 
         private CodeCityElement FindCodeCityElementWithPath(string relativePath) {
-            var codeCityElement = codeCity.transform.Find(relativePath).GetComponent<CodeCityElement>();
-            if (codeCityElement == null) {
-                Debug.LogError($"Failed to find code city element with relative path '{relativePath}'!");
-            }
-
-            return codeCityElement;
+            return CodeCityUtil.FindCodeCityElementWithPath(codeCity, relativePath);
         }
     }
 }

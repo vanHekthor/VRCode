@@ -17,6 +17,7 @@ namespace VRVis.JSON.Serialization.Configuration {
         public int max_folder_depth;
         public string[] ignore_files;
         public string[] remove_extensions;
+        public string main_method = "";
 
     }
 

@@ -1,6 +1,9 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Events;
+using UnityEngine.EventSystems;
 
 namespace VRVis.UI.UIElements {
 
@@ -9,7 +12,11 @@ namespace VRVis.UI.UIElements {
     /// Box Colliders are needed to recognize hover and/or collision with the hand which is a requirement for Interactables.
     /// </summary>
     [RequireComponent(typeof(RectTransform))]
-    public class VRUIItem : MonoBehaviour {
+    public class VRUIItem : MonoBehaviour, IPointerClickHandler {
+        [Serializable]
+        public class PointerClickEvent : UnityEvent<PointerEventData> { };
+        public PointerClickEvent onClick;
+
         private BoxCollider _boxCollider;
         private RectTransform _rectTransform;
 
@@ -45,6 +52,10 @@ namespace VRVis.UI.UIElements {
                 (0.5f - _rectTransform.pivot.y) * _rectTransform.rect.height);
 
             _boxCollider.center = new Vector3(boxCenter.x, boxCenter.y);
+        }
+
+        public void OnPointerClick(PointerEventData eventData) {
+            onClick.Invoke(eventData);    
         }
     }
 }
