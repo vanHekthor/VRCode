@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using VRVis.Elements;
 
 [RequireComponent(typeof(LineRenderer)), ExecuteInEditMode]
 public class Connection : MonoBehaviour {
@@ -6,8 +7,10 @@ public class Connection : MonoBehaviour {
 	const int maxResolution = 20;
 	const int avgResolution = 20;
 
-    public ConnectionPoint.ConnectionDirection startDirection;
-    public ConnectionPoint.ConnectionDirection endDirection;
+    public ConnectionPoint.ConnectionDirection startDirection = ConnectionPoint.ConnectionDirection.East;
+    public ConnectionPoint.ConnectionDirection endDirection = ConnectionPoint.ConnectionDirection.West;
+
+    public Edge Edge { get; set; }
 
     //TODO: rename to "targets", plural
     public RectTransform[] target = new RectTransform[2];
@@ -55,13 +58,13 @@ public class Connection : MonoBehaviour {
 	public void OnValidate() {
 		OrganizeTransforms();
 		UpdateName();
-		UpdateCurve();
+        points[0].direction = startDirection;
+        points[1].direction = endDirection;
+        UpdateCurve();
 	}
 
 	void Awake() {
-		ConnectionManager.AddConnection(this);
-        points[0].direction = startDirection;
-        points[1].direction = endDirection;
+		ConnectionManager.AddConnection(this);        
     }
 
 	void OnDestroy() {
@@ -77,18 +80,18 @@ public class Connection : MonoBehaviour {
 	}
 
 	void OrganizeTransforms() {
-		string n1 = target[0] ? target[0].name : null;
-		string n2 = target[1] ? target[1].name : null;
+		//string n1 = target[0] ? target[0].name : null;
+		//string n2 = target[1] ? target[1].name : null;
 
-		if (string.Compare(n1, n2) > 0) {
-			RectTransform swapT = target[1];
-			target[1] = target[0];
-			target[0] = swapT;
+		//if (string.Compare(n1, n2) > 0) {
+		//	RectTransform swapT = target[1];
+		//	target[1] = target[0];
+		//	target[0] = swapT;
 
-			ConnectionPoint swapP = points[1];
-			points[1] = points[0];
-			points[0] = swapP;
-		}
+		//	ConnectionPoint swapP = points[1];
+		//	points[1] = points[0];
+		//	points[0] = swapP;
+		//}
 	}
 
 	void UpdateName() {
