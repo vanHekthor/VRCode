@@ -6,8 +6,11 @@ public class Connection : MonoBehaviour {
 	const int maxResolution = 20;
 	const int avgResolution = 20;
 
-	//TODO: rename to "targets", plural
-	public RectTransform[] target = new RectTransform[2];
+    public ConnectionPoint.ConnectionDirection startDirection;
+    public ConnectionPoint.ConnectionDirection endDirection;
+
+    //TODO: rename to "targets", plural
+    public RectTransform[] target = new RectTransform[2];
 	public ConnectionPoint[] points = new ConnectionPoint[2]{
 		new ConnectionPoint(),
 		new ConnectionPoint()
@@ -57,7 +60,9 @@ public class Connection : MonoBehaviour {
 
 	void Awake() {
 		ConnectionManager.AddConnection(this);
-	}
+        points[0].direction = startDirection;
+        points[1].direction = endDirection;
+    }
 
 	void OnDestroy() {
 		ConnectionManager.RemoveConnection(this);
