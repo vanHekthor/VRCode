@@ -8,6 +8,7 @@ using VRVis.JSON.Serialization.Configuration;
 using VRVis.Spawner;
 using VRVis.Spawner.CodeCity;
 using VRVis.Spawner.File;
+using VRVis.Utilities;
 
 public class CodeCityMenu : MonoBehaviour {
     public Transform codeCity;
@@ -33,14 +34,22 @@ public class CodeCityMenu : MonoBehaviour {
     }
 
     public void HandleMainButtonClick(PointerEventData eventData) {
-        mainClassBuilding.OnPointerClick(eventData);
+        var codeCityElement = CodeCityUtil.FindCodeCityElementWithPath(codeCity.transform, relativePathToMainClass);
+        FileUtil.OpenClassFile(eventData, transform, codeCityElement.GetSNode(), OpenClassFileCallback);
+    }
+
+    private void OpenClassFileCallback(CodeFileReferences openedFileInstance) {
+        if (openedFileInstance == null) return;
+
+        LineHighlight highlight = openedFileInstance.SpawnMethodHighlight(mainMethodLine, mainMethodLine);
+        openedFileInstance.ScrollTo(highlight.GetComponent<RectTransform>());
     }
 
     private void HandleCodeWindowSpawn(CodeFileReferences fileInstance) {
-        if (fileInstance.GetCodeFile().GetNode().GetRelativePath() != relativePathToMainClass) return;
+        //if (fileInstance.GetCodeFile().GetNode().GetRelativePath() != relativePathToMainClass) return;
 
-        LineHighlight highlight = fileInstance.SpawnLineHighlight(mainMethodLine, mainMethodLine);
-        fileInstance.ScrollTo(highlight.GetComponent<RectTransform>());
+        //LineHighlight highlight = fileInstance.SpawnLineHighlight(mainMethodLine, mainMethodLine);
+        //fileInstance.ScrollTo(highlight.GetComponent<RectTransform>());
     }
 
 }

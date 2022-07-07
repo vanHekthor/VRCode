@@ -291,7 +291,7 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
     private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
         int startLineToHighlight = Link.EdgeLink.GetTo().lines.from;
         int endLineToHighlight = Link.EdgeLink.GetTo().lines.to;
-        var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
+        var highlight = fileInstance.SpawnMethodHighlight(startLineToHighlight, endLineToHighlight);
         if (highlight == null) {
             Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                 endLineToHighlight + " inside code window for " + TargetFile.GetNode().GetName());

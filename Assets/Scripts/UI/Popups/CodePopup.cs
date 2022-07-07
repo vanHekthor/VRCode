@@ -205,7 +205,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
 
             int startLineToHighlight = edge.GetTo().lines.from;
             int endLineToHighlight = edge.GetTo().lines.to;
-            var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
+            var highlight = fileInstance.SpawnMethodHighlight(startLineToHighlight, endLineToHighlight);
             if (highlight == null) {
                 Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                     endLineToHighlight + " inside code window for " + fileInstance.GetCodeFile().GetNode().GetName());

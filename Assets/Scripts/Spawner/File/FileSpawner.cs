@@ -386,8 +386,8 @@ namespace VRVis.Spawner {
             // when we arrive here, everything completed successfully
             spawning = false;
             Debug.Log("Spawning file completed successful: " + spawn_node.GetName());
-            callback(true, spawn_file_instance, "");
             onFileSpawned.Invoke(spawn_file_instance);
+            callback(true, spawn_file_instance, "");
         }
 
         private bool InitSpawning(SNode fileNode, string configName,Action<bool, CodeFileReferences, string> callback) {

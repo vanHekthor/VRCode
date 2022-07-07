@@ -259,6 +259,8 @@ namespace VRVis.Spawner.Edges {
             if (endHoverPoint) { Destroy(endHoverPoint); }
 
             if (LineHighlight != null) {
+                var fileInstance = GetEndCodeFileInstance();
+                toWindowRefs.RemoveMethodHighlight(toWindowRefs.GetCodeFile().GetNode().GetRelativePath(), edge.GetTo().lines.from);
                 Destroy(LineHighlight.gameObject);
             }
         }

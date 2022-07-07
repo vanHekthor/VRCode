@@ -290,7 +290,7 @@ public class CodeWindowMethodRefButton : MonoBehaviour, IPointerDownHandler, IPo
     private LineHighlight HighlightCodeAreaInDeclarationFile(CodeFileReferences fileInstance) {
         int startLineToHighlight = Ref.RefEdge.GetTo().lines.from;
         int endLineToHighlight = Ref.RefEdge.GetTo().lines.to;
-        var highlight = fileInstance.SpawnLineHighlight(startLineToHighlight, endLineToHighlight);
+        var highlight = fileInstance.SpawnMethodHighlight(startLineToHighlight, endLineToHighlight);
         if (highlight == null) {
             Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
                 endLineToHighlight + " inside code window for " + CallingFile.GetNode().GetName());

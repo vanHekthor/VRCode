@@ -1,7 +1,9 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UI;
 using VRVis.Elements;
 using VRVis.IO;
@@ -72,6 +74,11 @@ namespace VRVis.Spawner.File {
 	    private List<TMP_TextInfo> textElements = new List<TMP_TextInfo>();
         private int linesTotal = 0;
 
+        public Dictionary<Tuple<string, int>, LineHighlight> HighlightedMethods { get; private set; }
+
+        public class MethodHighlightEvent : UnityEvent<string, int> { }
+        public MethodHighlightEvent onMethodHighlightSpawned = new MethodHighlightEvent();
+        public MethodHighlightEvent onMethodHighlightRemoved = new MethodHighlightEvent();
 
         // Class for edge connection information
         [System.Serializable]
@@ -145,6 +152,13 @@ namespace VRVis.Spawner.File {
 
         public EdgeAnchors GetEdgePoints() { return edgePoints; }
 
+        public bool IsMethodHighlighted(string relativeFilePath, int startLine) {
+            return HighlightedMethods.ContainsKey(Tuple.Create(relativeFilePath, startLine));
+        }
+
+        private void Start() {
+            HighlightedMethods = new Dictionary<Tuple<string, int>, LineHighlight>();
+        }
 
         // FUNCTIONALITY
 
@@ -204,6 +218,17 @@ namespace VRVis.Spawner.File {
             }
             
             lineNumbers.SetText(strb);
+        }
+
+        public LineHighlight SpawnMethodHighlight(int startLine, int endLine) {
+            string relativeFilePath = codeFile.GetNode().GetRelativePath();
+            var highlight = SpawnLineHighlight(startLine, endLine);
+
+            if (highlight == null) return null;
+
+            AddMethodHighlight(highlight, relativeFilePath, startLine);
+
+            return highlight;
         }
 
         /// <summary>
@@ -267,6 +292,18 @@ namespace VRVis.Spawner.File {
             rt.sizeDelta = new Vector2(totalWidth_codeMarking, height);
 
             return lineHighlight;
+        }
+
+        private void AddMethodHighlight(LineHighlight lineHighlight, string relativeFilePath, int startLine) {
+            var key = Tuple.Create(relativeFilePath, startLine);
+            HighlightedMethods.Add(key, lineHighlight);
+            onMethodHighlightSpawned.Invoke(relativeFilePath, startLine);
+        }
+
+        public void RemoveMethodHighlight(string relativeFilePath, int startLine) {
+            var key = Tuple.Create(relativeFilePath, startLine);
+            HighlightedMethods.Remove(key);
+            onMethodHighlightRemoved.Invoke(relativeFilePath, startLine);
         }
 
         public void ScrollTo(RectTransform target) {
