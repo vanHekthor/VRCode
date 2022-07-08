@@ -69,7 +69,6 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
         bool refFileWasSpawned = filePath == openedFileInstance.GetCodeFile().GetNode().GetRelativePath();
 
         if (refFileWasSpawned) {
-            ChangeBackgroundColor(ACTIVE_COLOR);
             refFileIsOpen = true;
             refFile = openedFileInstance;
             refFile.onMethodHighlightSpawned.AddListener(HandleMethodHighlightSpawnEvent);
@@ -82,19 +81,21 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
 
         bool refFileWasClosed = filePath == closedFileInstance.GetCodeFile().GetNode().GetRelativePath();
         if (refFileWasClosed) {
-            ChangeBackgroundColor(DEFAULT_COLOR);
             refFileIsOpen = false;
             refFile.onMethodHighlightSpawned.RemoveListener(HandleMethodHighlightSpawnEvent);
             refFile.onMethodHighlightRemoved.RemoveListener(HandleMethodHighlightRemoveEvent);
+            ChangeBackgroundColor(DEFAULT_COLOR);
             refFile = null;
         }
     }
 
     private void HandleMethodHighlightSpawnEvent(string relativeFilePath, int startLine) {
-        ChangeBackgroundColor(ACTIVE_COLOR);
+        if (relativeFilePath == filePath && startLine == methodStartLine)
+            ChangeBackgroundColor(ACTIVE_COLOR);
     }
 
     private void HandleMethodHighlightRemoveEvent(string relativeFilePath, int startLine) {
-        ChangeBackgroundColor(DEFAULT_COLOR);
+        if (relativeFilePath == filePath && startLine == methodStartLine)
+            ChangeBackgroundColor(DEFAULT_COLOR);
     }
 }
