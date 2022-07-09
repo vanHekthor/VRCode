@@ -10,7 +10,12 @@ public class InteractionScreen : MonoBehaviour {
     public float distanceToPlayer = 1.8f;
     public float horizontalOffset = -0.1f;
 
+    public GameObject callGraph;
+    public float callGraphDistanceToPlayer = 3.6f;
+    public bool showCallGraph;
+
     private Transform codePopupHolder;
+    private Transform callGraphContainer;
 
     void Awake() {
         codePopupHolder = transform.Find("CodePopups");
@@ -23,6 +28,13 @@ public class InteractionScreen : MonoBehaviour {
         CodePopup.ClickEvent.AddListener(CodePopupWasClicked);
 
         gameObject.SetActive(false);
+
+        if (callGraph == null) return;
+
+        var callGraphContainerObject = new GameObject("CallGraphContainer");
+        callGraphContainer = callGraphContainerObject.transform;
+        callGraph.transform.SetParent(callGraphContainer, false);
+        callGraph.SetActive(showCallGraph);
     }
 
     public void LinkWasClicked(List<CodeWindowLink> links) {
@@ -30,7 +42,7 @@ public class InteractionScreen : MonoBehaviour {
         gameObject.SetActive(true);
         UpdatePopups(links);
 
-        UpdateScreenPosition();
+        UpdateCodePopupScreenPosition();
     }
 
     public void RefButtonWasClicked(List<CodeWindowMethodRef> refs) {
@@ -38,7 +50,7 @@ public class InteractionScreen : MonoBehaviour {
         gameObject.SetActive(true);
         UpdatePopups(refs);
 
-        UpdateScreenPosition();
+        UpdateCodePopupScreenPosition();
     }
 
     public void UpdatePopups(List<CodeWindowLink> links) {
@@ -67,7 +79,7 @@ public class InteractionScreen : MonoBehaviour {
         gameObject.SetActive(false);
     }
 
-    private void UpdateScreenPosition() {
+    private void UpdateCodePopupScreenPosition() {
         if (Player.instance != null && Player.instance.hmdTransform != null) {
             Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
             Vector3 screenPos = Player.instance.hmdTransform.position + distanceToPlayer * planarLookDirection;
@@ -95,6 +107,24 @@ public class InteractionScreen : MonoBehaviour {
     private void DeleteCodePopups() {
         for (int i = codePopupHolder.childCount - 1; i >= 0; i--) {
             Destroy(codePopupHolder.GetChild(i).gameObject);
+        }
+    }
+
+    public void ToggleCallGraphVisibility() {
+        showCallGraph = !showCallGraph;
+        if (showCallGraph) {
+            UpdateCallGraphPosition();
+        }
+        callGraph.SetActive(showCallGraph);
+    }
+
+    private void UpdateCallGraphPosition() {
+        if (Player.instance != null && Player.instance.hmdTransform != null) {
+            Vector3 planarLookDirection = Vector3.ProjectOnPlane(Player.instance.hmdTransform.forward, Vector3.up).normalized;
+            Vector3 screenPos = Player.instance.hmdTransform.position + callGraphDistanceToPlayer * planarLookDirection;
+            callGraphContainer.transform.position = screenPos;
+            Vector3 direction = screenPos - Player.instance.hmdTransform.position;
+            callGraphContainer.transform.rotation = Quaternion.LookRotation(-direction);
         }
     }
 }
