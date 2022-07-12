@@ -1,0 +1,361 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.dbi</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.Key</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.LN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.PackedInteger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Comparator</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Utility methods for combining, splitting and comparing two-part key values for duplicates</color>
+<color=#75715e> * databases.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>At the Btree storage level, for the key/data pairs in a duplicates database, the data is</color>
+<color=#75715e> * always zero length and the key is a two-part key. For embedded records, the key and data parts</color>
+<color=#75715e> * are visible at the BTree level as well. In both cases, the 'key' parameter in the API is the</color>
+<color=#75715e> * first part of the key. The the 'data' parameter in the API is the second part of the key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The length of the first part is stored at the end of the combined key as a packed integer, so</color>
+<color=#75715e> * that the two parts can be split, combined, and compared separately. The length is stored at the</color>
+<color=#75715e> * end, rather than the start, to enable key prefixing for the first part, e.g., for Strings with</color>
+<color=#75715e> * different lengths but common prefixes.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DupKeyData</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>PREFIX_ONLY</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns twoPartKey as: paramKey bytes, paramData bytes, reverse-packed len of paramKey bytes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The byte array in the resulting twoPartKey will be copied again by JE at a lower level. It</color>
+<color=#75715e>   * would be nice if there were a way to give ownership of the array to JE, to avoid the extra</color>
+<color=#75715e>   * copy.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>DatabaseEntry</color> <color=#a6e22e>combine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramKey</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color>
+        <color=#f8f8f2>combine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>paramKey</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>paramKey</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>paramKey</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>paramData</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>paramData</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>paramData</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>combine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>combine</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>combine</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keyOff</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataOff</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySizeLen</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySizeLen</color> <color=#f92672>+</color> <color=#f8f8f2>keySize</color> <color=#f92672>+</color> <color=#f8f8f2>dataSize</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nextOff</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>writeReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color> <color=#f92672>+</color> <color=#f8f8f2>dataSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>nextOff</color> <color=#f92672>==</color> <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buf</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Splits twoPartKey, previously set by combine, into original paramKey and paramData if they are</color>
+<color=#75715e>   * non-null.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The offset of the twoPartKey must be zero. This can be assumed because the entry is read</color>
+<color=#75715e>   * from the database and JE always returns entries with a zero offset.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method copies the bytes into to new arrays rather than using the DatabaseEntry offset</color>
+<color=#75715e>   * and size to shared the array, to keep with the convention that JE always returns whole arrays.</color>
+<color=#75715e>   * It would be nice to avoid the copy, but that might break user apps.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>split</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramKey</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>split</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>(),</color> <color=#f8f8f2>paramKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>paramData</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Same as split method above, but with twoPartKey/twoPartKeySize byte array and array size</color>
+<color=#75715e>   * params.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>split</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>twoPartKeySize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>paramData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKeySize</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>keySize</color> <color=#f92672>!=</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>paramKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBuf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBuf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keySize</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>paramKey</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LN</color><color=#f8f8f2>.</color><color=#a6e22e>setEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>paramKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBuf</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>paramKey</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBuf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>paramData</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySizeLen</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKeySize</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataSize</color> <color=#f92672>=</color> <color=#f8f8f2>twoPartKeySize</color> <color=#f92672>-</color> <color=#f8f8f2>keySize</color> <color=#f92672>-</color> <color=#f8f8f2>keySizeLen</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>dataBuf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>dataSize</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataBuf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dataSize</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>paramData</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LN</color><color=#f8f8f2>.</color><color=#a6e22e>setEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>paramData</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataBuf</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>paramData</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>dataBuf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Splits twoPartKey and returns a two-part key entry containing the key portion of twoPartKey</color>
+<color=#75715e>   * combined with newData.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>replaceData</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origKeySize</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origKeySize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>combine</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>newData</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>newData</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Splits twoPartKey and returns a two-part key entry containing the key portion from twoPartKey,</color>
+<color=#75715e>   * no data, and the special PREFIX_ONLY value for the key length. When used for a search, this</color>
+<color=#75715e>   * will compare as less than any other entry having the same first part, i.e., in the same</color>
+<color=#75715e>   * duplicate set.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>DatabaseEntry</color> <color=#a6e22e>removeData</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>keySize</color> <color=#f92672>!=</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>makePrefixKey</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a two-part key entry with the given key portion, no data, and the special PREFIX_ONLY</color>
+<color=#75715e>   * value for the key length. When used for a search, this will compare as less than any other</color>
+<color=#75715e>   * entry having the same first part, i.e., in the same duplicate set.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>makePrefixKey</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keyOff</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f92672>[</color><color=#f8f8f2>keySize</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buf</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getKeyLength</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>>=</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>keyLen</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>!=</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>>=</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>keyLen</color> <color=#f92672><=</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>>=</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>keyLen</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>!=</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>>=</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>keyLen</color> <color=#f92672><=</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keyLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>>=</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>keyLen</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>!=</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>>=</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>keyLen</color> <color=#f92672><=</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>keyLenSize</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>dataLen</color> <color=#f92672>=</color> <color=#f8f8f2>len</color> <color=#f92672>-</color> <color=#f8f8f2>keyLen</color> <color=#f92672>-</color> <color=#f8f8f2>keyLenSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>dataLen</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyLen</color> <color=#f92672>+</color> <color=#f8f8f2>dataLen</color> <color=#f92672><=</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>dataLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Comparator that compares the combined key/data two-part key, calling the user-defined btree and</color>
+<color=#75715e>   * duplicate comparator as needed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>TwoPartKeyComparator</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>TwoPartKeyComparator</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>dupComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>=</color> <color=#f8f8f2>dupComparator</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Compare key portion. */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origKeySize1</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize1</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize1</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origKeySize1</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origKeySize2</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize2</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize2</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origKeySize2</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keyCmp</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>keyCmp</color> <color=#f92672>=</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key1</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key2</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize2</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>keyCmp</color> <color=#f92672>=</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>key1</color><color=#f8f8f2>,</color> <color=#f8f8f2>key2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyCmp</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>keyCmp</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize1</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color> <color=#f92672>||</color> <color=#f8f8f2>origKeySize2</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize1</color> <color=#f92672>==</color> <color=#f8f8f2>origKeySize2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize1</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f92672>-</color><color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Compare data portion. */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySizeLen1</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySizeLen2</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataSize1</color> <color=#f92672>=</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>keySize1</color> <color=#f92672>-</color> <color=#f8f8f2>keySizeLen1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataSize2</color> <color=#f92672>=</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>keySize2</color> <color=#f92672>-</color> <color=#f8f8f2>keySizeLen2</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dataCmp</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dataCmp</color> <color=#f92672>=</color>
+            <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data1</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>dataSize1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data2</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>dataSize2</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>,</color> <color=#f8f8f2>data1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>,</color> <color=#f8f8f2>data2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataSize2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>dataCmp</color> <color=#f92672>=</color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>data1</color><color=#f8f8f2>,</color> <color=#f8f8f2>data2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>dataCmp</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to perform the getNextNoDup operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Compares the left parameter (the key parameter in a user-initiated search operation) as: -</color>
+<color=#75715e>   * less than a right operand with a prefix with is less than the prefix of the left operand. This</color>
+<color=#75715e>   * is standard. - greater than a right operand with a prefix with is greater than the prefix of</color>
+<color=#75715e>   * the left operand. This is standard. - greater than a right operand with a prefix equal to the</color>
+<color=#75715e>   * prefix of the left operation. This is non-standard.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The last property causes the range search to find the first duplicate in the duplicate set</color>
+<color=#75715e>   * following the duplicate set of the left operand.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>NextNoDupComparator</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>NextNoDupComparator</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>cmp</color> <color=#f92672>=</color> <color=#f8f8f2>compareMainKey</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>cmp</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>cmp</color> <color=#f8f8f2>:</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to perform the putNoOverwrite operation. Only used to find the insertion position in the</color>
+<color=#75715e>   * BIN, after the standard comparator is used to find the correct BIN for insertion. Because it</color>
+<color=#75715e>   * compares part-one only, it prevents insertion of a duplicate for the main key given.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>PutNoOverwriteComparator</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>PutNoOverwriteComparator</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>cmp</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>cmp</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>compareMainKey</color><color=#f8f8f2>(</color><color=#f8f8f2>twoPartKey1</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey2</color><color=#f8f8f2>,</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Compares the first part of the two keys. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>compareMainKey</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origKeySize2</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize2</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize2</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBytes2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origKeySize2</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>compareMainKey</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>,</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Compares the first part of the two keys. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>compareMainKey</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keyOff2</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origKeySize1</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readReverseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keySize1</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>origKeySize1</color> <color=#f92672>==</color> <color=#f8f8f2>PREFIX_ONLY</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBytes1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origKeySize1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>keyCmp</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keyCmp</color> <color=#f92672>=</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyOff2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key1</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key2</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>keySize2</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key1</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes2</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyOff2</color><color=#f8f8f2>,</color> <color=#f8f8f2>key2</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keySize2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>keyCmp</color> <color=#f92672>=</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>key1</color><color=#f8f8f2>,</color> <color=#f8f8f2>key2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>keyCmp</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

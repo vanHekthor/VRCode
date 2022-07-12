@@ -1,0 +1,1131 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbEnvPool</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.RepConfigProxy</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.StartupTracker.Phase</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DatabaseUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.PrintStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A replicated database environment that is a node in a replication group. Please read the {@link</color>
+<color=#75715e> * <a href="{@docRoot}/../ReplicationGuide/introduction.html">Berkeley DB JE High Availability</color>
+<color=#75715e> * Overview</a>} for an introduction to basic concepts and key terminology.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Berkeley DB JE High Availability (JE HA) is a replicated, embedded database management system</color>
+<color=#75715e> * which provides fast, reliable, and scalable data management. JE HA enables replication of an</color>
+<color=#75715e> * environment across a Replication Group. A ReplicatedEnvironment is a single node in the</color>
+<color=#75715e> * replication group.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>ReplicatedEnvironment extends {@link Environment}. All database operations are executed in the</color>
+<color=#75715e> * same fashion in both replicated and non replicated applications, using {@link Environment}</color>
+<color=#75715e> * methods. A ReplicatedEnvironment must be transactional. All replicated databases created in the</color>
+<color=#75715e> * replicated environment must be transactional as well. However, <a</color>
+<color=#75715e> * href="#nonRepDbs">non-replicated databases</a> may be used as well.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>ReplicatedEnvironment handles are analogous to {@link Environment} handles. A replicated</color>
+<color=#75715e> * environment handle is a ReplicatedEnvironment instance; multiple ReplicatedEnvironment instances</color>
+<color=#75715e> * may be created for the same physical directory. In other words, more than one</color>
+<color=#75715e> * ReplicatedEnvironment handle may be open at a time for a given environment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A ReplicatedEnvironment joins its replication group when it is instantiated. When the</color>
+<color=#75715e> * constructor returns, the node will have established contact with the other members of the group</color>
+<color=#75715e> * and will be ready to service operations. The {@link <a</color>
+<color=#75715e> * href="{@docRoot}/../ReplicationGuide/lifecycle.html">life cycle</a>} overview is useful for</color>
+<color=#75715e> * understanding replication group creation.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The membership of a replication group is dynamically defined. The group comes into being when</color>
+<color=#75715e> * ReplicatedEnvironments that are configured as members of a group are created and discover each</color>
+<color=#75715e> * other. ReplicatedEnvironments are identified by a group name, a node name, and a hostname:port</color>
+<color=#75715e> * value. Membership information for electable and monitor nodes is stored in an internal,</color>
+<color=#75715e> * replicated database available to electable and secondary nodes.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To start a node and join a group, instantiate a ReplicatedEnvironment. The very first</color>
+<color=#75715e> * instantiation of a node differs slightly from all future instantiations. A brand new, empty node</color>
+<color=#75715e> * does not yet have access to the membership database, so it must discover the group with the aid</color>
+<color=#75715e> * of a helper node, which is a fellow member. If this is the very first node of the entire group,</color>
+<color=#75715e> * there is no available helper. Instead, the helper host address to use is the node's own address.</color>
+<color=#75715e> * The example below takes the simple approach of creating a replication group by starting up a node</color>
+<color=#75715e> * that will act as the first master, though it is not necessary to follow this order. {@link <a</color>
+<color=#75715e> * href="{@docRoot}/../ReplicationGuide/progoverview.html#configrepenv">Configuring Replicated</color>
+<color=#75715e> * Environments</a>} describes group startup in greater detail.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To create the <b>master node in a brand new group</b>, instantiate a ReplicatedEnvironment</color>
+<color=#75715e> * this way:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * EnvironmentConfig envConfig = new EnvironmentConfig();</color>
+<color=#75715e> * envConfig.setAllowCreate(true);</color>
+<color=#75715e> * envConfig.setTransactional(true);</color>
+<color=#75715e> *</color>
+<color=#75715e> * // Identify the node</color>
+<color=#75715e> * ReplicationConfig repConfig = new ReplicationConfig();</color>
+<color=#75715e> * repConfig.setGroupName("PlanetaryRepGroup");</color>
+<color=#75715e> * repConfig.setNodeName("Mercury");</color>
+<color=#75715e> * repConfig.setNodeHostPort("mercury.acme.com:5001");</color>
+<color=#75715e> *</color>
+<color=#75715e> * // This is the first node, so its helper is itself</color>
+<color=#75715e> * repConfig.setHelperHosts("mercury.acme.com:5001");</color>
+<color=#75715e> *</color>
+<color=#75715e> * ReplicatedEnvironment repEnv =</color>
+<color=#75715e> *     new ReplicatedEnvironment(envHome, repConfig, envConfig);</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To create a new node when there are <b>other existing group members</b>, set a helper address</color>
+<color=#75715e> * which points to an existing node in the group. A simple way to bring up a new group is to "chain"</color>
+<color=#75715e> * the new nodes by having the helpers reference a previously created node.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * EnvironmentConfig envConfig = new EnvironmentConfig();</color>
+<color=#75715e> * envConfig.setAllowCreate(true);</color>
+<color=#75715e> * envConfig.setTransactional(true);</color>
+<color=#75715e> *</color>
+<color=#75715e> * // Identify the node</color>
+<color=#75715e> * ReplicationConfig repConfig =</color>
+<color=#75715e> *     new ReplicationConfig("PlanetaryRepGroup",</color>
+<color=#75715e> *                           "Jupiter",</color>
+<color=#75715e> *                           "jupiter.acme.com:5002");</color>
+<color=#75715e> *</color>
+<color=#75715e> * // Use the node at mercury.acme.com:5001 as a helper to find the rest</color>
+<color=#75715e> * // of the group.</color>
+<color=#75715e> * repConfig.setHelperHosts("mercury.acme.com:5001");</color>
+<color=#75715e> *</color>
+<color=#75715e> * ReplicatedEnvironment repEnv =</color>
+<color=#75715e> *     new ReplicatedEnvironment(envHome, repConfig, envConfig);</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In these examples, node Mercury was configured as its own helper, and becomes the first</color>
+<color=#75715e> * master. The next nodes were configured to use Mercury as their helper, and became replicas. It is</color>
+<color=#75715e> * also possible to start these in reverse order, bringing mercury up last. In that case, the</color>
+<color=#75715e> * earlier nodes will block until a helper is awake and can service their requests for group</color>
+<color=#75715e> * metadata.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Creating a ReplicatedEnvironment for an <b>existing environment</b> requires less</color>
+<color=#75715e> * configuration. The call to {@code EnvironmentConfig.setAllowCreate()} is eliminated to guard</color>
+<color=#75715e> * against the unintentional creation of a new environment. Also, there is no need to set a helper</color>
+<color=#75715e> * host address, because the environment exists and has access to the shared, persistent membership</color>
+<color=#75715e> * information.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * EnvironmentConfig envConfig = new EnvironmentConfig();</color>
+<color=#75715e> * envConfig.setTransactional(true);</color>
+<color=#75715e> * ReplicationConfig repConfig =</color>
+<color=#75715e> *     new ReplicationConfig("PlanetaryRepGroup",</color>
+<color=#75715e> *                           "Mercury",</color>
+<color=#75715e> *                           "mercury.acme.com:5001");</color>
+<color=#75715e> *</color>
+<color=#75715e> * ReplicatedEnvironment repEnv =</color>
+<color=#75715e> *     new ReplicatedEnvironment(envHome, repConfig, envConfig);</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * {@literal See} {@link com.sleepycat.je.rep.util.ReplicationGroupAdmin ReplicationGroupAdmin} for</color>
+<color=#75715e> * information on how to remove nodes from the replication group.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>ReplicatedEnvironment properties can be set via the the {@literal</color>
+<color=#75715e> * <environmentHome>/}je.properties file, just like {@link Environment} properties. They follow the</color>
+<color=#75715e> * same property value precedence rules.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A replicated environment directory can only be accessed by a read write ReplicatedEnvironment</color>
+<color=#75715e> * handle or a read only {@link Environment} handle. In the current release, there is an additional</color>
+<color=#75715e> * restriction that a read only {@link Environment} is only permitted when the directory is not also</color>
+<color=#75715e> * accessed from a different process by a read/write ReplicatedEnvironment. If a read/write</color>
+<color=#75715e> * ReplicatedEnvironment and a read only {@link Environment} from two different processes</color>
+<color=#75715e> * concurrently access an environment directory, there is the small possibility that the read only</color>
+<color=#75715e> * {@link Environment} may see see exceptions thrown about an inconsistent log if the</color>
+<color=#75715e> * ReplicatedEnvironment executes certain kinds of failover. There is no problem if the {@link</color>
+<color=#75715e> * Environment} and ReplicatedEnvironment are in the same process, or are not concurrent.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>JE HA prohibits opening a replicated environment directory with a read/write {@link</color>
+<color=#75715e> * Environment} handle, because from the group's perspective, unreplicated updates to a single node</color>
+<color=#75715e> * would cause data inconsistency. To use an existing, non-replicated environment to bootstrap a</color>
+<color=#75715e> * replication group, use {@link com.sleepycat.je.rep.util.DbEnableReplication} to do a one time</color>
+<color=#75715e> * conversion of the directory.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>All other database objects, such as {@link com.sleepycat.je.Database} or {@link</color>
+<color=#75715e> * com.sleepycat.je.Cursor} (when using the Base API) or {@link com.sleepycat.persist.EntityStore}</color>
+<color=#75715e> * or {@link com.sleepycat.persist.PrimaryIndex} (when using the Direct Persistence Layer) should be</color>
+<color=#75715e> * created, used and closed before calling {@link ReplicatedEnvironment#close}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Replicated environments can be created with node type {@link NodeType#ELECTABLE} or {@link</color>
+<color=#75715e> * NodeType#SECONDARY}. ELECTABLE nodes can be masters or replicas, and participate in both master</color>
+<color=#75715e> * elections and commit durability decisions.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>SECONDARY nodes can only be replicas, not masters, and do not participate in either elections</color>
+<color=#75715e> * or durability decisions. SECONDARY nodes can be used to increase the available number of read</color>
+<color=#75715e> * replicas without changing the election or durability quorum of the group, and without requiring</color>
+<color=#75715e> * communication with the secondaries during master elections or transaction commits. As a result,</color>
+<color=#75715e> * SECONDARY nodes are a good choice for nodes that are connected to the other nodes in the group by</color>
+<color=#75715e> * high latency network connections, for example over long distance networks. SECONDARY nodes</color>
+<color=#75715e> * maintain replication streams with the replication group master to update the data contents of</color>
+<color=#75715e> * their environment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>You can use SECONDARY nodes to:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>Provide a copy of the data available at a distant location</color>
+<color=#75715e> *   <li>Maintain an extra copy of the data to increase redundancy</color>
+<color=#75715e> *   <li>Change the number of replicas to adjust to dynamically changing read loads</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Membership information for SECONDARY nodes is not stored persistently, so their membership is</color>
+<color=#75715e> * only known to the master, and only while the nodes remain connected to the master. Because a</color>
+<color=#75715e> * SECONDARY node cannot become a master, it will not act as master even if it is the first node</color>
+<color=#75715e> * created for the group.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <h3><a name="nonRepDbs">Non-replicated Databases in a Replicated Environment</a></h3></color>
+<color=#75715e> *</color>
+<color=#75715e> * A database or entity store in a replicated environment is replicated by default, but may be</color>
+<color=#75715e> * explicitly configured as non-replicated using {@link</color>
+<color=#75715e> * com.sleepycat.je.DatabaseConfig#setReplicated} or {@link</color>
+<color=#75715e> * com.sleepycat.persist.StoreConfig#setReplicated}. Such non-replicated databases may be</color>
+<color=#75715e> * transactional or non-transactional (including deferred-write and temporary). The special</color>
+<color=#75715e> * considerations for using non-replicated databases in a replicated environment are described</color>
+<color=#75715e> * below.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The data in a non-replicated database is not guaranteed to be persistent, for two reasons.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>When a hard recovery occurs as part of an election, some data at the end of the transaction</color>
+<color=#75715e> *       log may be lost. For a replicated database this data is automatically recovered from other</color>
+<color=#75715e> *       members of the group, but for a non-replicated database it is not.</color>
+<color=#75715e> *   <li>When a node's contents are replaced via network restore or by otherwise copying the</color>
+<color=#75715e> *       transaction log from another node, all previously existing non-replicated databases on that</color>
+<color=#75715e> *       node are destroyed, and the non-replicated databases from the source node are copied along</color>
+<color=#75715e> *       with the replicated data. The non-replicated databases copied from the source node will be</color>
+<color=#75715e> *       in whatever state they were in at the time of the copy.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Therefore, non-replicated databases are intended to be used primarily for persistent caching</color>
+<color=#75715e> * and other non-critical local storage. The application is responsible for maintaining the state of</color>
+<color=#75715e> * the database and handling data loss after one the events described above.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To perform write operations on a non-replicated database, special considerations are necessary</color>
+<color=#75715e> * for user-supplied transactions. Namely, the transaction must be configured for {@link</color>
+<color=#75715e> * com.sleepycat.je.TransactionConfig#setLocalWrite(boolean) local-write}. A given transaction may</color>
+<color=#75715e> * be used to write to either replicated databases or non-replicated databases, but not both.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For auto-commit transactions (when the Transaction parameter is null), the local-write setting</color>
+<color=#75715e> * is automatically set to correspond to whether the database is replicated. With auto-commit,</color>
+<color=#75715e> * local-write is always true for a non-replicated database, and always false for a replicated</color>
+<color=#75715e> * database.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A local-write transaction automatically uses {@link</color>
+<color=#75715e> * com.sleepycat.je.Durability.ReplicaAckPolicy#NONE}. A local-write transaction on a Master will</color>
+<color=#75715e> * thus not be held up, or throw {@link com.sleepycat.je.rep.InsufficientReplicasException}, if the</color>
+<color=#75715e> * Master is not in contact with a sufficient number of Replicas at the time the transaction is</color>
+<color=#75715e> * initiated.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For read operations, a single transaction may be used to read any combination of replicated</color>
+<color=#75715e> * and non-replicated databases. If only read operations are performed, it is normally desirable to</color>
+<color=#75715e> * configure a user supplied transaction as {@link</color>
+<color=#75715e> * com.sleepycat.je.TransactionConfig#setReadOnly(boolean) read-only}. Like a local-write</color>
+<color=#75715e> * transaction, a read-only transaction automatically uses {@link</color>
+<color=#75715e> * com.sleepycat.je.Durability.ReplicaAckPolicy#NONE}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For user-supplied transactions, note that even when accessing only non-replicated databases,</color>
+<color=#75715e> * group consistency checks <em>are</em> performed by default. In this case it is normally desirable</color>
+<color=#75715e> * to disable consistency checks by calling {@link</color>
+<color=#75715e> * com.sleepycat.je.TransactionConfig#setConsistencyPolicy} with {@link</color>
+<color=#75715e> * NoConsistencyRequiredPolicy#NO_CONSISTENCY}. This allows the non-replicated databases to be</color>
+<color=#75715e> * accessed regardless of the state of the other members of the group and the network connections to</color>
+<color=#75715e> * them. When auto-commit is used (when the Transaction parameter is null) with a non-replicated</color>
+<color=#75715e> * database, consistency checks are automatically disabled.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @see Environment</color>
+<color=#75715e> * @see <a href="{@docRoot}/../ReplicationGuide/progoverview.html" target="_top">Replication First</color>
+<color=#75715e> *     Steps</a></color>
+<color=#75715e> * @since 4.0</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ReplicatedEnvironment</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Environment</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The canonical RepImpl associated with the environment directory,</color>
+<color=#75715e>   * accessed by different handles.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The repEnvironmentImpl field is set to null during close to avoid OOME.</color>
+<color=#75715e>   * It should normally only be accessed via the checkOpen (which calls</color>
+<color=#75715e>   * Environment.checkOpen) and getNonNullRepImpl methods. During close, while</color>
+<color=#75715e>   * synchronized, it is safe to access it directly.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The unique name and id associated with the node. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The replication configuration that has been used to create this</color>
+<color=#75715e>   * handle. This is derived from the original configuration argument, after</color>
+<color=#75715e>   * cloning a copy to keep it distinct from the user's instance, applying</color>
+<color=#75715e>   * je.properties settings, and validating against the underlying node.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>handleRepConfig</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a replicated environment handle and starts participating in the replication group as</color>
+<color=#75715e>   * either a Master or a Replica. The node's state is determined when it joins the group, and</color>
+<color=#75715e>   * mastership is not preconfigured. If the group has no current master and the node has the</color>
+<color=#75715e>   * default node type of {@link NodeType#ELECTABLE}, then creation of a handle will trigger an</color>
+<color=#75715e>   * election to determine whether this node will participate as a Master or a Replica.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the node participates as a Master, the constructor will return after a sufficient number</color>
+<color=#75715e>   * of Replicas, in accordance with the {@code initialElectionPolicy} argument, have established</color>
+<color=#75715e>   * contact with the Master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the node participates as a Replica, it will become consistent in accordance with the</color>
+<color=#75715e>   * {@code consistencyPolicy} argument before returning from the constructor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If an election cannot be concluded in the time period defined by {@link</color>
+<color=#75715e>   * ReplicationConfig#ENV_SETUP_TIMEOUT}, by default it will throw an {@code</color>
+<color=#75715e>   * UnknownMasterException}. This behavior can be overridden via the {@link</color>
+<color=#75715e>   * ReplicationConfig#ENV_UNKNOWN_STATE_TIMEOUT} to permit the creation of the handle in the {@link</color>
+<color=#75715e>   * State#UNKNOWN} state. A handle in UNKNOWN state can be used to service read operations with an</color>
+<color=#75715e>   * appropriately relaxed consistency policy. Note that these timeouts do not apply when opening an</color>
+<color=#75715e>   * environment for the very first time. In the first time case, if the node is not the only group</color>
+<color=#75715e>   * member, or if it is a SECONDARY node, the constructor will wait indefinitely until it can</color>
+<color=#75715e>   * contact an existing group member.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A brand new node will always join an existing group as a Replica, unless it is the very</color>
+<color=#75715e>   * first electable node that is creating the group. In that case it joins as the Master of the</color>
+<color=#75715e>   * newly formed singleton group. A brand new node must always specify one or more active helper</color>
+<color=#75715e>   * nodes via the {@link ReplicationConfig#setHelperHosts(String)} method, or via the <code></color>
+<color=#75715e>   * &lt;environment home&gt;/je.properties</code> file. If this is the very first member of a</color>
+<color=#75715e>   * nascent group, it must specify just itself as the helper.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>There are special considerations to keep in mind when a replication group is started and</color>
+<color=#75715e>   * elections are first held to determine a master. The default {@link</color>
+<color=#75715e>   * QuorumPolicy#SIMPLE_MAJORITY} calls for a simple majority vote. If the group members were</color>
+<color=#75715e>   * previously created and populated, the default election policy may result in the election of a</color>
+<color=#75715e>   * master that may not have the most up to date copy of the environment. This could happen if the</color>
+<color=#75715e>   * best qualified node is slow to start up; it's possible that by the time it's ready to</color>
+<color=#75715e>   * participate in an election, the election has already have completed with a simple majority.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>To avoid this possibility, the method has a parameter initialElectionPolicy, which can be</color>
+<color=#75715e>   * used to specify {@link QuorumPolicy#ALL}, which will cause the elections to wait until all</color>
+<color=#75715e>   * electable nodes can vote. By ensuring that all the nodes can vote, the best possible node is</color>
+<color=#75715e>   * chosen to be the master at group startup.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that it is the application's responsibility to ensure that all electable nodes</color>
+<color=#75715e>   * coordinate their choice of initialElectionPolicy so that the very first elections held when a</color>
+<color=#75715e>   * group is brought up use the same value for this parameter. This parameter is only used for the</color>
+<color=#75715e>   * first election. After the first election has been held and the group is functioning, subsequent</color>
+<color=#75715e>   * elections do not require participation of all the nodes. A simple majority is sufficient to</color>
+<color=#75715e>   * elect the node with the most up to date environment as the master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param envHome The environment's home directory.</color>
+<color=#75715e>   * @param repConfig replication configurations. If null, the default replication configurations</color>
+<color=#75715e>   *     are used.</color>
+<color=#75715e>   * @param envConfig environment configurations for this node. If null, the default environment</color>
+<color=#75715e>   *     configurations are used.</color>
+<color=#75715e>   * @param consistencyPolicy the consistencyPolicy used by the Replica at startup to make its</color>
+<color=#75715e>   *     environment current with respect to the master. This differs from the consistency policy</color>
+<color=#75715e>   *     specified {@link ReplicationConfig#setConsistencyPolicy} because it is used only at</color>
+<color=#75715e>   *     construction, when the node joins the group for the first time. The consistency policy set</color>
+<color=#75715e>   *     in {@link ReplicationConfig} is used any time a policy is used after node startup, such as</color>
+<color=#75715e>   *     at transaction begins.</color>
+<color=#75715e>   * @param initialElectionPolicy the policy to use when holding the initial election.</color>
+<color=#75715e>   * @throws RestartRequiredException if some type of corrective action is required. The subclasses</color>
+<color=#75715e>   *     of this exception provide further details.</color>
+<color=#75715e>   * @throws ReplicaConsistencyException if it is a Replica and cannot satisfy the specified</color>
+<color=#75715e>   *     consistency policy within the consistency timeout period</color>
+<color=#75715e>   * @throws UnknownMasterException if the {@link ReplicationConfig#ENV_UNKNOWN_STATE_TIMEOUT} has a</color>
+<color=#75715e>   *     zero value and the node cannot join the group in the time period specified by the {@link</color>
+<color=#75715e>   *     ReplicationConfig#ENV_SETUP_TIMEOUT} property. The node may be unable to join the group</color>
+<color=#75715e>   *     because the Master could not be determined due to a lack of sufficient nodes as required by</color>
+<color=#75715e>   *     the election policy, or because a master was present but lacked a {@link</color>
+<color=#75715e>   *     QuorumPolicy#SIMPLE_MAJORITY} needed to update the environment with information about this</color>
+<color=#75715e>   *     node, if it's a new node and is joining the group for the first time.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentLockedException when an environment cannot be opened for write access</color>
+<color=#75715e>   *     because another process has the same environment open for write access.</color>
+<color=#75715e>   *     <strong>Warning:</strong> This exception should be handled when an environment is opened by</color>
+<color=#75715e>   *     more than one process.</color>
+<color=#75715e>   * @throws VersionMismatchException when the existing log is not compatible with the version of JE</color>
+<color=#75715e>   *     that is running. This occurs when a later version of JE was used to create the log.</color>
+<color=#75715e>   *     <strong>Warning:</strong> This exception should be handled when more than one version of JE</color>
+<color=#75715e>   *     may be used to access an environment.</color>
+<color=#75715e>   * @throws UnsupportedOperationException if the environment exists and has not been enabled for</color>
+<color=#75715e>   *     replication.</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified, for example, an invalid</color>
+<color=#75715e>   *     {@code EnvironmentConfig} parameter.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ReplicatedEnvironment</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicaConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>QuorumPolicy</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentLockedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InsufficientLogException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ReplicaConsistencyException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color> <color=#75715e>/*joinGroup*/</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/*envImplParam*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A convenience constructor that defaults the replica consistency policy and the initial election</color>
+<color=#75715e>   * policy to be used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The default replica consistency policy results in the replica being consistent with the</color>
+<color=#75715e>   * master as of the time the handle was created.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The default initial election policy is {@link QuorumPolicy#SIMPLE_MAJORITY}</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws RestartRequiredException if some type of corrective action is required. The subclasses</color>
+<color=#75715e>   *     of this exception provide further details.</color>
+<color=#75715e>   * @throws ReplicaConsistencyException if it is a Replica and and cannot be made consistent within</color>
+<color=#75715e>   *     the timeout specified by {@link ReplicationConfig#ENV_CONSISTENCY_TIMEOUT}</color>
+<color=#75715e>   * @throws UnknownMasterException if the {@link ReplicationConfig#ENV_UNKNOWN_STATE_TIMEOUT} has a</color>
+<color=#75715e>   *     zero value and the node cannot join the group in the time period specified by the {@link</color>
+<color=#75715e>   *     ReplicationConfig#ENV_SETUP_TIMEOUT} property. The node may be unable to join the group</color>
+<color=#75715e>   *     because the Master could not be determined due to a lack of sufficient nodes as required by</color>
+<color=#75715e>   *     the election policy, or because a master was present but lacked a {@link</color>
+<color=#75715e>   *     QuorumPolicy#SIMPLE_MAJORITY} needed to update the environment with information about this</color>
+<color=#75715e>   *     node, if it's a new node and is joining the group for the first time.</color>
+<color=#75715e>   * @throws EnvironmentLockedException when an environment cannot be opened for write access</color>
+<color=#75715e>   *     because another process has the same environment open for write access.</color>
+<color=#75715e>   *     <strong>Warning:</strong> This exception should be handled when an environment is opened by</color>
+<color=#75715e>   *     more than one process.</color>
+<color=#75715e>   * @throws VersionMismatchException when the existing log is not compatible with the version of JE</color>
+<color=#75715e>   *     that is running. This occurs when a later version of JE was used to create the log.</color>
+<color=#75715e>   *     <strong>Warning:</strong> This exception should be handled when more than one version of JE</color>
+<color=#75715e>   *     may be used to access an environment.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws UnsupportedOperationException if the environment exists and has not been enabled for</color>
+<color=#75715e>   *     replication.</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified, for example, an invalid</color>
+<color=#75715e>   *     {@code EnvironmentConfig} parameter.</color>
+<color=#75715e>   * @see #ReplicatedEnvironment(File, ReplicationConfig, EnvironmentConfig,</color>
+<color=#75715e>   *     ReplicaConsistencyPolicy, QuorumPolicy)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ReplicatedEnvironment</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentLockedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicaConsistencyException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>InsufficientLogException</color><color=#f8f8f2>,</color> <color=#f8f8f2>RollbackException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*consistencyPolicy*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>QuorumPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>SIMPLE_MAJORITY</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Joins the replication group as part of the creation of a handle.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>joinGroup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicaConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>QuorumPolicy</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Just return if we don't want to join the group. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dontJoinGroup</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>State</color> <color=#f8f8f2>state</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>state</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>joinGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>state</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Something bad happened, close the environment down with</color>
+<color=#75715e>         * minimal activity. The environment may not actually be</color>
+<color=#75715e>         * invalidated, but the constructor did not succeed, so it's</color>
+<color=#75715e>         * logically invalid. We don't go to the effort of invalidating</color>
+<color=#75715e>         * the environment, to avoid masking the original problem. Use</color>
+<color=#75715e>         * abnormalClose() because it will remove the</color>
+<color=#75715e>         * environment from the environment pool.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>abnormalClose</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Return true if this node won't join the group. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>dontJoinGroup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Boolean</color><color=#f8f8f2>(</color><color=#f8f8f2>getRepConfig</color><color=#f8f8f2>().</color><color=#a6e22e>getConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>DONT_JOIN_REP_GROUP</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Note that repImpl.joinGroup is a synchronized method, and therefore protected against</color>
+<color=#75715e>   *     multiple concurrent attempts to create a handle.</color>
+<color=#75715e>   * @param envImplParam is non-null only when used by EnvironmentIml to create an</color>
+<color=#75715e>   *     InternalEnvironment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>ReplicatedEnvironment</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicaConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>QuorumPolicy</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>joinGroup</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>envImplParam</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentLockedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicaConsistencyException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImplParam</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>repEnvironmentImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Ensure that the DataChannelFactory configuration is usable</color>
+<color=#75715e>     * and initialize logging state.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>initializeChannelFactory</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinGroup</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>joinGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RollbackException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Syncup failed, a hard recovery is needed. Throwing the</color>
+<color=#75715e>         * RollbackException closed the RepImpl and the EnvironmentImpl</color>
+<color=#75715e>         * Redo the creation of RepImpl and retry the join once. If the</color>
+<color=#75715e>         * second joinGroup fails, let the exception throw out to the</color>
+<color=#75715e>         * user.</color>
+<color=#75715e>         *</color>
+<color=#75715e>         * Clear references to the old envImpl/repImpl, to prevent OOME</color>
+<color=#75715e>         * during recovery when we retry below.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>clearEnvImpl</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>repEnvironmentImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>repEnvironmentImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>makeEnvironmentImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Ensure that the DataChannelFactory configuration is usable</color>
+<color=#75715e>         * and initialize logging state.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>initializeChannelFactory</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>joinGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color> <color=#f8f8f2>initialElectionPolicy</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setHardRecoveryInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Fire a JoinGroupEvent only when the ReplicatedEnvironment is</color>
+<color=#75715e>       * successfully created for the first time.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getMonitorEventManager</color><color=#f8f8f2>().</color><color=#a6e22e>notifyJoinGroup</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* For testing only */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"An earlier handle creation had resulted in the node"</color> <color=#f92672>+</color> <color=#e6db74>"joining the group"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Validate and resolve replication configuration params, and extract a ReplicationConfig</color>
+<color=#75715e>   *     with those params for passing into environment creation. Note that a copy of the</color>
+<color=#75715e>   *     ReplicationConfig argument is created to insulate the application from changes made by the</color>
+<color=#75715e>   *     replication implementation and vice versa.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>RepConfigProxy</color> <color=#a6e22e>setupRepConfig</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepConfigProxy</color> <color=#f8f8f2>repConfigProxy</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * If the user specified a null object, use the default. Apply the je.properties file to the</color>
+<color=#75715e>     * replication config object.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>repConfigProxy</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>baseConfig</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>repConfig</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color> <color=#f8f8f2>:</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>useConfig</color> <color=#f92672>=</color> <color=#f8f8f2>baseConfig</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Read-only replicated environments are not usually permitted,</color>
+<color=#75715e>       * since a RN should be able to assume master identity</color>
+<color=#75715e>       * at any moment. ReadOnly is only supported if the node is an</color>
+<color=#75715e>       * arbiter, subscriber or network backup.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * TBW: the arbiter, subscriber, and a network backup all need a</color>
+<color=#75715e>       * replicated environment handle that has pieces of the env</color>
+<color=#75715e>       * infrastructure, like info logging, service dispatching, log file</color>
+<color=#75715e>       * management. The user of XXX_USE parameters is really selecting</color>
+<color=#75715e>       * those infrastructure pieces in an implicit way. It would be nice</color>
+<color=#75715e>       * to have a way to specify which services they use in a more</color>
+<color=#75715e>       * explicit way. To do so, we probably need to do a bit of</color>
+<color=#75715e>       * refactoring of the env handle to call out those components.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>arbUse</color> <color=#f92672>=</color> <color=#f8f8f2>useConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>ARBITER_USE</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()).</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"true"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>subUse</color> <color=#f92672>=</color> <color=#f8f8f2>useConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SUBSCRIBER_USE</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()).</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"true"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>networkBackupUse</color> <color=#f92672>=</color>
+          <color=#f8f8f2>useConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>NETWORKBACKUP_USE</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()).</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"true"</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>arbUse</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>subUse</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>networkBackupUse</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"A replicated environment "</color> <color=#f92672>+</color> <color=#e6db74>"may not be opened read-only"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>applyFileConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>useConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getProps</color><color=#f8f8f2>(),</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>/* forReplication */</color>
+    <color=#f8f8f2>useConfig</color><color=#f8f8f2>.</color><color=#a6e22e>propagateRepNetProps</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>handleRepConfig</color> <color=#f92672>=</color> <color=#f8f8f2>useConfig</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>handleRepConfig</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the unique name used to identify this replicated environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationConfig#setNodeName</color>
+<color=#75715e>   * @return the node name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getNodeName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the current state of the node associated with this replication environment. See {@link</color>
+<color=#75715e>   * State} for a description of node states.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the caller's intent is to track the state of the node, {@link StateChangeListener} may be</color>
+<color=#75715e>   * a more convenient and efficient approach, rather than using getState() directly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the current replication state associated with this node</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>State</color> <color=#a6e22e>getState</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a description of the replication group as known by this node. The replicated group</color>
+<color=#75715e>   * metadata is stored in a replicated database and updates are propagated by the current master</color>
+<color=#75715e>   * node to all replicas. If this node is not the master, it is possible for its description of the</color>
+<color=#75715e>   * group to be out of date, and it will not include information about SECONDARY nodes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the group description</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#75715e>/*</color>
+<color=#75715e>   * TODO: EXTERNAL is hidden for now. The doc need updated to include</color>
+<color=#75715e>   * EXTERNAL when it becomes public.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationGroup</color> <color=#a6e22e>getGroup</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getGroup</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Close this ReplicatedEnvironment and release any resources used by the handle.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When the last handle is closed, allocated resources are freed, and daemon threads are</color>
+<color=#75715e>   * stopped, even if they are performing work. The node ceases participation in the replication</color>
+<color=#75715e>   * group. If the node was currently the master, the rest of the group will hold an election. If a</color>
+<color=#75715e>   * quorum of nodes can participate in the election, a new master will be chosen.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The ReplicatedEnvironment should not be closed while any other type of handle that refers to</color>
+<color=#75715e>   * it is not yet closed. For example, the ReplicatedEnvironment should not be closed while there</color>
+<color=#75715e>   * are open Database instances, or while transactions in the environment have not yet committed or</color>
+<color=#75715e>   * aborted. Specifically, this includes {@link com.sleepycat.je.Database Database}, {@link</color>
+<color=#75715e>   * com.sleepycat.je.Cursor Cursor} and {@link com.sleepycat.je.Transaction Transaction} handles.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Add this node's address to the exception message for clarity. */</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>addErrorMessage</color><color=#f8f8f2>(</color><color=#e6db74>"Problem closing handle "</color> <color=#f92672>+</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Add this node's address to the exception message for clarity. */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_EXCEPTION</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Problem closing handle "</color> <color=#f92672>+</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repEnvironmentImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the listener used to receive asynchronous replication node state change events. Note that</color>
+<color=#75715e>   * there is one listener per replication node, not one per handle. Invoking this method replaces</color>
+<color=#75715e>   * the previous Listener.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Invoking this method typically results in an immediate callback to the application via the</color>
+<color=#75715e>   * {@link StateChangeListener#stateChange} method, so that the application is made aware of the</color>
+<color=#75715e>   * existing state of the node at the time <code>StateChangeListener</code> is first established.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param listener the state change listener.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setStateChangeListener</color><color=#f8f8f2>(</color><color=#f8f8f2>StateChangeListener</color> <color=#f8f8f2>listener</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setChangeListener</color><color=#f8f8f2>(</color><color=#f8f8f2>listener</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the listener used to receive asynchronous replication node state change events. A</color>
+<color=#75715e>   * StateChangeListener provides the replication application with an asynchronous mechanism for</color>
+<color=#75715e>   * tracking the {@link State State} of the replicated environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there is one listener per replication node, not one per ReplicatedEnvironment</color>
+<color=#75715e>   * handle.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StateChangeListener</color> <color=#a6e22e>getStateChangeListener</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getChangeListener</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setRepMutableConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationMutableConfig</color> <color=#f8f8f2>mutableConfig</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>DatabaseUtil</color><color=#f8f8f2>.</color><color=#a6e22e>checkForNullParam</color><color=#f8f8f2>(</color><color=#f8f8f2>mutableConfig</color><color=#f8f8f2>,</color> <color=#e6db74>"mutableConfig"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setRepMutableConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>mutableConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationMutableConfig</color> <color=#a6e22e>getRepMutableConfig</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationMutableConfig</color> <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>cloneRepMutableConfig</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>fillInEnvironmentGeneratedProps</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>config</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the replication configuration that has been used to create this handle. This is derived</color>
+<color=#75715e>   * from the original configuration argument, after cloning a copy to keep it distinct from the</color>
+<color=#75715e>   * user's instance, applying je.properties settings, and validating against the underlying node.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return this handle's configuration.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationConfig</color> <color=#a6e22e>getRepConfig</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>handleRepConfig</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns statistics associated with this environment. See {@link ReplicatedEnvironmentStats} for</color>
+<color=#75715e>   * the kind of information available.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param config is used to specify attributes such as whether the stats should be cleared,</color>
+<color=#75715e>   *     whether the complete set of stats should be obtained, etc.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicatedEnvironmentStats</color> <color=#a6e22e>getRepStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#f8f8f2>StatsConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Returns the non-null, underlying RepImpl. For internal access only.</color>
+<color=#75715e>   * Intentionally non-public; non package access must use the RepInternal</color>
+<color=#75715e>   * proxy.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * This method is used to access the repEnvironmentImpl field, to guard</color>
+<color=#75715e>   * against NPE when the environment has been closed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * This method does not check whether the env is valid. For API method</color>
+<color=#75715e>   * calls, checkOpen is called at API entry points to check validity. The</color>
+<color=#75715e>   * validity of the env should also be checked before critical operations</color>
+<color=#75715e>   * (e.g., disk writes), after idle periods, and periodically during time</color>
+<color=#75715e>   * consuming operations.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalStateException if the env has been closed.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getNonNullRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Environment is closed."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the underlying RepImpl, or null if the env has been closed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: This method will be phased out over time and normally getNonNullRepImpl should be</color>
+<color=#75715e>   * called instead.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getMaybeNullRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>repEnvironmentImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @throws EnvironmentFailureException if the underlying environment is invalid.</color>
+<color=#75715e>   * @throws IllegalStateException if the environment is not open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RepImpl</color> <color=#a6e22e>checkOpen</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>checkOpen</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Will throw ISE if the environment becomes closed or invalid after</color>
+<color=#75715e>     * the above check.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getNonNullRepImpl</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Print a detailed report about the costs of different phases of environment startup. This report</color>
+<color=#75715e>   * is by default logged to the je.info file if startup takes longer than je.env.startupThreshold.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>printStartupInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>out</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>printStartupInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>getNonNullRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getStartupTracker</color><color=#f8f8f2>().</color><color=#a6e22e>displayStats</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>TOTAL_JOIN_GROUP</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The replication node state determines the operations that the application can perform against</color>
+<color=#75715e>   * its replicated environment. The method {@link #getState} returns the current state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When the first handle to a {@link ReplicatedEnvironment} is instantiated and the node is</color>
+<color=#75715e>   * bought up, the node usually establishes <code>MASTER</code> or <code>REPLICA</code> state</color>
+<color=#75715e>   * before returning from the constructor. However, these states are actually preceeded by the</color>
+<color=#75715e>   * <code>UNKNOWN</code> state, which may be visible if the application has configured a suitable</color>
+<color=#75715e>   * {@link ReplicationConfig#ENV_UNKNOWN_STATE_TIMEOUT}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>As the various remote nodes in the group become unavailable and elections are held, the</color>
+<color=#75715e>   * local node may change between <code>MASTER</code> and <code>REPLICA</code> states, always with</color>
+<color=#75715e>   * a (usually brief) transition through <code>UNKNOWN</code> state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When the last handle to the environment is closed, the node transitions to the <code></color>
+<color=#75715e>   * DETACHED</code> state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The state transitions visible to the application can be summarized by the regular</color>
+<color=#75715e>   * expression:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <blockquote></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <code> [ MASTER | REPLICA | UNKNOWN ]+ DETACHED</code></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * </blockquote></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * with the caveat that redundant "transitions" (<code>MASTER</code> to <code>MASTER</code>,</color>
+<color=#75715e>   * <code>REPLICA</code> to <code>REPLICA</code>, etc.) never occur.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>State</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The node is not associated with the group. Its handle has been closed. No operations can be</color>
+<color=#75715e>     * performed on the environment when it is in this state.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>DETACHED</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The node is not currently in contact with the master, but is actively trying to establish</color>
+<color=#75715e>     * contact with, or decide upon, a master. While in this state the node is restricted to</color>
+<color=#75715e>     * performing just read operations on its environment. In a functioning group, this state is</color>
+<color=#75715e>     * transitory.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>UNKNOWN</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The node is the unique master of the group and can both read and write to its environment.</color>
+<color=#75715e>     * When the node transitions to the state, the application running on the node must make</color>
+<color=#75715e>     * provisions to start processing application level write requests in addition to read requests.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>MASTER</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The node is a replica that is being updated by the master. It is restricted to reading its</color>
+<color=#75715e>     * environment. When the node transitions to this state, the application running on the node</color>
+<color=#75715e>     * must make provisions to ensure that it does not write to the environment. It must arrange for</color>
+<color=#75715e>     * all write requests to be routed to the master.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>REPLICA</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/** @return true if the node is a Master when in this state */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isMaster</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>MASTER</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if the node is a Replica when in this state */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReplica</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>REPLICA</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if the node is disconnected from the replication group when in this state. */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDetached</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>DETACHED</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @return true if the node's state is unknown, and it is attempting to transition to Master or</color>
+<color=#75715e>     *     Replica.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isUnknown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>UNKNOWN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if the node is currently participating in the group as a Replica or a Master */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isActive</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>MASTER</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>REPLICA</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Closes this handle and shuts down the Replication Group by forcing all active Replicas to exit.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method must be invoked on the node that's currently the Master after all other</color>
+<color=#75715e>   * outstanding handles have been closed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The Master waits for all active Replicas to catch up so that they have a current set of</color>
+<color=#75715e>   * logs, and then shuts them down. The Master will wait for a maximum of <code></color>
+<color=#75715e>   * replicaShutdownTimeout</code> for a Replica to catch up. If the Replica has not caught up in</color>
+<color=#75715e>   * this time period it will force the Replica to shut down before it is completely caught up. A</color>
+<color=#75715e>   * negative or zero <code>replicaShutdownTimeout</code> value will result in an immediate shutdown</color>
+<color=#75715e>   * without waiting for lagging Replicas to catch up. Nodes that are currently inactive cannot be</color>
+<color=#75715e>   * contacted by the Master, as a consequence, their state is not impacted by the shutdown.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The shutdown operation will close this handle on the Master node. The environments on</color>
+<color=#75715e>   * Replica nodes will be invalidated, and attempts to use those handles will result in a {@link</color>
+<color=#75715e>   * GroupShutdownException} being thrown. The application is responsible for closing the remaining</color>
+<color=#75715e>   * handles on the Replica.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param replicaShutdownTimeout the maximum amount of time the Master waits for a Replica to</color>
+<color=#75715e>   *     shutdown.</color>
+<color=#75715e>   * @param unit the time unit associated with the <code>replicaShutdownTimeout</code></color>
+<color=#75715e>   * @throws IllegalStateException if the method is invoked on a node that's not currently the</color>
+<color=#75715e>   *     Master, or there are other open handles to this Environment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdownGroup</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>replicaShutdownTimeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>unit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalStateException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Hold repImpl stable, across the setup and close. Note that close()</color>
+<color=#75715e>     * synchronizes on DbEnvPool, and synchronization order must be</color>
+<color=#75715e>     * DbEnvPool before repImpl/envImpl.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbEnvPool</color><color=#f8f8f2>.</color><color=#a6e22e>getInstance</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownGroupSetup</color><color=#f8f8f2>(</color><color=#f8f8f2>unit</color><color=#f8f8f2>.</color><color=#a6e22e>toMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaShutdownTimeout</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Registers an {@link AppStateMonitor} to receive the application state which this {@link</color>
+<color=#75715e>   * ReplicatedEnvironment} is running in. Note that there is only one <code>AppStateMonitor</code></color>
+<color=#75715e>   * per replication node, not one per handle. Invoking this method replaces the previous <code></color>
+<color=#75715e>   * AppStateMonitor</code>.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After registration, the application state can be returned by invoking {@link</color>
+<color=#75715e>   * com.sleepycat.je.rep.util.ReplicationGroupAdmin#getNodeState}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param appStateMonitor the user implemented AppStateMonitor</color>
+<color=#75715e>   * @throws IllegalStateException if this handle or the underlying environment has already been</color>
+<color=#75715e>   *     closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>registerAppStateMonitor</color><color=#f8f8f2>(</color><color=#f8f8f2>AppStateMonitor</color> <color=#f8f8f2>appStateMonitor</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalStateException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>registerAppStateMonitor</color><color=#f8f8f2>(</color><color=#f8f8f2>appStateMonitor</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Transfers the current master state from this node to one of the electable replicas supplied in</color>
+<color=#75715e>   * the argument list. The replica that is actually chosen to be the new master is the one with</color>
+<color=#75715e>   * which the Master Transfer can be completed most rapidly. The transfer operation ensures that</color>
+<color=#75715e>   * all changes at this node are available at the new master upon conclusion of the operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The following sequence of steps is used to accomplish the transfer:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ol></color>
+<color=#75715e>   *   <li>The master first waits for at least one replica, from amongst the supplied {@code Set} of</color>
+<color=#75715e>   *       candidate replicas, to become reasonably current. It may have to wait for at least one of</color>
+<color=#75715e>   *       the replicas to establish a feeder, if none of them are currently connected to the</color>
+<color=#75715e>   *       master. "Reasonably current" means that the replica is close enough to the end of the</color>
+<color=#75715e>   *       transaction stream that it has managed to acknowledge a transaction within the time that</color>
+<color=#75715e>   *       the commit thread is still awaiting acknowledgments. If the candidate replicas are</color>
+<color=#75715e>   *       working through a long backlog after having been disconnected, this can take some time,</color>
+<color=#75715e>   *       so the timeout value should be chosen to allow for this possibility.</color>
+<color=#75715e>   *   <li>The master blocks new transactions from being committed or aborted.</color>
+<color=#75715e>   *   <li>The master now waits for one of the candidate replicas to become fully current</color>
+<color=#75715e>   *       (completely caught up with the end of the log on the master). The first replica that</color>
+<color=#75715e>   *       becomes current is the one that is chosen to become the new master. This second wait</color>
+<color=#75715e>   *       period is expected to be brief, since it only has to wait until transactions that were</color>
+<color=#75715e>   *       committed in the interval between step 1) and step 2) have been acknowledged by a</color>
+<color=#75715e>   *       replica.</color>
+<color=#75715e>   *   <li>The master sends messages to all other nodes announcing the chosen replica as the new</color>
+<color=#75715e>   *       master. This node will eventually become a replica, and any subsequent attempt commit or</color>
+<color=#75715e>   *       abort existing transactions, or to do write operations will result in a {@code</color>
+<color=#75715e>   *       ReplicaWriteException}.</color>
+<color=#75715e>   *   <li>The current master releases the transactions that were blocked in step 2) allowing them</color>
+<color=#75715e>   *       to proceed. The released transactions will fail with {@code ReplicaWriteException} since</color>
+<color=#75715e>   *       the environment has become a replica.</color>
+<color=#75715e>   * </ol></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param replicas the set of replicas to be considered when choosing the new master. The method</color>
+<color=#75715e>   *     returns immediately if this node is a member of the set.</color>
+<color=#75715e>   * @param timeout the amount of time to allow for the transfer to be accomplished. A {@code</color>
+<color=#75715e>   *     MasterTransferFailureException} is thrown if the transfer is not accomplished within this</color>
+<color=#75715e>   *     timeout period.</color>
+<color=#75715e>   * @param timeUnit the time unit associated with the timeout</color>
+<color=#75715e>   * @return the name of the replica that was chosen to be the new master from amongst the set of</color>
+<color=#75715e>   *     supplied replicas</color>
+<color=#75715e>   * @throws MasterTransferFailureException if the master transfer operation fails</color>
+<color=#75715e>   * @throws IllegalArgumentException if any of the named replicas is not a member of the</color>
+<color=#75715e>   *     replication group or is not of type {@link NodeType#ELECTABLE}</color>
+<color=#75715e>   * @throws IllegalStateException if this node is not currently the master, or this handle or the</color>
+<color=#75715e>   *     underlying environment has already been closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>transferMaster</color><color=#f8f8f2>(</color><color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>replicas</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>transferMaster</color><color=#f8f8f2>(</color><color=#f8f8f2>replicas</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Transfers the current master state from this node to one of the replicas supplied in the</color>
+<color=#75715e>   * argument list.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param force true if this request should supersede and cancel any currently pending Master</color>
+<color=#75715e>   *     Transfer operation</color>
+<color=#75715e>   * @see #transferMaster(Set, int, TimeUnit)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>transferMaster</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>replicas</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>force</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeUnit</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>timeout</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Invalid timeout"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>transferMaster</color><color=#f8f8f2>(</color><color=#f8f8f2>replicas</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>toMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>timeout</color><color=#f8f8f2>),</color> <color=#f8f8f2>force</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

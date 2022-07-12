@@ -1,0 +1,606 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.collections</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntityBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntryBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.RuntimeExceptionWrapper</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.keyrange.KeyRange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.keyrange.KeyRangeException</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Represents a Berkeley DB database and adds support for indices, bindings and key ranges.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This class defines a view and takes care of reading and updating indices, calling bindings,</color>
+<color=#75715e> * constraining access to a key range, etc.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>final</color> <color=#66d9ef>class</color> <color=#a6e22e>DataView</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+
+  <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secDb</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>CurrentTransaction</color> <color=#f8f8f2>currentTxn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>EntityBinding</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>PrimaryKeyAssigner</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>SecondaryKeyCreator</color> <color=#f8f8f2>secKeyCreator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>cursorConfig</color><color=#f8f8f2>;</color> <color=#75715e>// Used for all operations via this view</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>;</color> <color=#75715e>// Read-write view</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>ordered</color><color=#f8f8f2>;</color> <color=#75715e>// Not a HASH Db</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>keyRangesAllowed</color><color=#f8f8f2>;</color> <color=#75715e>// BTREE only</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>recNumAllowed</color><color=#f8f8f2>;</color> <color=#75715e>// QUEUE, RECNO, or BTREE-RECNUM Db</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>recNumAccess</color><color=#f8f8f2>;</color> <color=#75715e>// recNumAllowed && using a rec num binding</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>btreeRecNumDb</color><color=#f8f8f2>;</color> <color=#75715e>// BTREE-RECNUM Db</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>btreeRecNumAccess</color><color=#f8f8f2>;</color> <color=#75715e>// recNumAccess && BTREE-RECNUM Db</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>recNumRenumber</color><color=#f8f8f2>;</color> <color=#75715e>// RECNO-RENUM Db</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>keysRenumbered</color><color=#f8f8f2>;</color> <color=#75715e>// recNumRenumber || btreeRecNumAccess</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>dupsAllowed</color><color=#f8f8f2>;</color> <color=#75715e>// Dups configured</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>dupsOrdered</color><color=#f8f8f2>;</color> <color=#75715e>// Sorted dups configured</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>;</color> <color=#75715e>// Db is transactional</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>readUncommittedAllowed</color><color=#f8f8f2>;</color> <color=#75715e>// Read-uncommited is optional in DB-CORE</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * If duplicatesView is called, dupsView will be true and dupsKey will be</color>
+<color=#75715e>   * the secondary key used as the "single key" range.  dupRange will be set</color>
+<color=#75715e>   * as the range of the primary key values if subRange is subsequently</color>
+<color=#75715e>   * called, to further narrow the view.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dupsKey</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>dupsView</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>dupsRange</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a view for a given database and bindings. The initial key range of the view will be</color>
+<color=#75715e>   * open.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataView</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntityBinding</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>PrimaryKeyAssigner</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>database</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"database is null"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>database</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>currentTxn</color> <color=#f92672>=</color> <color=#f8f8f2>CurrentTransaction</color><color=#f8f8f2>.</color><color=#a6e22e>getInstanceInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>SecondaryDatabase</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>secDb</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryDatabase</color><color=#f8f8f2>)</color> <color=#f8f8f2>database</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>SecondaryConfig</color> <color=#f8f8f2>secConfig</color> <color=#f92672>=</color> <color=#f8f8f2>secDb</color><color=#f8f8f2>.</color><color=#a6e22e>getSecondaryConfig</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>secKeyCreator</color> <color=#f92672>=</color> <color=#f8f8f2>secConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyCreator</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#f8f8f2>secConfig</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getConfig</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>ordered</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeHash</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>keyRangesAllowed</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeBtree</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>recNumAllowed</color> <color=#f92672>=</color>
+          <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeQueue</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeRecno</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getBtreeRecordNumbers</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>recNumRenumber</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRenumbering</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dupsAllowed</color> <color=#f92672>=</color>
+          <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getUnsortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dupsOrdered</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>transactional</color> <color=#f92672>=</color> <color=#f8f8f2>currentTxn</color><color=#f8f8f2>.</color><color=#a6e22e>isTxnMode</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactional</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>readUncommittedAllowed</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getReadUncommitted</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>btreeRecNumDb</color> <color=#f92672>=</color> <color=#f8f8f2>recNumAllowed</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeBtree</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>KeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getBtreeComparator</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>RuntimeExceptionWrapper</color><color=#f8f8f2>.</color><color=#a6e22e>wrapIfNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>writeAllowed</color> <color=#f92672>=</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keyBinding</color> <color=#f92672>=</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>valueBinding</color> <color=#f92672>=</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entityBinding</color> <color=#f92672>=</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keyAssigner</color> <color=#f92672>=</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>cursorConfig</color> <color=#f92672>=</color> <color=#f8f8f2>CursorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>valueBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>entityBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"both valueBinding and entityBinding are non-null"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>bind</color><color=#f8f8f2>.</color><color=#a6e22e>RecordNumberBinding</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>recNumAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"RecordNumberBinding requires DB_BTREE/DB_RECNUM, "</color> <color=#f92672>+</color> <color=#e6db74>"DB_RECNO, or DB_QUEUE"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>recNumAccess</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeRecNumDb</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>btreeRecNumAccess</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>keysRenumbered</color> <color=#f92672>=</color> <color=#f8f8f2>recNumRenumber</color> <color=#f92672>||</color> <color=#f8f8f2>btreeRecNumAccess</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Clones the view. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>DataView</color> <color=#a6e22e>cloneView</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>DataView</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>CloneNotSupportedException</color> <color=#f8f8f2>willNeverOccur</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return a new key-set view derived from this view by setting the entity and value binding to</color>
+<color=#75715e>   * null.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the derived view.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>keySetView</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Must have keyBinding"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>cloneView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>valueBinding</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>entityBinding</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return a new value-set view derived from this view by setting the key binding to null.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the derived view.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>valueSetView</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>valueBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>entityBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Must have valueBinding or entityBinding"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>cloneView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>keyBinding</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return a new value-set view for single key range.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param singleKey the single key value.</color>
+<color=#75715e>   * @return the derived view.</color>
+<color=#75715e>   * @throws DatabaseException if a database problem occurs.</color>
+<color=#75715e>   * @throws KeyRangeException if the specified range is not within the current range.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>valueSetView</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>singleKey</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Must do subRange before valueSetView since the latter clears the</color>
+<color=#75715e>     * key binding needed for the former.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>singleKeyRange</color> <color=#f92672>=</color> <color=#f8f8f2>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>singleKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>valueSetView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>range</color> <color=#f92672>=</color> <color=#f8f8f2>singleKeyRange</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Return a new value-set view for key range, optionally changing the key binding. */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>subView</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>endKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>cloneView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>setRange</color><color=#f8f8f2>(</color><color=#f8f8f2>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color> <color=#f8f8f2>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>keyBinding</color> <color=#f92672>=</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Return a new duplicates view for a given secondary key. */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>duplicatesView</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>secondaryKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>primaryKeyBinding</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isSecondary</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Only allowed for maps on secondary databases"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupsView</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>cloneView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>range</color> <color=#f92672>=</color> <color=#f8f8f2>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>secondaryKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>dupsKey</color> <color=#f92672>=</color> <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>range</color><color=#f8f8f2>.</color><color=#a6e22e>getSingleKey</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>dupsView</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>keyBinding</color> <color=#f92672>=</color> <color=#f8f8f2>primaryKeyBinding</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a new view with a specified cursor configuration. */</color>
+  <color=#f8f8f2>DataView</color> <color=#a6e22e>configuredView</color><color=#f8f8f2>(</color><color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color> <color=#f92672>=</color> <color=#f8f8f2>cloneView</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>cursorConfig</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>config</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>cloneCursorConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>CursorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>view</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the current transaction for the view or null if the environment is non-transactional.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>CurrentTransaction</color> <color=#a6e22e>getCurrentTxn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>transactional</color> <color=#f92672>?</color> <color=#f8f8f2>currentTxn</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Sets this view's range to a subrange with the given parameters. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setRange</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>endKey</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>beginKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>endKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>keyRangesAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Key ranges allowed only for BTREE databases"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>useRange</color> <color=#f92672>=</color> <color=#f8f8f2>useSubRange</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>useRange</color> <color=#f92672>=</color> <color=#f8f8f2>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>useRange</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color> <color=#f8f8f2>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupsView</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dupsRange</color> <color=#f92672>=</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the key thang for a single key range, or null if a single key range is not used. */</color>
+  <color=#f8f8f2>DatabaseEntry</color> <color=#a6e22e>getSingleKeyThang</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getSingleKey</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the environment for the database. */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Environment</color> <color=#a6e22e>getEnv</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>currentTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether this is a view on a secondary database rather than directly on a primary</color>
+<color=#75715e>   * database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSecondary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>secDb</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether no records are present in the view.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit must be performed by the caller.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Appends a value and returns the new key. If a key assigner is used it assigns the key,</color>
+<color=#75715e>   * otherwise a QUEUE or RECNO database is required.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit must be performed by the caller.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>retPrimaryKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>retValue</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Flags will be NOOVERWRITE if used with assigner, or APPEND</color>
+<color=#75715e>     * otherwise.</color>
+<color=#75715e>     * Requires: if value param, value or entity binding</color>
+<color=#75715e>     * Requires: if retPrimaryKey, primary key binding (no index).</color>
+<color=#75715e>     * Requires: if retValue, value or entity binding</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyThang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueThang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>useValue</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyAssigner</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>.</color><color=#a6e22e>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"assigned key out of range"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getCursor</color><color=#f8f8f2>().</color><color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Assume QUEUE/RECNO access method. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentTxn</color><color=#f8f8f2>.</color><color=#a6e22e>isCDBCursorOpen</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"cannot open CDB write cursor when read cursor is open"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>useTransaction</color><color=#f8f8f2>(),</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>delete</color><color=#f8f8f2>(</color><color=#f8f8f2>useTransaction</color><color=#f8f8f2>(),</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"appended record number out of range"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>returnPrimaryKeyAndValue</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>retPrimaryKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>retValue</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the current transaction if the database is transaction, or null if the database is not</color>
+<color=#75715e>   * transactional or there is no current transaction.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Transaction</color> <color=#a6e22e>useTransaction</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>transactional</color> <color=#f92672>?</color> <color=#f8f8f2>currentTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getTransaction</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Deletes all records in the current range.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit must be performed by the caller.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>clear</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keysRenumbered</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>delete</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a cursor for this view that reads only records having the specified index key values.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataCursor</color> <color=#a6e22e>join</color><color=#f8f8f2>(</color><color=#f8f8f2>DataView</color><color=#f92672>[]</color> <color=#f8f8f2>indexViews</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>indexKeys</color><color=#f8f8f2>,</color> <color=#f8f8f2>JoinConfig</color> <color=#f8f8f2>joinConfig</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>joinCursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>DataCursor</color><color=#f92672>[]</color> <color=#f8f8f2>indexCursors</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f92672>[</color><color=#f8f8f2>indexViews</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>indexViews</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>indexCursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>indexViews</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>indexCursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>indexKeys</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>joinCursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>indexCursors</color><color=#f8f8f2>,</color> <color=#f8f8f2>joinConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>joinCursor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinCursor</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// An exception is being thrown, so close cursors we opened.</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>indexCursors</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>indexCursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>indexCursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#75715e>/* FindBugs, this is ok. */</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a cursor for this view that reads only records having the index key values at the</color>
+<color=#75715e>   * specified cursors.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DataCursor</color> <color=#a6e22e>join</color><color=#f8f8f2>(</color><color=#f8f8f2>DataCursor</color><color=#f92672>[]</color> <color=#f8f8f2>indexCursors</color><color=#f8f8f2>,</color> <color=#f8f8f2>JoinConfig</color> <color=#f8f8f2>joinConfig</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>indexCursors</color><color=#f8f8f2>,</color> <color=#f8f8f2>joinConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns primary key and value if return parameters are non-null. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>returnPrimaryKeyAndValue</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>retPrimaryKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>retValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// Requires: if retPrimaryKey, primary key binding (no index).</color>
+    <color=#75715e>// Requires: if retValue, value or entity binding</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>retPrimaryKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"returning key requires primary key binding"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isSecondary</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"returning key requires unindexed view"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>retPrimaryKey</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>retValue</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>retValue</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>makeValue</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Populates the key entry and returns whether the key is within range. */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>useKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>checkRange</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"non-null key with null key binding"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>keyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"null key and null value"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"EntityBinding required to derive key from value"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>dupsView</color> <color=#f92672>&&</color> <color=#f8f8f2>isSecondary</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>primaryKeyThang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>primaryKeyThang</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueThang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>secKeyCreator</color><color=#f8f8f2>.</color><color=#a6e22e>createSecondaryKey</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secDb</color><color=#f8f8f2>,</color> <color=#f8f8f2>primaryKeyThang</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>valueThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recNumAccess</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>checkRange</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>checkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>keyThang</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether data keys can be derived from the value/entity binding of this view, which</color>
+<color=#75715e>   * determines whether a value/entity object alone is sufficient for operations that require keys.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>canDeriveKeyFromValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Populates the value entry and throws an exception if the primary key would be changed via an</color>
+<color=#75715e>   * entity binding.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>useValue</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>checkKeyThang</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>valueBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Allow binding to handle null value. */</color>
+      <color=#f8f8f2>valueBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"null value with entity binding"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkKeyThang</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>thang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>thang</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>equalBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>thang</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkKeyThang</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"cannot change primary key"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"non-null value with null value/entity binding"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>valueThang</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>valueThang</color><color=#f8f8f2>.</color><color=#a6e22e>setOffset</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>valueThang</color><color=#f8f8f2>.</color><color=#a6e22e>setSize</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Converts a key entry to a key object. */</color>
+  <color=#f8f8f2>Object</color> <color=#a6e22e>makeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>priKeyThang</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>thang</color> <color=#f92672>=</color> <color=#f8f8f2>dupsView</color> <color=#f92672>?</color> <color=#f8f8f2>priKeyThang</color> <color=#f8f8f2>:</color> <color=#f8f8f2>keyThang</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thang</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>thang</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Converts a key-value entry pair to a value object. */</color>
+  <color=#f8f8f2>Object</color> <color=#a6e22e>makeValue</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>primaryKeyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>valueBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>primaryKeyThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueThang</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Requires valueBinding or entityBinding"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Intersects the given key and the current range. */</color>
+  <color=#f8f8f2>KeyRange</color> <color=#a6e22e>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>KeyRange</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>singleKey</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>.</color><color=#a6e22e>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>makeRangeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>singleKey</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Intersects the given range and the current range. */</color>
+  <color=#f8f8f2>KeyRange</color> <color=#a6e22e>subRange</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>endKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>beginKey</color> <color=#f92672>==</color> <color=#f8f8f2>endKey</color> <color=#f92672>&&</color> <color=#f8f8f2>beginInclusive</color> <color=#f92672>&&</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>subRange</color><color=#f8f8f2>(</color><color=#f8f8f2>useRange</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>ordered</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Cannot use key ranges on an unsorted database"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>beginThang</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>beginKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>makeRangeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>beginKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>endThang</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>endKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>makeRangeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>endKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>useRange</color><color=#f8f8f2>.</color><color=#a6e22e>subRange</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>beginThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginInclusive</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>endThang</color><color=#f8f8f2>,</color> <color=#f8f8f2>endInclusive</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the range to use for sub-ranges. Returns range if this is not a dupsView, or the</color>
+<color=#75715e>   * dupsRange if this is a dupsView, creating dupsRange if necessary.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>KeyRange</color> <color=#a6e22e>useSubRange</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupsView</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupsRange</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#f8f8f2>secDb</color><color=#f8f8f2>.</color><color=#a6e22e>getPrimaryDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getConfig</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>dupsRange</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>KeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getBtreeComparator</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>dupsRange</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Given a key object, make a key entry that can be used in a range. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>DatabaseEntry</color> <color=#a6e22e>makeRangeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>thang</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyBinding</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>useKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>thang</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>useKey</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>thang</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>thang</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

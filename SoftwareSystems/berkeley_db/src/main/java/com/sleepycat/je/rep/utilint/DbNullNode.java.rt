@@ -1,0 +1,370 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.tuple.IntegerBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupDB</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepNodeImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.RepNode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CmdUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Date</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * @hidden DbNullNode is an internal debugging aid that simply starts up a node as part of a group.</color>
+<color=#75715e> *     It's primarily useful for diagnosing node start up bugs, since it enables you to start up the</color>
+<color=#75715e> *     nodes in a group if you have the associated log files.</color>
+<color=#75715e> *     <p>If the environment does not exist, and the -createEnv is specified it will create the</color>
+<color=#75715e> *     environment (with the aid of helpers), using network restore to initialize it. This behavior</color>
+<color=#75715e> *     can be used to advantage at a Replica node if the log files have been damaged for example and</color>
+<color=#75715e> *     the Replica cannot proceed. It effectively restores the environment for the Replica, which</color>
+<color=#75715e> *     can then proceed with the restored files using the actual application.</color>
+<color=#75715e> *     <p>Similarly, if a node does not exist in the environment and -createNode is specified, it</color>
+<color=#75715e> *     will create a new node in either the existing environment, or if -createEnv is specified in a</color>
+<color=#75715e> *     new environment.</color>
+<color=#75715e> *     <p>Note that the hostnames mentioned in the member database must be resolvable before the</color>
+<color=#75715e> *     group can start up. The hostnames can be obtained by running DbDumpGroup. The hostnames can</color>
+<color=#75715e> *     be "faked" on Linux, by adding appropriate entries to /etc/hosts or cnames to the DNS.</color>
+<color=#75715e> *     <p>If the hosts all use the same port, you will need to make provisions for virtual ip</color>
+<color=#75715e> *     addresses that are then associated with the host. On Linux this can be done by adding an</color>
+<color=#75715e> *     entry of the following type for each virtual ip in /etc/network/interfaces:</color>
+<color=#75715e> *     <p>iface eth0:1 inet static address 192.168.1.201 netmask 255.255.255.0 gateway 192.168.2.1</color>
+<color=#75715e> *     hwaddress ether XX:YY:ZZ:AA:BB:CC</color>
+<color=#75715e> *     <p>Use eth0:2, eth0:3, etc for each new virtual ip that is needed. Also, substitute the real</color>
+<color=#75715e> *     NIC address for XX:YY:ZZ:AA:BB:CC in the iface stanza.</color>
+<color=#75715e> *     <p>Be careful when modifying your machine's configuration information since it can have</color>
+<color=#75715e> *     unintended side-effects. So back up the above config files before making any changes.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbNullNode</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>USAGE</color> <color=#f92672>=</color>
+      <color=#e6db74>"usage: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getJavaCommand</color><color=#f8f8f2>(</color><color=#f8f8f2>DbNullNode</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       -h <env home dir>\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       -nodeName <nodeName>\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-groupName <groupName>]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-hostPort <hostPort>]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-createEnv]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-createNode]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-helpers <hostPort>,<hostPort> ...]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-designatedPrimary] \n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-electableGroupSize] <groupSize>\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-updates <updates>\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-nodeType ELECTABLE|SECONDARY]\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-cacheMode ENUM_NAME]\n"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>hostPort</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#f8f8f2>helpers</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Permit creation of a new environment. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>createNode</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>createEnv</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>pollIntervalMs</color> <color=#f92672>=</color> <color=#ae81ff>60</color> <color=#f92672>*</color> <color=#ae81ff>1000</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>designatedPrimary</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>electableGroupSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If non-zero write the number of updates at each poll period when the node is a master to</color>
+<color=#75715e>   * simulate write traffic.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>updates</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTABLE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color> <color=#f92672>=</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseConfig</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>TransactionConfig</color> <color=#f8f8f2>txnConfig</color> <color=#f92672>=</color> <color=#f8f8f2>TransactionConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setAllowCreate</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setSortedDuplicates</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbNullNode</color> <color=#f8f8f2>runAction</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbNullNode</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>runAction</color><color=#f8f8f2>.</color><color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>runAction</color><color=#f8f8f2>.</color><color=#a6e22e>run</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>argc</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nArgs</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nArgs</color> <color=#f92672><</color> <color=#ae81ff>4</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>thisArg</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-h"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-h requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-nodeName"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-nodeName requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-hostPort"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>hostPort</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-hostPort requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-groupName"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-groupName requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-createNode"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>createNode</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-createEnv"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>createEnv</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-helpers"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>helpers</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-helpers requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-designatedPrimary"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>designatedPrimary</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-electableGroupSize"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>electableGroupSize</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-electableGroupSize requires a group size "</color> <color=#f92672>+</color> <color=#e6db74>"argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-updates"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>updates</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-updates requires number of updates/period"</color> <color=#f92672>+</color> <color=#e6db74>"argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-nodeType"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-nodeType requires a type argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-cacheMode"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cacheMode</color> <color=#f92672>=</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-cacheMode requires a type argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color> <color=#f92672>+</color> <color=#e6db74>" is not a valid argument"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>createNode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Verify that the create arguments are all specified. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>nodeName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>hostPort</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>groupName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>helpers</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"groupName, nodeName, nodeHost and helpers "</color>
+                <color=#f92672>+</color> <color=#e6db74>"must all be specified when using -createNode"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>createEnv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>groupName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>helpers</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"groupName and helpers "</color> <color=#f92672>+</color> <color=#e6db74>"must all be specified when using -createEnv"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkParameters</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>openAndIdle</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>ile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Restoring environment:"</color> <color=#f92672>+</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>NetworkRestore</color> <color=#f8f8f2>networkRestore</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>NetworkRestore</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>NetworkRestoreConfig</color> <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>NetworkRestoreConfig</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>networkRestore</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#f8f8f2>ile</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Restored environment:"</color> <color=#f92672>+</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>createEnv</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>/* The environment has been created. */</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Verifies that the parameters supplied on the command line are consistent</color>
+<color=#75715e>   * with any stored state in the environment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkParameters</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>envHome</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"Directory:"</color> <color=#f92672>+</color> <color=#f8f8f2>envHome</color> <color=#f92672>+</color> <color=#e6db74>" does not exist."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>group</color> <color=#f92672>=</color> <color=#f8f8f2>RepGroupDB</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>createEnv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"Environment exists:"</color> <color=#f92672>+</color> <color=#f8f8f2>envHome</color> <color=#f92672>+</color> <color=#e6db74>"but -createEnv was specified."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>RepNodeImpl</color> <color=#f8f8f2>node</color> <color=#f92672>=</color> <color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getNode</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>node</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>createNode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"The node:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>nodeName</color>
+                  <color=#f92672>+</color> <color=#e6db74>" is not a member of the group:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>group</color>
+                  <color=#f92672>+</color> <color=#e6db74>". Use -createNode to create a new one."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Node exists, check arguments if any. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>groupName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>groupName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"-groupname:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>groupName</color>
+                  <color=#f92672>+</color> <color=#e6db74>", does not match the name:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" in the environment."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hostPort</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>hostPort</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getHostPortPair</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>hostPort</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getHostPortPair</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"-hostPort:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>hostPort</color>
+                  <color=#f92672>+</color> <color=#e6db74>", does not match the hostPort:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getHostPortPair</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" in the environment. "</color>
+                  <color=#f92672>+</color> <color=#e6db74>"Continuing ..."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentNotFoundException</color> <color=#f8f8f2>enf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>createEnv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"No existing environment:"</color> <color=#f92672>+</color> <color=#f8f8f2>envHome</color> <color=#f92672>+</color> <color=#e6db74>". Use -createEnv to create one"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Opens a replicated environment and idles in a loop printing out its state periodically.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InsufficientLogException so that the log files can be restored if necessary</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>openAndIdle</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeName</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setGroupName</color><color=#f8f8f2>(</color><color=#f8f8f2>groupName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeHostPort</color><color=#f8f8f2>(</color><color=#f8f8f2>hostPort</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setDesignatedPrimary</color><color=#f8f8f2>(</color><color=#f8f8f2>designatedPrimary</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setElectableGroupSizeOverride</color><color=#f8f8f2>(</color><color=#f8f8f2>electableGroupSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeType</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeType</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>helpers</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setHelperHosts</color><color=#f8f8f2>(</color><color=#f8f8f2>helpers</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setAllowCreate</color><color=#f8f8f2>(</color><color=#f8f8f2>createEnv</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setCacheMode</color><color=#f8f8f2>(</color><color=#f8f8f2>cacheMode</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ReplicatedEnvironment</color> <color=#f8f8f2>repEnv</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicatedEnvironment</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color> <color=#f92672>=</color> <color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullRepImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>repEnv</color><color=#f8f8f2>).</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Handle created:"</color> <color=#f92672>+</color> <color=#f8f8f2>repEnv</color> <color=#f92672>+</color> <color=#e6db74>"  Node idling indefinitely..."</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>Date</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" State:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" "</color>
+                <color=#f92672>+</color> <color=#e6db74>" VLSN range:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>().</color><color=#a6e22e>getRange</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" DTVLSN:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getDTVLSN</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>dumpState</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>writeUpdates</color><color=#f8f8f2>(</color><color=#f8f8f2>repEnv</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>pollIntervalMs</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Exiting"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write updates if master. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>writeUpdates</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicatedEnvironment</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>updates</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>().</color><color=#a6e22e>isMaster</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>beginTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>TransactionConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>openDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#e6db74>"DbNullDb"</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>{</color><color=#ae81ff>1</color><color=#f8f8f2>});</color>
+      <color=#f8f8f2>IntegerBinding</color><color=#f8f8f2>.</color><color=#a6e22e>intToEntry</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>beginTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnConfig</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>updates</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+<color=#75715e>//        db.put(txn, key, key);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Date</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" Wrote "</color> <color=#f92672>+</color> <color=#f8f8f2>updates</color> <color=#f92672>+</color> <color=#e6db74>" updates"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Update failed:"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>msg</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>USAGE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,180 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.ObjectInputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.ObjectOutputStream</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A long JE stat component that computes the difference between another stat and a specified value.</color>
+<color=#75715e> * Reports 0 if the value is greater than the stat value. The computed difference remains valid for</color>
+<color=#75715e> * a specified amount of time, which should represent the maximum amount of time expected to elapse</color>
+<color=#75715e> * between when new values are provided. If no value is specified within the validity interval, then</color>
+<color=#75715e> * the difference is recomputed using the current base stat value and the last specified value. The</color>
+<color=#75715e> * idea is to treat the specified value as up-to-date for a certain period of time, and then</color>
+<color=#75715e> * represent that the lack of updates means it is falling behind.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LongDiffStat</color> <color=#66d9ef>extends</color> <color=#f8f8f2>MapStatComponent</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LongDiffStat</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1L</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The stat that supplies the base value for computing differences. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Stat</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>base</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The maximum time, in milliseconds, that a computed difference is valid. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>validityMillis</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The previous value, or 0. Synchronize on this instance when accessing this field. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevValue</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The time in milliseconds of the previous value, or 0. Synchronize on this instance when</color>
+<color=#75715e>   * accessing this field.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevTime</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The last computed difference, or 0. Synchronize on this instance when accessing this field. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>diff</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an instance of this class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param base the base stat used for computing differences</color>
+<color=#75715e>   * @param validityMillis the amount of time, in milliseconds, which a computed difference remains</color>
+<color=#75715e>   *     valid</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LongDiffStat</color><color=#f8f8f2>(</color><color=#f8f8f2>Stat</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>base</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>validityMillis</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>base</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>validityMillis</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>base</color> <color=#f92672>=</color> <color=#f8f8f2>base</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>validityMillis</color> <color=#f92672>=</color> <color=#f8f8f2>validityMillis</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>LongDiffStat</color><color=#f8f8f2>(</color><color=#f8f8f2>LongDiffStat</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>base</color> <color=#f92672>=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>base</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>validityMillis</color> <color=#f92672>=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>validityMillis</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>prevValue</color> <color=#f92672>=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>prevValue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>prevTime</color> <color=#f92672>=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>prevTime</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>diff</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the value of the stat for the specified time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param time the time</color>
+<color=#75715e>   * @return the value of the stat</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>time</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevTime</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>time</color> <color=#f92672><</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevTime</color> <color=#f92672>+</color> <color=#f8f8f2>validityMillis</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>diff</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>baseValue</color> <color=#f92672>=</color> <color=#f8f8f2>base</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>baseValue</color> <color=#f92672>-</color> <color=#f8f8f2>prevValue</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Specifies a new value for the current time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param newValue the new value</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>newValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>newValue</color><color=#f8f8f2>,</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Specifies a new value for the specified time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param newValue the new value</color>
+<color=#75715e>   * @param time the time</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>newValue</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>time</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>baseValue</color> <color=#f92672>=</color> <color=#f8f8f2>base</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>prevValue</color> <color=#f92672>=</color> <color=#f8f8f2>newValue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>prevTime</color> <color=#f92672>=</color> <color=#f8f8f2>time</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>baseValue</color> <color=#f92672>-</color> <color=#f8f8f2>newValue</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the value of the stat for the current time. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Long</color> <color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>clear</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>prevValue</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>prevTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LongDiffStat</color> <color=#a6e22e>copy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongDiffStat</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>String</color> <color=#a6e22e>getFormattedValue</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>useCommas</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isNotSet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Unknown"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useCommas</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Stat</color><color=#f8f8f2>.</color><color=#a6e22e>FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isNotSet</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>prevTime</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"LongDiffStat[prevValue="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>prevValue</color>
+        <color=#f92672>+</color> <color=#e6db74>", prevTime="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>prevTime</color>
+        <color=#f92672>+</color> <color=#e6db74>", diff="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>diff</color>
+        <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Synchronize access to fields. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>readObject</color><color=#f8f8f2>(</color><color=#f8f8f2>ObjectInputStream</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>defaultReadObject</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Synchronize access to fields. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>writeObject</color><color=#f8f8f2>(</color><color=#f8f8f2>ObjectOutputStream</color> <color=#f8f8f2>out</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>defaultWriteObject</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

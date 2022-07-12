@@ -1,0 +1,217 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileNotFoundException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A ScavengerFileReader reads the log backwards. If it encounters a checksum error, it goes to the</color>
+<color=#75715e> * start of that log file and reads forward until it encounters a checksum error. It then continues</color>
+<color=#75715e> * the reading backwards in the log.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The caller may set "dumpCorruptedBounds" to true if information about the start and finish of</color>
+<color=#75715e> * the corrupted portion should be displayed on stderr.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The caller is expected to implement processEntryCallback. This method is called once for each</color>
+<color=#75715e> * entry that the ScavengerFileReader finds in the log.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>ScavengerFileReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>FileReader</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* A Set of the entry type numbers that this FileReader should dump. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Byte</color><color=#f92672>></color> <color=#f8f8f2>targetEntryTypes</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* True if reader should write corrupted boundaries to System.err. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dumpCorruptedBounds</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Create this reader to start at a given LSN. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ScavengerFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// single file number</color>
+        <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>readBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Indicate that a checksum error should not shutdown the whole</color>
+<color=#75715e>     * environment.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>targetEntryTypes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>Byte</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dumpCorruptedBounds</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Set to true if corrupted boundaries should be dumped to stderr. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDumpCorruptedBounds</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>dumpCorruptedBounds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dumpCorruptedBounds</color> <color=#f92672>=</color> <color=#f8f8f2>dumpCorruptedBounds</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Tell the reader that we are interested in these kind of entries. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>targetEntryTypes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * For each entry that is selected, just call processEntryCallback.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>lastEntryType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>lastEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>getSharedLogEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>processEntryCallback</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastEntryType</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Method overriden by the caller.  Each entry of the types selected</color>
+<color=#75715e>   * is passed to this method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>processEntryCallback</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Read the next entry.  If a checksum exception is encountered, attempt</color>
+<color=#75715e>   * to find the other side of the corrupted area and try to re-read this</color>
+<color=#75715e>   * file.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>readNextEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>saveCurrentEntryOffset</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryOffset</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>readNextEntryAllowExceptions</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_NOT_FOUND</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>resyncReader</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>currentFileNum</color><color=#f8f8f2>(),</color> <color=#f8f8f2>saveCurrentEntryOffset</color><color=#f8f8f2>),</color> <color=#f8f8f2>dumpCorruptedBounds</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>readNextEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A checksum error has been encountered.  Go to the start of this log file</color>
+<color=#75715e>   * and read forward until the lower side of the corrupted area has been</color>
+<color=#75715e>   * found.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** TBW */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>handleGapInBackwardsScan</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>prevFileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>resyncReader</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>prevFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_FILE_OFFSET</color><color=#f8f8f2>),</color> <color=#66d9ef>false</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INTEGRITY</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Cannot read backward over cleaned file"</color>
+              <color=#f92672>+</color> <color=#e6db74>" from "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>currentFileNum</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" to "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>prevFileNum</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>resyncReader</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>nextGoodRecordPostCorruption</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>showCorruptedBounds</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LastFileReader</color> <color=#f8f8f2>reader</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>tryReadBufferFileNum</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>nextGoodRecordPostCorruption</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>tryReadBufferFileNum</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>reader</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LastFileReader</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>tryReadBufferFileNum</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * We encountered a problem opening this file so skip to an</color>
+<color=#75715e>         * earlier file.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>tryReadBufferFileNum</color><color=#f92672>--</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>switchedFiles</color> <color=#f92672>=</color>
+        <color=#f8f8f2>tryReadBufferFileNum</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>nextGoodRecordPostCorruption</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>switchedFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Read forward until a checksum fails.  This reader will not throw</color>
+<color=#75715e>       * an exception if a checksum error is hit -- it will just return</color>
+<color=#75715e>       * false.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>readNextEntry</color><color=#f8f8f2>())</color> <color=#f8f8f2>{}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>lastUsedLsn</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastValidLsn</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>nextAvailableLsn</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getEndOfLog</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>showCorruptedBounds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"A checksum error was found in the log."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Corruption begins at LSN:\n   "</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>nextAvailableLsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Last known good record before corruption is at LSN:\n   "</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>lastUsedLsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Next known good record after corruption is at LSN:\n   "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>nextGoodRecordPostCorruption</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>startLsn</color> <color=#f92672>=</color> <color=#f8f8f2>lastUsedLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>initStartingPosition</color><color=#f8f8f2>(</color><color=#f8f8f2>nextAvailableLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>switchedFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>currentEntryPrevOffset</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Indicate resync is permitted so don't throw exception. */</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if this reader should process this entry, or just skip over it. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTargetEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * This log entry is supposed to be effectivly truncated, so we</color>
+<color=#75715e>       * know this data is not alive.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetEntryTypes</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* We want to dump all entry types. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>targetEntryTypes</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

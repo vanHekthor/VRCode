@@ -1,0 +1,557 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Timestamp</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.PackedInteger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.utilint.StringUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>javax.transaction.xa.Xid</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.charset.Charset</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** This class holds convenience methods for marshalling internal JE data to and from the log. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LogUtils</color> <color=#f8f8f2>{</color>
+  <color=#75715e>/* Storage sizes for int, long in log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SHORT_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>INT_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LONG_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>UNSIGNED_INT_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>DEBUG</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * We can return the same byte[] for 0 length arrays.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>ZERO_LENGTH_BYTE_ARRAY</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The je.logCharset system property can be specified when running</color>
+<color=#75715e>   * DbPrintLog to work around the charset issue in JE 5.0 and earlier (see</color>
+<color=#75715e>   * [#15296] below).  For example, because of this issue, on a z/OS system</color>
+<color=#75715e>   * the trace messages and other internal strings (such as the checkpoint</color>
+<color=#75715e>   * invoker) are stored in the log in EBCDIC encoding.  The following system</color>
+<color=#75715e>   * property allows such strings to be viewed correctly in the DbPrintLog</color>
+<color=#75715e>   * output:</color>
+<color=#75715e>   *      -Dje.logCharset=IBM1047</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * WARNING: Do not specify this property when running an application that</color>
+<color=#75715e>   * writes to the log.  It is only for reading a log (such as with</color>
+<color=#75715e>   * DbPrintLog) that was written with a non-ANSI-based default charset.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>Charset</color> <color=#f8f8f2>logCharset</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>charsetName</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#e6db74>"je.logCharset"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>charsetName</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>charsetName</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logCharset</color> <color=#f92672>=</color> <color=#f8f8f2>Charset</color><color=#f8f8f2>.</color><color=#a6e22e>forName</color><color=#f8f8f2>(</color><color=#f8f8f2>charsetName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Marshall a long into the next 4 bytes in this buffer. Necessary when the long is used to hold</color>
+<color=#75715e>   * an unsigned int.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>>>></color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>>>></color> <color=#ae81ff>8</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>>>></color> <color=#ae81ff>16</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>>>></color> <color=#ae81ff>24</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Unmarshall the next four bytes which hold an unsigned int into a long. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>readUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>24</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Marshall objects.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Write a short into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeShort</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>short</color> <color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a short from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>short</color> <color=#a6e22e>readShort</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#f8f8f2>(((</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>8</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read an int from the log in either packed or unpacked format. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>readPackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write an int into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>16</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>24</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a int from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>24</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for an int. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getIntLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>INT_BYTES</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a packed int into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writePackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>newPos</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>newPos</color> <color=#f92672>-</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a packed int from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>readPackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>oldPos</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>oldPos</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>a</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>a</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>oldPos</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>val</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a packed int. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getPackedIntLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteIntLength</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write an int into the log in MSB order. Used for ordered keys. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>24</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>16</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xff</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a int from the log in MSB order. Used for ordered keys. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>readIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>24</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a long into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeLong</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>l</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>8</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>16</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>24</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>32</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>40</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>48</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color> <color=#f92672>>>></color> <color=#ae81ff>56</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read an int from the log in either packed or unpacked format. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>readPackedLong</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a long from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>24</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>32</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>40</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>48</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ret</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>&</color> <color=#ae81ff>0xFFL</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>56</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a long. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getLongLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LONG_BYTES</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a packed long into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writePackedLong</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>l</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>newPos</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>writeLong</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>l</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>newPos</color> <color=#f92672>-</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a packed long from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>readPackedLong</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>oldPos</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>oldPos</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getReadLongLength</color><color=#f8f8f2>(</color><color=#f8f8f2>a</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>a</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>oldPos</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>val</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a packed long. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getPackedLongLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>l</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteLongLength</color><color=#f8f8f2>(</color><color=#f8f8f2>l</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a byte array into the log. The size is stored first as an integer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>writePackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Write the length. */</color>
+    <color=#f8f8f2>writePackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Add the data itself. */</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color> <color=#75715e>// data</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a byte array from the log. The size is stored first as an integer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>readByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"pos = "</color> <color=#f92672>+</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" byteArray is "</color> <color=#f92672>+</color> <color=#f8f8f2>size</color> <color=#f92672>+</color> <color=#e6db74>" on read"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>size</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color> <color=#75715e>// read it out</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>b</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a byteArray */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getByteArrayLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPackedIntLogSize</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPackedIntLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>len</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a byte array into the log. No size is stored. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeBytesNoLength</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Add the data itself. */</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a byte array from the log. The size is not stored. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>readBytesNoLength</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"pos = "</color> <color=#f92672>+</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" byteArray is "</color> <color=#f92672>+</color> <color=#f8f8f2>size</color> <color=#f92672>+</color> <color=#e6db74>" on read"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>size</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color> <color=#75715e>// read it out</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>b</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a string into the log. The size is stored first as an integer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeString</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>stringVal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>writeByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>toUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>stringVal</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a string from the log. The size is stored first as an integer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>readString</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#f8f8f2>readByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use logCharset only prior to version 9, since in version 9</color>
+<color=#75715e>     * UTF8 is always used.  See logCharset for details.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>>=</color> <color=#ae81ff>9</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fromUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logCharset</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>logCharset</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a string */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getStringLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getByteArrayLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>toUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a timestamp into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>Timestamp</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>writePackedLong</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a timestamp from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Timestamp</color> <color=#a6e22e>readTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>millis</color> <color=#f92672>=</color> <color=#f8f8f2>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Timestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>millis</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a timestamp */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getTimestampLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>Timestamp</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>PackedInteger</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteLongLength</color><color=#f8f8f2>(</color><color=#f8f8f2>time</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Write a boolean into the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>bool</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>bool</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Read a boolean from the log. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>readBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>val</color> <color=#f92672>==</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return log storage size for a boolean. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getBooleanLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dumping support.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>dumpBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>tag</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>tag</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" exists = \""</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>exists</color> <color=#f92672>=</color> <color=#f8f8f2>readBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>exists</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>exists</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\">"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Close off the tag, we're done. */</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>exists</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The byte[]'s in Xid's are known to be 255 or less in length. So instead of using</color>
+<color=#75715e>   * read/writeByteArray(), we can save 6 bytes per record by making the byte[] length be 1 byte</color>
+<color=#75715e>   * instead of 4.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getXidSize</color><color=#f8f8f2>(</color><color=#f8f8f2>Xid</color> <color=#f8f8f2>xid</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>gid</color> <color=#f92672>=</color> <color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getGlobalTransactionId</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bqual</color> <color=#f92672>=</color> <color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getBranchQualifier</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>INT_BYTES</color>
+        <color=#f92672>+</color> <color=#75715e>// FormatId</color>
+        <color=#ae81ff>1</color>
+        <color=#f92672>+</color> <color=#75715e>// gxid length byte</color>
+        <color=#ae81ff>1</color>
+        <color=#f92672>+</color> <color=#75715e>// bqual length byte</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>gid</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>gid</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color>
+        <color=#f92672>+</color> <color=#75715e>// gid bytes</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>bqual</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color> <color=#75715e>// bqual bytes</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Xid.gid[] and bqual[] can't be longer than 64 bytes so we can get away</color>
+<color=#75715e>   * with writing the length in one byte, rather than 4.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>writeXid</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>Xid</color> <color=#f8f8f2>xid</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>gid</color> <color=#f92672>=</color> <color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getGlobalTransactionId</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bqual</color> <color=#f92672>=</color> <color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getBranchQualifier</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>,</color> <color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getFormatId</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>gid</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>gid</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>gid</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bqual</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>bqual</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>bqual</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Xid.gid[] and bqual[] can't be longer than 64 bytes so we can get away</color>
+<color=#75715e>   * with writing the length in one byte, rather than 4.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Xid</color> <color=#a6e22e>readXid</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>formatId</color> <color=#f92672>=</color> <color=#f8f8f2>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuf</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>gidLen</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>gid</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>gidLen</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>gid</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>gidLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>gid</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>bqualLen</color> <color=#f92672>=</color> <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bqual</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bqualLen</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>bqual</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>bqualLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>logBuf</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bqual</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>XidImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>formatId</color><color=#f8f8f2>,</color> <color=#f8f8f2>gid</color><color=#f8f8f2>,</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>XidImpl</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Xid</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>gid</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* public for unit tests. */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>XidImpl</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>gid</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>formatId</color> <color=#f92672>=</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>gid</color> <color=#f92672>=</color> <color=#f8f8f2>gid</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>bqual</color> <color=#f92672>=</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getFormatId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getGlobalTransactionId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>gid</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getBranchQualifier</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>XidImpl</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>XidImpl</color> <color=#f8f8f2>xid</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>XidImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getFormatId</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>compareByteArrays</color><color=#f8f8f2>(</color><color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getGlobalTransactionId</color><color=#f8f8f2>(),</color> <color=#f8f8f2>gid</color><color=#f8f8f2>)</color>
+                <color=#f92672>&&</color> <color=#f8f8f2>compareByteArrays</color><color=#f8f8f2>(</color><color=#f8f8f2>xid</color><color=#f8f8f2>.</color><color=#a6e22e>getBranchQualifier</color><color=#f8f8f2>(),</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>code</color> <color=#f92672>=</color> <color=#f8f8f2>formatId</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>gid</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>gid</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>code</color> <color=#f92672>+=</color> <color=#f8f8f2>gid</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bqual</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>bqual</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>code</color> <color=#f92672>+=</color> <color=#f8f8f2>bqual</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>code</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>compareByteArrays</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b1</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>b2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>b1</color> <color=#f92672>==</color> <color=#f8f8f2>b2</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>!=</color> <color=#f8f8f2>b2</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>b1</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b1</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#f8f8f2>b2</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Xid formatId=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>formatId</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" gTxnId=\""</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>gid</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"null"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f8f8f2>(</color><color=#f8f8f2>gid</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" bqual=\""</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bqual</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"null"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f8f8f2>(</color><color=#f8f8f2>bqual</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

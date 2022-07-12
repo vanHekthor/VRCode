@@ -1,0 +1,307 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.CacheMode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseId</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbTree</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Summarizes the utilized and unutilized portion of each log file by examining each log entry. Does</color>
+<color=#75715e> * not use the Cleaner UtilizationProfile information in order to provide a second measure against</color>
+<color=#75715e> * which to evaluation the UtilizationProfile accuracy.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Limitations =========== BIN-deltas are all considered obsolete, as an implementation short cut</color>
+<color=#75715e> * and for efficiency. 90% (by default) of deltas are obsolete anyway, and it would be expensive to</color>
+<color=#75715e> * fetch the parent BIN to find the lookup key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Assumes that any currently open transactions will be committed. For example, if a deletion or</color>
+<color=#75715e> * update has been performed but not yet committed, the old record will be considered obsolete.</color>
+<color=#75715e> * Perhaps this behavior could be changed in the future by attempting to lock a record</color>
+<color=#75715e> * (non-blocking) and considering a locked record to be non-obsolete; this might make it match live</color>
+<color=#75715e> * utilization counting more closely.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Accesses the Btree, using JE cache memory if necessary and contending with other accessors, to</color>
+<color=#75715e> * check whether an entry is active.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Historical note: This implementation, which uses the Btree to determine whether a node is</color>
+<color=#75715e> * active, replaced an earlier implementation that attempted to duplicate the Btree in memory and</color>
+<color=#75715e> * read the entire log. This older implementation had inaccuracies and was less efficient. With the</color>
+<color=#75715e> * new implementation it is also possible to calculation utilization for a range of LSNs, reading</color>
+<color=#75715e> * only that portion of the log. [#22208]</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>UtilizationFileReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>FileReader</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* Long file -> FileSummary */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#f8f8f2>summaries</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Cache of DB ID -> DatabaseImpl for reading live databases. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>UtilizationFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// read forward</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// single file number</color>
+        <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color> <color=#75715e>// end of file LSN</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>summaries</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dbCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dbTree</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTargetEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * UtilizationTracker is supposed to mimic the UtilizationProfile.</color>
+<color=#75715e>     * Accordingly it does not count the file header or invisible log</color>
+<color=#75715e>     * entries because those entries are not covered by the U.P.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>())</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>lastEntryType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>lastEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>ExtendedFileSummary</color> <color=#f8f8f2>summary</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>ExtendedFileSummary</color><color=#f8f8f2>)</color> <color=#f8f8f2>summaries</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>currentFileNum</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>summary</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExtendedFileSummary</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>summaries</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>currentFileNum</color><color=#f8f8f2>(),</color> <color=#f8f8f2>summary</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>getLastEntrySize</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveDb</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isActive</color> <color=#f92672>=</color>
+          <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isImmediatelyObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>isLNActive</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>applyLN</color><color=#f8f8f2>(</color><color=#f8f8f2>summary</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>isActive</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>BINDeltaLogEntry</color> <color=#f92672>||</color> <color=#f8f8f2>entry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>OldBINDeltaLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Count Delta as IN. */</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#75715e>/* Most deltas are obsolete, so count them all obsolete. */</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>recalcObsoleteINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>INLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>INLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>inEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>INLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveDb</color><color=#f8f8f2>(</color><color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isActive</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>isINActive</color><color=#f8f8f2>(</color><color=#f8f8f2>inEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>applyIN</color><color=#f8f8f2>(</color><color=#f8f8f2>summary</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>isActive</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>DatabaseImpl</color> <color=#a6e22e>getActiveDb</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color> <color=#75715e>/*timeout*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleteFinished</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Mimics lookup in com.sleepycat.je.cleaner.FileProcessor.processLN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLNActive</color><color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>TreeLocation</color> <color=#f8f8f2>location</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeLocation</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>parentFound</color> <color=#f92672>=</color>
+        <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getParentBINForChildLN</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>location</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*splitsAllowed*/</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*blindDeltaOps*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>bin</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>parentFound</color> <color=#f92672>||</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Mimics lookup in com.sleepycat.je.cleaner.FileProcessor.processIN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isINActive</color><color=#f8f8f2>(</color><color=#f8f8f2>INLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>logIn</color> <color=#f92672>=</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logIn</color><color=#f8f8f2>.</color><color=#a6e22e>setDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logIn</color><color=#f8f8f2>.</color><color=#a6e22e>isRoot</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>logLsn</color> <color=#f92672>==</color> <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getRootLsn</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>logIn</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>SearchResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+        <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getParentINForChildIN</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logIn</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>/*useTargetLevel*/</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>/*doFetch*/</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>exactParentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>logIn</color><color=#f8f8f2>.</color><color=#a6e22e>isBIN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* The treeLsn may refer to a BIN-delta. */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>treeIn</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>fetchIN</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>treeIn</color><color=#f8f8f2>.</color><color=#a6e22e>getLastFullLsn</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>applyLN</color><color=#f8f8f2>(</color><color=#f8f8f2>ExtendedFileSummary</color> <color=#f8f8f2>summary</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isActive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isActive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>recalcObsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>applyIN</color><color=#f8f8f2>(</color><color=#f8f8f2>ExtendedFileSummary</color> <color=#f8f8f2>summary</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isActive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isActive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>recalcObsoleteINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>cleanUp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDbs</color><color=#f8f8f2>(</color><color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a UtilizationReader, reads the log, and returns the resulting Map of Long file number</color>
+<color=#75715e>   * to FileSummary.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#a6e22e>calcFileSummaryMap</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>calcFileSummaryMap</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#a6e22e>calcFileSummaryMap</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ITERATOR_READ_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationFileReader</color> <color=#f8f8f2>reader</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>UtilizationFileReader</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>readNextEntry</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* All the work is done in processEntry. */</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>summaries</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>cleanUp</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ExtendedFileSummary</color> <color=#66d9ef>extends</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>recalcObsoleteINSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>recalcObsoleteLNSize</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/** Overrides the LN size calculation to return the recalculated number of obsolete LN bytes. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getObsoleteLNSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>recalcObsoleteLNSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Overrides the IN size calculation to return the recalculated number of obsolete IN bytes. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getObsoleteINSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>recalcObsoleteINSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Overrides to add the extended data fields. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<extended-info recalcObsoleteINSize=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcObsoleteINSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" recalcObsoleteLNSize=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcObsoleteLNSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>NodeInfo</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ExtendedFileSummary</color> <color=#f8f8f2>summary</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

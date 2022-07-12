@@ -1,0 +1,116 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.stream</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.StatsConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogItem</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LongStat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.StatGroup</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.NoSuchElementException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ArrayBlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ArbiterFeederStatDefinition.QUEUE_FULL</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** Implementation of a master node acting as a FeederSource for an Arbiter. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ArbiterFeederSource</color> <color=#66d9ef>implements</color> <color=#f8f8f2>FeederSource</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>LogItem</color><color=#f92672>></color> <color=#f8f8f2>queue</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nQueueFull</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>ArbiterFeederSource</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>queueSize</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>ARBITER_OUTPUT_QUEUE_SIZE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>queue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><</color><color=#f8f8f2>LogItem</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>queueSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>stats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>ArbiterFeederStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>ArbiterFeederStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nQueueFull</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>QUEUE_FULL</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>LogItem</color> <color=#f8f8f2>commitItem</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>queue</color><color=#f8f8f2>.</color><color=#a6e22e>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>commitItem</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the commit could not be added to the queue because</color>
+<color=#75715e>       * the queue is filled. Try to remove an item</color>
+<color=#75715e>       * and replace with the item with the higher VLSN.</color>
+<color=#75715e>       * The Arbiter ack for the higher VLSN is sufficient</color>
+<color=#75715e>       * for transactions with a lower commit VLSN.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>nQueueFull</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogItem</color> <color=#f8f8f2>queuedItem</color> <color=#f92672>=</color> <color=#f8f8f2>queue</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>commitItem</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>queuedItem</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * The removed item has higher vlsn so use that one.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>commitItem</color> <color=#f92672>=</color> <color=#f8f8f2>queuedItem</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchElementException</color> <color=#f8f8f2>noe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Queue was empty so try to insert one last time. */</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Attempt to put the item on the queue. If another</color>
+<color=#75715e>       * thread has inserted and the queue is full, we will</color>
+<color=#75715e>       * skip this transaction for an Arbiter ack attempt. The</color>
+<color=#75715e>       * transaction may still succeed in this case due to acks from</color>
+<color=#75715e>       * Replicas or other Arbiter acked transactions with a higher</color>
+<color=#75715e>       * VLSN.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>queue</color><color=#f8f8f2>.</color><color=#a6e22e>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>commitItem</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * @see com.sleepycat.je.rep.stream.FeederSource#getLogRecord</color>
+<color=#75715e>   * (com.sleepycat.je.utilint.VLSN, int)</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>OutputWireRecord</color> <color=#a6e22e>getWireRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>waitTime</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogItem</color> <color=#f8f8f2>commitItem</color> <color=#f92672>=</color> <color=#f8f8f2>queue</color><color=#f8f8f2>.</color><color=#a6e22e>poll</color><color=#f8f8f2>(</color><color=#f8f8f2>waitTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>commitItem</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>OutputWireRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>commitItem</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>copyStats</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>copyStats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpState</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

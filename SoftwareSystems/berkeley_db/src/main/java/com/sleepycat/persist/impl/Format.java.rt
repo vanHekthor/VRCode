@@ -1,0 +1,1015 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.evolve.Converter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawField</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawObject</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawType</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.Serializable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The base class for all object formats. Formats are used to define the stored layout for all</color>
+<color=#75715e> * persistent classes, including simple types.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The design documentation below describes the storage format for entities and its relationship</color>
+<color=#75715e> * to information stored per format in the catalog.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Requirements ------------ + Provides EntityBinding for objects and EntryBinding for keys. +</color>
+<color=#75715e> * Provides SecondaryKeyCreator, SecondaryMultiKeyCreator and SecondaryMultiKeyNullifier</color>
+<color=#75715e> * (SecondaryKeyNullifier is redundant). + Works with reflection and bytecode enhancement. + For</color>
+<color=#75715e> * reflection only, works with any entity model not just annotations. + Bindings are usable</color>
+<color=#75715e> * independently of the persist API. + Performance is almost equivalent to hand coded tuple</color>
+<color=#75715e> * bindings. + Small performance penalty for compatible class changes (new fields, widening). +</color>
+<color=#75715e> * Secondary key create/nullify do not have to deserialize the entire record; in other words, store</color>
+<color=#75715e> * secondary keys at the start of the data.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Class Format ------------ Every distinct class format is given a unique format ID. Class IDs</color>
+<color=#75715e> * are not equivalent to class version numbers (as in the version property of @Entity</color>
+<color=#75715e> * and @Persistent) because the format can change when the version number does not. Changes that</color>
+<color=#75715e> * cause a unique format ID to be assigned are:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Add field. + Widen field type. + Change primitive type to primitive wrapper class. + Add or</color>
+<color=#75715e> * drop secondary key. + Any incompatible class change.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The last item, incompatible class changes, also correspond to a class version change.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For each distinct class format the following information is conceptually stored in the</color>
+<color=#75715e> * catalog, keyed by format ID.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- Class name - Class version number - Superclass format - Kind: simple, enum, complex, array -</color>
+<color=#75715e> * For kind == simple: - Primitive class - For kind == enum: - Array of constant names, sorted by</color>
+<color=#75715e> * name. - For kind == complex: - Primary key fieldInfo, or null if no primary key is declared -</color>
+<color=#75715e> * Array of secondary key fieldInfo, sorted by field name - Array of other fieldInfo, sorted by</color>
+<color=#75715e> * field name - For kind == array: - Component class format - Number of array dimensions - Other</color>
+<color=#75715e> * metadata for RawType</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Where fieldInfo is: - Field name - Field class - Other metadata for RawField</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Data Layout ----------- For each entity instance the data layout is as follows:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>instanceData: formatId keyFields... nonKeyFields... keyFields: fieldValue... nonKeyFields:</color>
+<color=#75715e> * fieldValue...</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The formatId is the (positive non-zero) ID of a class format, defined above. This is ID of the</color>
+<color=#75715e> * most derived class of the instance. It is stored as a packed integer.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Following the format ID, zero or more sets of secondary key field values appear, followed by</color>
+<color=#75715e> * zero or more sets of other class field values.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The keyFields are the sets of secondary key fields for each class in order of the highest</color>
+<color=#75715e> * superclass first. Within a class, fields are ordered by field name.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The nonKeyFields are the sets of other non-key fields for each class in order of the highest</color>
+<color=#75715e> * superclass first. Within a class, fields are ordered by field name.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A field value is:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>fieldValue: primitiveValue | nullId | instanceRef | instanceData | simpleValue | enumValue |</color>
+<color=#75715e> * arrayValue</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For a primitive type, a primitive value is used as defined for tuple bindings. For float and</color>
+<color=#75715e> * double, sorted float and sorted double tuple values are used.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For a non-primitive type with a null value, a nullId is used that has a zero (illegal</color>
+<color=#75715e> * formatId) value. This includes String and other simple reference types. The formatId is stored as</color>
+<color=#75715e> * a packed integer, meaning that it is stored as a single zero byte.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For a non-primitive type, an instanceRef is used for a non-null instance that appears earlier</color>
+<color=#75715e> * in the data byte array. An instanceRef is the negation of the byte offset of the instanceData</color>
+<color=#75715e> * that appears earlier. It is stored as a packed integer.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The remaining rules apply only to reference types with non-null values that do not appear</color>
+<color=#75715e> * earlier in the data array.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For an array type, an array formatId is used that identifies the component type and the number</color>
+<color=#75715e> * of array dimensions. This is followed by an array length (stored as a packed integer) and zero or</color>
+<color=#75715e> * more fieldValue elements. For an array with N+1 dimensions where N is greater than zero, the</color>
+<color=#75715e> * leftmost dimension is enumerated such that each fieldValue element is itself an array of N</color>
+<color=#75715e> * dimensions or null.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>arrayValue: formatId length fieldValue...</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For an enum type, an enumValue is used, consisting of a formatId that identifies the enum</color>
+<color=#75715e> * class and an enumIndex (stored as a packed integer) that identifies the constant name in the enum</color>
+<color=#75715e> * constant array of the enum class format:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>enumValue: formatId enumIndex</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For a simple type, a simpleValue is used. This consists of the formatId that identifies the</color>
+<color=#75715e> * class followed by the simple type value. For a primitive wrapper type the simple type value is</color>
+<color=#75715e> * the corresponding primitive, for a Date it is the milliseconds as a long primitive, and for</color>
+<color=#75715e> * BigInteger or BigDecimal it is a byte array as defined for tuple bindings of these types.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>simpleValue: formatId value</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For all other complex types, an instanceData is used, which is defined above.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Secondary Keys -------------- For secondary key support we must account for writing and</color>
+<color=#75715e> * nullifying specific keys. Rather than instantiating the entity and then performing the secondary</color>
+<color=#75715e> * key operation, we strive to perform the secondary key operation directly on the byte format.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To create a secondary key we skip over other fields and then copy the bytes of the embedded</color>
+<color=#75715e> * key. This approach is very efficient because a) the entity is not instantiated, and b) the</color>
+<color=#75715e> * secondary keys are stored at the beginning of the byte format and can be quickly read.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To nullify we currently instantiate the raw entity, set the key field to null (or remove it</color>
+<color=#75715e> * from the array/collection), and convert the raw entity back to bytes. Although the performance of</color>
+<color=#75715e> * this approach is not ideal because it requires serialization, it avoids the complexity of</color>
+<color=#75715e> * modifying the packed serialized format directly, adjusting references to key objects, etc. Plus,</color>
+<color=#75715e> * when we nullify a key we are going to write the record, so the serialization overhead may not be</color>
+<color=#75715e> * significant. For the record, I tried implementing nullification of the bytes directly and found</color>
+<color=#75715e> * it was much too complex.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Lifecycle --------- Format are managed by a Catalog class. Simple formats are managed by</color>
+<color=#75715e> * SimpleCatalog, and are copied from the SimpleCatalog by PersistCatalog. Other formats are managed</color>
+<color=#75715e> * by PersistCatalog. The lifecycle of a format instance is:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- Constructed by the catalog when a format is requested for a Class that currently has no</color>
+<color=#75715e> * associated format.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The catalog calls setId() and adds the format to its format list (indexed by format id) and</color>
+<color=#75715e> * map (keyed by class name).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The catalog calls collectRelatedFormats(), where a format can create additional formats that</color>
+<color=#75715e> * it needs, or that should also be persistent.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The catalog calls initializeIfNeeded(), which calls the initialize() method of the format</color>
+<color=#75715e> * class.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- initialize() should initialize any transient fields in the format. initialize() can assume</color>
+<color=#75715e> * that all related formats are available in the catalog. It may call initializeIfNeeded() for those</color>
+<color=#75715e> * related formats, if it needs to interact with an initialized related format; this does not cause</color>
+<color=#75715e> * a cycle, because initializeIfNeeded() does nothing for an already initialized format.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The catalog creates a group of related formats at one time, and then writes its entire list</color>
+<color=#75715e> * of formats to the catalog DB as a single record. This grouping reduces the number of writes.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- When a catalog is opened and the list of existing formats is read. After a format is</color>
+<color=#75715e> * deserialized, its initializeIfNeeded() method is called. setId() and collectRelatedFormats() are</color>
+<color=#75715e> * not called, since the ID and related formats are stored in serialized fields.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- There are two modes for opening an existing catalog: raw mode and normal mode. In raw mode,</color>
+<color=#75715e> * the old format is used regardless of whether it matches the current class definition; in fact the</color>
+<color=#75715e> * class is not accessed and does not need to be present.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- In normal mode, for each existing format that is initialized, a new format is also created</color>
+<color=#75715e> * based on the current class and metadata definition. If the two formats are equal, the new format</color>
+<color=#75715e> * is discarded. If they are unequal, the new format becomes the current format and the old format's</color>
+<color=#75715e> * evolve() method is called. evolve() is responsible for adjusting the old format for class</color>
+<color=#75715e> * evolution. Any number of non-current formats may exist for a given class, and are setup to evolve</color>
+<color=#75715e> * the single current format for the class.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Format</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Reader</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawType</color><color=#f8f8f2>,</color> <color=#f8f8f2>Serializable</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>545633644568489850L</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Null reference. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_NULL</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Object */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_OBJECT</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Boolean */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BOOL</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BOOL_W</color> <color=#f92672>=</color> <color=#ae81ff>3</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Byte */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BYTE</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BYTE_W</color> <color=#f92672>=</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Short */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_SHORT</color> <color=#f92672>=</color> <color=#ae81ff>6</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_SHORT_W</color> <color=#f92672>=</color> <color=#ae81ff>7</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Integer */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_INT</color> <color=#f92672>=</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_INT_W</color> <color=#f92672>=</color> <color=#ae81ff>9</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Long */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_LONG</color> <color=#f92672>=</color> <color=#ae81ff>10</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_LONG_W</color> <color=#f92672>=</color> <color=#ae81ff>11</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Float */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_FLOAT</color> <color=#f92672>=</color> <color=#ae81ff>12</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_FLOAT_W</color> <color=#f92672>=</color> <color=#ae81ff>13</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Double */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_DOUBLE</color> <color=#f92672>=</color> <color=#ae81ff>14</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_DOUBLE_W</color> <color=#f92672>=</color> <color=#ae81ff>15</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Character */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_CHAR</color> <color=#f92672>=</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_CHAR_W</color> <color=#f92672>=</color> <color=#ae81ff>17</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** String */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_STRING</color> <color=#f92672>=</color> <color=#ae81ff>18</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** BigInteger */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BIGINT</color> <color=#f92672>=</color> <color=#ae81ff>19</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** BigDecimal */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_BIGDEC</color> <color=#f92672>=</color> <color=#ae81ff>20</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Date */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_DATE</color> <color=#f92672>=</color> <color=#ae81ff>21</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Number */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_NUMBER</color> <color=#f92672>=</color> <color=#ae81ff>22</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** First simple type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_SIMPLE_MIN</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Last simple type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_SIMPLE_MAX</color> <color=#f92672>=</color> <color=#ae81ff>21</color><color=#f8f8f2>;</color>
+  <color=#75715e>/** Last predefined ID, after which dynamic IDs are assigned. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ID_PREDEFINED</color> <color=#f92672>=</color> <color=#ae81ff>30</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isPredefined</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>format</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672><=</color> <color=#f8f8f2>ID_PREDEFINED</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Reader</color> <color=#f8f8f2>reader</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>superFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>latestFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>previousFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>supertypes</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>unused</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>initialized</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a new format for a given class. */</color>
+  <color=#f8f8f2>Format</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>type</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>addSupertypes</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates a format for class evolution when no class may be present. */</color>
+  <color=#f8f8f2>Format</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>className</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>className</color> <color=#f92672>=</color> <color=#f8f8f2>className</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>latestFormat</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>supertypes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Special handling for JE 3.0.12 beta formats. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>migrateFromBeta</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color><color=#f92672>></color> <color=#f8f8f2>formatMap</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latestFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>latestFormat</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initialize transient catalog field after deserialization. This must occur before any other</color>
+<color=#75715e>   * usage.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>initCatalog</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isNew</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>id</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>final</color> <color=#f8f8f2>Catalog</color> <color=#a6e22e>getCatalog</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the format ID. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by the Catalog to set the format ID when a new format is added to the format list,</color>
+<color=#75715e>   * before calling initializeIfNeeded().</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setId</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>id</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>id</color> <color=#f92672>=</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the class that this format represents. This method will return null in rawAccess mode,</color>
+<color=#75715e>   * or for an unevolved format.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Class</color> <color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called to get the type when it is known to exist for an uninitialized format. */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Class</color> <color=#a6e22e>getExistingType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>resolveClass</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the object for reading objects of the latest format. For the latest version format,</color>
+<color=#75715e>   * 'this' is returned. For prior version formats, a reader that converts this version to the</color>
+<color=#75715e>   * latest version is returned.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Reader</color> <color=#a6e22e>getReader</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * For unit testing, record whether any un-evolved formats are</color>
+<color=#75715e>     * encountered.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>!=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>PersistCatalog</color><color=#f8f8f2>.</color><color=#a6e22e>unevolvedFormatsEncountered</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>reader</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Changes the reader during format evolution. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setReader</color><color=#f8f8f2>(</color><color=#f8f8f2>Reader</color> <color=#f8f8f2>reader</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reader</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the format of the superclass. */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getSuperFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>superFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called to set the format of the superclass during initialize(). */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setSuperFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>superFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>superFormat</color> <color=#f92672>=</color> <color=#f8f8f2>superFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the format that is proxied by this format. If non-null is returned, then this format is</color>
+<color=#75715e>   * a PersistentProxy.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getProxiedFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called by ProxiedFormat to set the proxied format. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setProxiedFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proxiedFormat</color> <color=#f92672>=</color> <color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If this is the latest/evolved format, returns this; otherwise, returns the current version of</color>
+<color=#75715e>   * this format. Note that this WILL return a format for a deleted class if the latest format</color>
+<color=#75715e>   * happens to be deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getLatestVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>latestFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the previous version of this format in the linked list of versions, or null if this is</color>
+<color=#75715e>   * the only version.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getPreviousVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>previousFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called by Evolver to set the latest format when this old format is evolved. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setLatestVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If this old format is the former latest version, link it to the new</color>
+<color=#75715e>     * latest version.  This creates a singly linked list of versions</color>
+<color=#75715e>     * starting with the latest.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latestFormat</color> <color=#f92672>==</color> <color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newFormat</color><color=#f8f8f2>.</color><color=#a6e22e>previousFormat</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>latestFormat</color> <color=#f92672>=</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the class for this format was deleted. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called by the Evolver when applying a Deleter mutation. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setDeleted</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>deleted</color> <color=#f92672>=</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called by the Evolver for a format that is never referenced. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>setUnused</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>unused</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>unused</color> <color=#f92672>=</color> <color=#f8f8f2>unused</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by the Evolver with true when an entity format or any of its nested format were changed.</color>
+<color=#75715e>   * Called by Store.evolve when an entity has been fully converted. Overridden by ComplexFormat.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setEvolveNeeded</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>needed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Overridden by ComplexFormat. */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>getEvolveNeeded</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For an entity format, returns whether the entity was written using the new String format. For a</color>
+<color=#75715e>   * non-entity format, this method should not be called.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Overridden by ComplexFormat.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>getNewStringFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isInitialized</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>initialized</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by the Catalog to initialize a format, and may also be called during initialize() for a</color>
+<color=#75715e>   * related format to ensure that the related format is initialized. This latter case is allowed to</color>
+<color=#75715e>   * support bidirectional dependencies. This method will do nothing if the format is already</color>
+<color=#75715e>   * intialized.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeIfNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityModel</color> <color=#f8f8f2>model</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>initialized</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Initialize objects serialized by an older Format class. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latestFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>latestFormat</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reader</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>reader</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The class is only guaranteed to be available in live (not raw)</color>
+<color=#75715e>       * mode, for the current version of the format.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>isCurrentVersion</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>isSimple</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>isRawAccess</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>getExistingType</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Perform subclass-specific initialization. */</color>
+      <color=#f8f8f2>initialize</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getInitVersion</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*forReader*/</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>initializeReader</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getInitVersion</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*forReader*/</color><color=#f8f8f2>),</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called to initialize a separate Reader implementation. This method is called when no separate</color>
+<color=#75715e>   * Reader exists, and does nothing.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityModel</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>initVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>oldFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Adds all interfaces and superclasses to the supertypes set. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addSupertypes</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>addInterfaces</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Class</color> <color=#f8f8f2>stype</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getSuperclass</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>stype</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>stype</color> <color=#f92672>!=</color> <color=#f8f8f2>Object</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>supertypes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>stype</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>addInterfaces</color><color=#f8f8f2>(</color><color=#f8f8f2>stype</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>stype</color> <color=#f92672>=</color> <color=#f8f8f2>stype</color><color=#f8f8f2>.</color><color=#a6e22e>getSuperclass</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Recursively adds interfaces to the supertypes set. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addInterfaces</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>cls</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Class</color><color=#f92672>[]</color> <color=#f8f8f2>interfaces</color> <color=#f92672>=</color> <color=#f8f8f2>cls</color><color=#f8f8f2>.</color><color=#a6e22e>getInterfaces</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>iface</color> <color=#f8f8f2>:</color> <color=#f8f8f2>interfaces</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>iface</color> <color=#f92672>!=</color> <color=#f8f8f2>Enhanced</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>supertypes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>iface</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>addInterfaces</color><color=#f8f8f2>(</color><color=#f8f8f2>iface</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Certain formats (ProxiedFormat for example) prohibit nested fields that reference the parent</color>
+<color=#75715e>   * object. [#15815]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>areNestedRefsProhibited</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* -- Start of RawType interface methods. -- */</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getClassName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>className</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>meta</color> <color=#f92672>=</color> <color=#f8f8f2>getClassMetadata</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>meta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>meta</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getSuperType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>superFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* -- RawType methods that are overridden as needed in subclasses. -- */</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSimple</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isPrimitive</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEnum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getEnumConstants</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isArray</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getDimensions</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Format</color> <color=#a6e22e>getComponentType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color> <color=#a6e22e>getFields</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ClassMetadata</color> <color=#a6e22e>getClassMetadata</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>EntityMetadata</color> <color=#a6e22e>getEntityMetadata</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* -- End of RawType methods. -- */</color>
+
+  <color=#75715e>/* -- Methods that may optionally be overridden by subclasses. -- */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by EntityOutput in rawAccess mode to determine whether an object type is allowed to be</color>
+<color=#75715e>   * assigned to a given field type.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isAssignableTo</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>format</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proxiedFormat</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableTo</color><color=#f8f8f2>(</color><color=#f8f8f2>format</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>format</color> <color=#f92672>==</color> <color=#66d9ef>this</color> <color=#f92672>||</color> <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>id</color> <color=#f92672>==</color> <color=#f8f8f2>ID_OBJECT</color> <color=#f92672>||</color> <color=#f8f8f2>supertypes</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>className</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For primitive types only, returns their associated wrapper type. */</color>
+  <color=#f8f8f2>Format</color> <color=#a6e22e>getWrapperFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether this format class is an entity class. */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isEntity</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether this class is present in the EntityModel. Returns false for a simple type,</color>
+<color=#75715e>   * array type, or enum type.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isModelClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For an entity class or subclass, returns the base entity class; returns null in other cases.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>ComplexFormat</color> <color=#a6e22e>getEntityFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called for an existing format that may not equal the current format for the same class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If this method returns true, then it must have determined one of two things: - that the old</color>
+<color=#75715e>   * and new formats are equal, and it must have called Evolver.useOldFormat; or - that the old</color>
+<color=#75715e>   * format can be evolved to the new format, and it must have called Evolver.useEvolvedFormat.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If this method returns false, then it must have determined that the old format could not be</color>
+<color=#75715e>   * evolved to the new format, and it must have called Evolver.addInvalidMutation,</color>
+<color=#75715e>   * addMissingMutation or addEvolveError.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>evolve</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>Evolver</color> <color=#f8f8f2>evolver</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called when a Converter handles evolution of a class, but we may still need to evolve the</color>
+<color=#75715e>   * metadata.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>evolveMetadata</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>Converter</color> <color=#f8f8f2>converter</color><color=#f8f8f2>,</color> <color=#f8f8f2>Evolver</color> <color=#f8f8f2>evolver</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether this format is the current format for its class. If false is returned, this</color>
+<color=#75715e>   * format is setup to evolve to the current format.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isCurrentVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>latestFormat</color> <color=#f92672>==</color> <color=#66d9ef>this</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether this format has the same class as the given format, irrespective of version</color>
+<color=#75715e>   * changes and renaming.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSameClass</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>latestFormat</color> <color=#f92672>==</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>latestFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* -- Abstract methods that must be implemented by subclasses. -- */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initializes an uninitialized format, initializing its related formats (superclass formats and</color>
+<color=#75715e>   * array component formats) first.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>initialize</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityModel</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>initVersion</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Calls catalog.createFormat for formats that this format depends on, or that should also be</color>
+<color=#75715e>   * persistent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>collectRelatedFormats</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color><color=#f92672>></color> <color=#f8f8f2>newFormats</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The remaining methods are used to read objects from data bytes via</color>
+<color=#75715e>   * EntityInput, and to write objects as data bytes via EntityOutput.</color>
+<color=#75715e>   * Ultimately these methods call methods in the Accessor interface to</color>
+<color=#75715e>   * get/set fields in the object.  Most methods have a rawAccess parameter</color>
+<color=#75715e>   * that determines whether the object is a raw object or a real persistent</color>
+<color=#75715e>   * object.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The first group of methods are abstract and must be implemented by</color>
+<color=#75715e>   * format classes.  The second group have default implementations that</color>
+<color=#75715e>   * throw UnsupportedOperationException and may optionally be overridden.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an array of the format's class of the given length, as if Array.newInstance(getType(),</color>
+<color=#75715e>   * len) were called. Formats implement this method for specific classes, or call the accessor, to</color>
+<color=#75715e>   * avoid the reflection overhead of Array.newInstance.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#f8f8f2>Object</color> <color=#a6e22e>newArray</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a new instance of the target class using its default constructor. Normally this creates</color>
+<color=#75715e>   * an empty object, and readObject() is called next to fill in the contents. This is done in two</color>
+<color=#75715e>   * steps to allow the instance to be registered by EntityInput before reading the contents. This</color>
+<color=#75715e>   * allows the fields in an object or a nested object to refer to the parent object in a graph.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Alternatively, this method may read all or the first portion of the data, rather than that</color>
+<color=#75715e>   * being done by readObject(). This is required for simple types and enums, where the object</color>
+<color=#75715e>   * cannot be created without reading the data. In these cases, there is no possibility that the</color>
+<color=#75715e>   * parent object will be referenced by the child object in the graph. It should not be done in</color>
+<color=#75715e>   * other cases, or the graph references may not be maintained faithfully.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Is public only in order to implement the Reader interface. Note that this method should only</color>
+<color=#75715e>   * be called directly in raw conversion mode or during conversion of an old format. Normally it</color>
+<color=#75715e>   * should be called via the getReader method and the Reader interface.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>Object</color> <color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called after newInstance() to read the rest of the data bytes and fill in the object contents.</color>
+<color=#75715e>   * If the object was read completely by newInstance(), this method does nothing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Is public only in order to implement the Reader interface. Note that this method should only</color>
+<color=#75715e>   * be called directly in raw conversion mode or during conversion of an old format. Normally it</color>
+<color=#75715e>   * should be called via the getReader method and the Reader interface.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>Object</color> <color=#a6e22e>readObject</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Writes a given instance of the target class to the output data bytes. This is the complement of</color>
+<color=#75715e>   * the newInstance()/readObject() pair.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>writeObject</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Skips over the object's contents, as if readObject() were called, but without returning an</color>
+<color=#75715e>   * object. Used for extracting secondary key bytes without having to instantiate the object. For</color>
+<color=#75715e>   * reference types, the format ID is read just before calling this method, so this method is</color>
+<color=#75715e>   * responsible for skipping everything following the format ID.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>skipContents</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* -- More methods that may optionally be overridden by subclasses. -- */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * When extracting a secondary key, called to skip over all fields up to the given secondary key</color>
+<color=#75715e>   * field. Returns the format of the key field found, or null if the field is not present</color>
+<color=#75715e>   * (nullified) in the object.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Format</color> <color=#a6e22e>skipToSecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called after skipToSecKey() to copy the data bytes of a singular (XXX_TO_ONE) key field. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>copySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>RecordOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called after skipToSecKey() to copy the data bytes of an array or collection (XXX_TO_MANY) key</color>
+<color=#75715e>   * field.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>copySecMultiKey</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>keyFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>Set</color> <color=#f8f8f2>results</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Nullifies the given key field in the given RawObject -- rawAccess mode is implied. */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>nullifySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>keyElement</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether the entity's primary key field is null or zero, as defined for primary keys</color>
+<color=#75715e>   * that are assigned from a sequence.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isPriKeyNullOrZero</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Gets the primary key field from the given object and writes it to the given output data bytes.</color>
+<color=#75715e>   * This is a separate operation because the primary key data bytes are stored separately from the</color>
+<color=#75715e>   * rest of the record.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>writePriKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Reads the primary key from the given input bytes and sets the primary key field in the given</color>
+<color=#75715e>   * object. This is complement of writePriKey().</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Is public only in order to implement the Reader interface. Note that this method should only</color>
+<color=#75715e>   * be called directly in raw conversion mode or during conversion of an old format. Normally it</color>
+<color=#75715e>   * should be called via the getReader method and the Reader interface.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readPriKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For an entity class or subclass, returns the old key name for the given key name that has been</color>
+<color=#75715e>   * renamed, or returns the given key name if it has not been renamed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getOldKeyName</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Validates and returns the simple integer key format for a sequence key associated with this</color>
+<color=#75715e>   * format.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For a composite key type, the format of the one and only field is returned. For a simple</color>
+<color=#75715e>   * integer type, this format is returned. Otherwise (the default implementation), an</color>
+<color=#75715e>   * IllegalArgumentException is thrown.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Format</color> <color=#a6e22e>getSequenceKeyFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Type not allowed for sequence: "</color> <color=#f92672>+</color> <color=#f8f8f2>getClassName</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts a RawObject to a current class object and adds the converted pair to the converted</color>
+<color=#75715e>   * map.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Object</color> <color=#a6e22e>convertRawObject</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawObject</color> <color=#f8f8f2>rawObject</color><color=#f8f8f2>,</color> <color=#f8f8f2>IdentityHashMap</color> <color=#f8f8f2>converted</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Currently, only FBigDec will return true. It is a workaround for reading the BigDecimal data</color>
+<color=#75715e>   * stored by BigDecimal proxy before je4.1.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>allowEvolveFromProxy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Accessor</color> <color=#a6e22e>getAccessor</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>INDENT</color> <color=#f92672>=</color> <color=#e6db74>"  "</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>INDENT2</color> <color=#f92672>=</color> <color=#f8f8f2>INDENT</color> <color=#f92672>+</color> <color=#e6db74>"  "</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>(</color><color=#ae81ff>500</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isSimple</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addTypeHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#e6db74>"SimpleType"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" primitive=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>isPrimitive</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isEnum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addTypeHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#e6db74>"EnumType"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>">\n"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>constant</color> <color=#f8f8f2>:</color> <color=#f8f8f2>getEnumConstants</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INDENT</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Constant>"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>constant</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</Constant>\n"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</EnumType>\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isArray</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addTypeHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#e6db74>"ArrayType"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" componentId=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getComponentType</color><color=#f8f8f2>().</color><color=#a6e22e>getVersion</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" componentClass=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getComponentType</color><color=#f8f8f2>().</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" dimensions=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getDimensions</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addTypeHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#e6db74>"ComplexType"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Format</color> <color=#f8f8f2>superType</color> <color=#f92672>=</color> <color=#f8f8f2>getSuperType</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>superType</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" superTypeId=\""</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>superType</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" superTypeClass=\""</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>superType</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>Format</color> <color=#f8f8f2>proxiedFormat</color> <color=#f92672>=</color> <color=#f8f8f2>getProxiedFormat</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proxiedFormat</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" proxiedTypeId=\""</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" proxiedTypeClass=\""</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>proxiedFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>PrimaryKeyMetadata</color> <color=#f8f8f2>priMeta</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>SecondaryKeyMetadata</color><color=#f92672>></color> <color=#f8f8f2>secondaryKeys</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldMetadata</color><color=#f92672>></color> <color=#f8f8f2>compositeKeyFields</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>clsMeta</color> <color=#f92672>=</color> <color=#f8f8f2>getClassMetadata</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>clsMeta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>compositeKeyFields</color> <color=#f92672>=</color> <color=#f8f8f2>clsMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getCompositeKeyFields</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>priMeta</color> <color=#f92672>=</color> <color=#f8f8f2>clsMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getPrimaryKey</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>secondaryKeys</color> <color=#f92672>=</color> <color=#f8f8f2>clsMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getSecondaryKeys</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" kind=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>isEntity</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#e6db74>"entity"</color> <color=#f8f8f2>:</color> <color=#f8f8f2>((</color><color=#f8f8f2>compositeKeyFields</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#e6db74>"compositeKey"</color> <color=#f8f8f2>:</color> <color=#e6db74>"persistent"</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\">\n"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color> <color=#f8f8f2>fields</color> <color=#f92672>=</color> <color=#f8f8f2>getFields</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fields</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>RawField</color> <color=#f8f8f2>field</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>RawType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INDENT</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Field"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" name=\""</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" typeId=\""</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" typeClass=\""</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>priMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" primaryKey=\"true\""</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getSequenceName</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" sequence=\""</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getSequenceName</color><color=#f8f8f2>());</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secondaryKeys</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>SecondaryKeyMetadata</color> <color=#f8f8f2>secMeta</color> <color=#f92672>=</color>
+                <color=#f8f8f2>ComplexFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getSecondaryKeyMetadataByFieldName</color><color=#f8f8f2>(</color><color=#f8f8f2>secondaryKeys</color><color=#f8f8f2>,</color> <color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" secondaryKey=\"true\" keyName=\""</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyName</color><color=#f8f8f2>());</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" relate=\""</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getRelationship</color><color=#f8f8f2>());</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>String</color> <color=#f8f8f2>related</color> <color=#f92672>=</color> <color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getRelatedEntity</color><color=#f8f8f2>();</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>related</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" relatedEntity=\""</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>related</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" onRelatedEntityDelete=\""</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getDeleteAction</color><color=#f8f8f2>());</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>compositeKeyFields</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>int</color> <color=#f8f8f2>nFields</color> <color=#f92672>=</color> <color=#f8f8f2>compositeKeyFields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nFields</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>FieldMetadata</color> <color=#f8f8f2>fldMeta</color> <color=#f92672>=</color> <color=#f8f8f2>compositeKeyFields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fldMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" compositeKeyField=\""</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"/>\n"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>EntityMetadata</color> <color=#f8f8f2>entMeta</color> <color=#f92672>=</color> <color=#f8f8f2>getEntityMetadata</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entMeta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INDENT</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<EntityKeys>\n"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>priMeta</color> <color=#f92672>=</color> <color=#f8f8f2>entMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getPrimaryKey</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INDENT2</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Primary class=\""</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getDeclaringClassName</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" field=\""</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>priMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>\n"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>secondaryKeys</color> <color=#f92672>=</color> <color=#f8f8f2>entMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getSecondaryKeys</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secondaryKeys</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryKeyMetadata</color> <color=#f8f8f2>secMeta</color> <color=#f8f8f2>:</color> <color=#f8f8f2>secondaryKeys</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INDENT2</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Secondary class=\""</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getDeclaringClassName</color><color=#f8f8f2>());</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" field=\""</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>secMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+              <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>\n"</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</EntityKeys>\n"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</ComplexType>\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addTypeHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>elemName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'<'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>elemName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" id=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getId</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" class=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" version=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getVersion</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Format</color> <color=#f8f8f2>currVersion</color> <color=#f92672>=</color> <color=#f8f8f2>getLatestVersion</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currVersion</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" currentVersionId=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>currVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>Format</color> <color=#f8f8f2>prevVersion</color> <color=#f92672>=</color> <color=#f8f8f2>getPreviousVersion</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevVersion</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" previousVersionId=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>prevVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

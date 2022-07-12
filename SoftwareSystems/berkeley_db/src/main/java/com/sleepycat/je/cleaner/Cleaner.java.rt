@@ -1,0 +1,1495 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileSelector.CheckpointStartCleanerState</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogItem</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.ReplicationContext</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.text.NumberFormat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.SortedSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.TreeSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicBoolean</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicLong</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.locks.ReentrantLock</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.cleaner.CleanerStatDefinition.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The Cleaner is responsible for effectively garbage collecting the JE log. It selects the least</color>
+<color=#75715e> * utilized log file for cleaning (see FileSelector), reads through the log file (FileProcessor) and</color>
+<color=#75715e> * determines whether each entry is obsolete (no longer relevant) or active (referenced by the</color>
+<color=#75715e> * Btree). Entries that are active are migrated (copied) to the end of the log, and finally the</color>
+<color=#75715e> * cleaned file is deleted.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The migration of active entries is a multi-step process that can be configured to operate in</color>
+<color=#75715e> * different ways. Eviction and checkpointing, as well as the cleaner threads (FileProcessor</color>
+<color=#75715e> * instances) are participants in this process. Migration may be immediate or lazy.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Active INs are always migrated lazily, which means that they are marked dirty by the</color>
+<color=#75715e> * FileProcessor, and then logged later by an eviction or checkpoint. Active LNs are always migrated</color>
+<color=#75715e> * immediately by the FileProcessor by logging them.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When the FileProcessor is finished with a file, all lazy migration for that file is normally</color>
+<color=#75715e> * completed by the end of the next checkpoint, if not sooner via eviction. The checkpoint/recovery</color>
+<color=#75715e> * mechanism will ensure that obsolete entries will not be referenced by the Btree. At the end of</color>
+<color=#75715e> * the checkpoint, it is therefore safe to delete the log file.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>There is one exception to the above paragraph. When attempting to migrate an LN, if the LN</color>
+<color=#75715e> * cannot be locked then we must retry the migration at a later time. Also, if a database removal is</color>
+<color=#75715e> * in progress, we consider all entries in the database obsolete but cannot delete the log file</color>
+<color=#75715e> * until database removal is complete. Such "pending" LNs and databases are queued and processed</color>
+<color=#75715e> * periodically during file processing and at the start of a checkpoint; see processPending(). In</color>
+<color=#75715e> * this case, we may have to wait for more than one checkpoint to occur before the log file can be</color>
+<color=#75715e> * deleted. See FileSelector and the use of the pendingLNs and pendingDBs collections.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Cleaner</color> <color=#66d9ef>implements</color> <color=#f8f8f2>DaemonRunner</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvConfigObserver</color> <color=#f8f8f2>{</color>
+  <color=#75715e>/* From cleaner */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CLEAN_IN</color> <color=#f92672>=</color> <color=#e6db74>"CleanIN:"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CLEAN_LN</color> <color=#f92672>=</color> <color=#e6db74>"CleanLN:"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CLEAN_PENDING_LN</color> <color=#f92672>=</color> <color=#e6db74>"CleanPendingLN:"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>INT_FORMAT</color> <color=#f92672>=</color> <color=#f8f8f2>NumberFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getIntegerInstance</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The CacheMode to use for Btree searches. This is currently UNCHANGED because we update the</color>
+<color=#75715e>   * generation of the BIN when we migrate an LN. In other other cases, it is not desirable to keep</color>
+<color=#75715e>   * INs in cache.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>UPDATE_GENERATION</color> <color=#f92672>=</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Whether the cleaner should participate in critical eviction. Ideally the cleaner would not</color>
+<color=#75715e>   * participate in eviction, since that would reduce the cost of cleaning. However, the cleaner can</color>
+<color=#75715e>   * add large numbers of nodes to the cache. By not participating in eviction, other threads could</color>
+<color=#75715e>   * be kept in a constant state of eviction and would effectively starve. Therefore, this setting</color>
+<color=#75715e>   * is currently enabled.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>DO_CRITICAL_EVICTION</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DELETED_SUBDIR</color> <color=#f92672>=</color> <color=#e6db74>"deleted"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Used to ensure that the cleaner is woken often enough. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>MAX_CLEANER_BYTES_INTERVAL</color> <color=#f92672>=</color> <color=#ae81ff>100L</color> <color=#f92672><<</color> <color=#ae81ff>20</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* 10GB is the lower threshold for adjusting MAX_DISK. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>MAX_DISK_ADJUSTMENT_THRESHOLD</color> <color=#f92672>=</color> <color=#ae81ff>10L</color> <color=#f92672>*</color> <color=#ae81ff>1024L</color> <color=#f92672>*</color> <color=#ae81ff>1024L</color> <color=#f92672>*</color> <color=#ae81ff>1024L</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Used to disable processing of safe-to-delete files during testing. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>fileDeletionEnabled</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Used to limit manageDiskUsage calls to one thread at a time. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReentrantLock</color> <color=#f8f8f2>manageDiskUsageLock</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReentrantLock</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Cleaner stats. Updates to these counters occur in multiple threads,</color>
+<color=#75715e>   * including FileProcessor threads, and are not synchronized. This could</color>
+<color=#75715e>   * produce errors in counting, but avoids contention around stat updates.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>statGroup</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCleanerRuns</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nTwoPassRuns</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nRevisalRuns</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCleanerDeletions</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nINsObsolete</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nINsCleaned</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nINsDead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nINsMigrated</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBINDeltasObsolete</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBINDeltasCleaned</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBINDeltasDead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBINDeltasMigrated</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsObsolete</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsExpired</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsCleaned</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsLocked</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsMigrated</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNsMarked</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNQueueHits</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nPendingLNsProcessed</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMarkedLNsProcessed</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nToBeCleanedLNsProcessed</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nClusterLNsProcessed</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nPendingLNsLocked</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nEntriesRead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nDiskReads</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nRepeatIteratorReads</color><color=#f8f8f2>;</color>
+  <color=#75715e>/*</color>
+<color=#75715e>   * Log size stats. These are CUMMULATIVE and the stat objects are created</color>
+<color=#75715e>   * by loadStats. They are accessed as a group while synchronized on</color>
+<color=#75715e>   * statGroup to ensure the set of values is consistent/coherent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>FileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>LogSizeStats</color> <color=#f8f8f2>logSizeStats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>availableLogSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalLogSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Unlike availableLogSize, maxDiskOverage and freeDiskShortage are</color>
+<color=#75715e>   * calculated based on actual disk usage, without subtracting the size of</color>
+<color=#75715e>   * the reserved files. So these values may be GT zero even if</color>
+<color=#75715e>   * availableLogSize is GTE zero. If maxDiskOverage or freeDiskShortage</color>
+<color=#75715e>   * is GT zero, then manageDiskUsage will try to delete log files to</color>
+<color=#75715e>   * avoid a violation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxDiskOverage</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeDiskShortage</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Message summarizing current log size stats, with limit violations. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>diskUsageMessage</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * If a disk usage limit is violated, this is diskUsageMessage; otherwise</color>
+<color=#75715e>   * it is null. It is volatile so it can be checked cheaply during CRUD ops.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>String</color> <color=#f8f8f2>diskUsageViolationMessage</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used to prevent repeated logging about a disk limit violation.</color>
+<color=#75715e>   * Protected by manageDiskUsageLock.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>loggedDiskLimitViolation</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Configuration parameters.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>long</color> <color=#f8f8f2>lockTimeout</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>lookAheadCacheSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>long</color> <color=#f8f8f2>nDeadlockRetries</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>expunge</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>useDeletedDir</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>twoPassGap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>twoPassThreshold</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>gradualExpiration</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>long</color> <color=#f8f8f2>cleanerBytesInterval</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>trackDetail</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>fetchObsoleteSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>dbCacheClearCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rmwFixEnabled</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>minUtilization</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>minFileUtilization</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>minAge</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxDiskLimit</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeDiskLimit</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>adjustedMaxDiskLimit</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileStoreInfo</color> <color=#f8f8f2>fileStoreInfo</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileProtector</color> <color=#f8f8f2>fileProtector</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationProfile</color> <color=#f8f8f2>profile</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ExpirationProfile</color> <color=#f8f8f2>expirationProfile</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationCalculator</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileSelector</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>FileProcessor</color><color=#f92672>[]</color> <color=#f8f8f2>threads</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>totalRuns</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>TestHook</color> <color=#f8f8f2>fileChosenHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** @see #processPending */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicBoolean</color> <color=#f8f8f2>processPendingReentrancyGuard</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicBoolean</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see #wakeupAfterWrite */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>bytesWrittenSinceActivation</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>Cleaner</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>env</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>name</color> <color=#f92672>=</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Initialize the non-CUMULATIVE stats definitions. */</color>
+    <color=#f8f8f2>statGroup</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCleanerRuns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_RUNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nTwoPassRuns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_TWO_PASS_RUNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nRevisalRuns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_REVISAL_RUNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCleanerDeletions</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_DELETIONS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nINsObsolete</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_INS_OBSOLETE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nINsCleaned</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_INS_CLEANED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nINsDead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_INS_DEAD</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nINsMigrated</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_INS_MIGRATED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBINDeltasObsolete</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_BIN_DELTAS_OBSOLETE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBINDeltasCleaned</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_BIN_DELTAS_CLEANED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBINDeltasDead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_BIN_DELTAS_DEAD</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBINDeltasMigrated</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_BIN_DELTAS_MIGRATED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsObsolete</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_OBSOLETE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsExpired</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_EXPIRED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsCleaned</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_CLEANED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsDead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_DEAD</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsLocked</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_LOCKED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsMigrated</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_MIGRATED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNsMarked</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNS_MARKED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNQueueHits</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_LNQUEUE_HITS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nPendingLNsProcessed</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_PENDING_LNS_PROCESSED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMarkedLNsProcessed</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_MARKED_LNS_PROCESSED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nToBeCleanedLNsProcessed</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_TO_BE_CLEANED_LNS_PROCESSED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nClusterLNsProcessed</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_CLUSTER_LNS_PROCESSED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nPendingLNsLocked</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_PENDING_LNS_LOCKED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nEntriesRead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_ENTRIES_READ</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nDiskReads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_DISK_READS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nRepeatIteratorReads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_REPEAT_ITERATOR_READS</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>logSizeStats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>LogSizeStats</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isMemOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileStoreInfo</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileStoreInfo</color> <color=#f92672>=</color> <color=#f8f8f2>FileStoreInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironmentHome</color><color=#f8f8f2>().</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>fileProtector</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileProtector</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>UtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>profile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>UtilizationProfile</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>expirationProfile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExpirationProfile</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>calculator</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>UtilizationCalculator</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>fileSelector</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSelector</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>threads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileProcessor</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>totalRuns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The trackDetail property is immutable because of the complexity (if</color>
+<color=#75715e>     * it were mutable) in determining whether to update the memory budget</color>
+<color=#75715e>     * and perform eviction.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>trackDetail</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_TRACK_DETAIL</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>rmwFixEnabled</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_RMW_FIX</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Initialize mutable properties and register for notifications. */</color>
+    <color=#f8f8f2>setMutableProperties</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>addConfigObserver</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process notifications of mutable property changes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via Environment ctor and setMutableConfig.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>envConfigUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>cm</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentMutableConfig</color> <color=#f8f8f2>ignore</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setMutableProperties</color><color=#f8f8f2>(</color><color=#f8f8f2>cm</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* A parameter that impacts cleaning may have changed. */</color>
+    <color=#f8f8f2>wakeupActivate</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setMutableProperties</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>cm</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>lockTimeout</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_LOCK_TIMEOUT</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_READ_SIZE</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readBufferSize</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ITERATOR_READ_SIZE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>lookAheadCacheSize</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_LOOK_AHEAD_CACHE_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>nDeadlockRetries</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_DEADLOCK_RETRY</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>expunge</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_REMOVE</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>useDeletedDir</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_USE_DELETED_DIR</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>twoPassGap</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_TWO_PASS_GAP</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>twoPassThreshold</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_TWO_PASS_THRESHOLD</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPassThreshold</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>twoPassThreshold</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_MIN_UTILIZATION</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>gradualExpiration</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_GRADUAL_EXPIRATION</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>dbCacheClearCount</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_DB_CACHE_CLEAR_COUNT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>nThreads</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_THREADS</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>nThreads</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nThreads</color> <color=#f92672>!=</color> <color=#f8f8f2>threads</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Shutdown threads when reducing their number. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>nThreads</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>threads</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>shutdown</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Copy existing threads that are still used. */</color>
+      <color=#f8f8f2>FileProcessor</color><color=#f92672>[]</color> <color=#f8f8f2>newThreads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileProcessor</color><color=#f92672>[</color><color=#f8f8f2>nThreads</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nThreads</color> <color=#f92672>&&</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>threads</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newThreads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Don't lose track of new threads if an exception occurs. */</color>
+      <color=#f8f8f2>threads</color> <color=#f92672>=</color> <color=#f8f8f2>newThreads</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Start new threads when increasing their number. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nThreads</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>FileProcessor</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>'-'</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>),</color>
+                <color=#f8f8f2>i</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#75715e>/*firstThread*/</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>this</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>profile</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>calculator</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>fileSelector</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>cleanerBytesInterval</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_BYTES_INTERVAL</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cleanerBytesInterval</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cleanerBytesInterval</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_MAX</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>cleanerBytesInterval</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>cleanerBytesInterval</color><color=#f8f8f2>,</color> <color=#f8f8f2>MAX_CLEANER_BYTES_INTERVAL</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>wakeupInterval</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_WAKEUP_INTERVAL</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>thread</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>setWaitTime</color><color=#f8f8f2>(</color><color=#f8f8f2>wakeupInterval</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>fetchObsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_FETCH_OBSOLETE_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>minAge</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_MIN_AGE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>minUtilization</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_MIN_UTILIZATION</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>minFileUtilization</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>CLEANER_MIN_FILE_UTILIZATION</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>maxDiskLimit</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_DISK</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>adjustedMaxDiskLimit</color> <color=#f92672>=</color> <color=#f8f8f2>maxDiskLimit</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isMemOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Env home dir may not exist, can't query file system info. */</color>
+      <color=#f8f8f2>freeDiskLimit</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>replayFreeDiskPct</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getReplayFreeDiskPercent</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayFreeDiskPct</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* No backward compatibility is needed. */</color>
+        <color=#f8f8f2>freeDiskLimit</color> <color=#f92672>=</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>FREE_DISK</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Use replayFreeDiskPercent for backward compatibility. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>isSpecified</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>FREE_DISK</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Cannot specify both "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>EnvironmentConfig</color><color=#f8f8f2>.</color><color=#a6e22e>FREE_DISK</color>
+                  <color=#f92672>+</color> <color=#e6db74>" and je.rep.replayFreeDiskPercent."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>freeDiskLimit</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>getDiskTotalSpace</color><color=#f8f8f2>()</color> <color=#f92672>*</color> <color=#f8f8f2>replayFreeDiskPct</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#ae81ff>100</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxDiskLimit</color> <color=#f92672>></color> <color=#f8f8f2>MAX_DISK_ADJUSTMENT_THRESHOLD</color>
+          <color=#f92672>||</color> <color=#f8f8f2>cm</color><color=#f8f8f2>.</color><color=#a6e22e>isSpecified</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>FREE_DISK</color><color=#f8f8f2>)</color>
+          <color=#f92672>||</color> <color=#f8f8f2>replayFreeDiskPct</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>adjustedMaxDiskLimit</color> <color=#f92672>-=</color> <color=#f8f8f2>freeDiskLimit</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileProtector</color> <color=#a6e22e>getFileProtector</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileProtector</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>UtilizationTracker</color> <color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>UtilizationProfile</color> <color=#a6e22e>getUtilizationProfile</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>profile</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>UtilizationCalculator</color> <color=#a6e22e>getUtilizationCalculator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ExpirationProfile</color> <color=#a6e22e>getExpirationProfile</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>expirationProfile</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileSelector</color> <color=#a6e22e>getFileSelector</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getFetchObsoleteSize</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fetchObsoleteSize</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isLNImmediatelyObsolete</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @see EnvironmentParams#CLEANER_RMW_FIX</color>
+<color=#75715e>   * @see FileSummaryLN#postFetchInit</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isRMWFixEnabled</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>rmwFixEnabled</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit testing only. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setFileChosenHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>fileChosenHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Delegate the run/pause/wakeup/shutdown DaemonRunner operations.  We</color>
+<color=#75715e>   * always check for null to account for the possibility of exceptions</color>
+<color=#75715e>   * during thread creation.  Cleaner daemon can't ever be run if No Locking</color>
+<color=#75715e>   * mode is enabled.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>runOrPause</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>run</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isNoLocking</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>processor</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>processor</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>run</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>processor</color><color=#f8f8f2>.</color><color=#a6e22e>activateOnWakeup</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>processor</color><color=#f8f8f2>.</color><color=#a6e22e>runOrPause</color><color=#f8f8f2>(</color><color=#f8f8f2>run</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If the number of bytes written since the last activation exceeds the cleaner's byte interval,</color>
+<color=#75715e>   * wakeup the file processor threads in activate mode.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>wakeupAfterWrite</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>writeSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesWrittenSinceActivation</color><color=#f8f8f2>.</color><color=#a6e22e>addAndGet</color><color=#f8f8f2>(</color><color=#f8f8f2>writeSize</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#f8f8f2>cleanerBytesInterval</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>bytesWrittenSinceActivation</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>wakeupActivate</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Wakeup the file processor threads in activate mode, meaning that FileProcessor.doClean will be</color>
+<color=#75715e>   * called.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see FileProcessor#onWakeup()</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>wakeupActivate</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>thread</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>activateOnWakeup</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>wakeup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>requestShutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>thread</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>requestShutdown</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>threads</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>shutdown</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>threads</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNWakeupRequests</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>count</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>thread</color> <color=#f8f8f2>:</color> <color=#f8f8f2>threads</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>count</color> <color=#f92672>+=</color> <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>getNWakeupRequests</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>count</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Cleans selected files and returns the number of files cleaned. This method is not invoked by a</color>
+<color=#75715e>   * deamon thread, it is programatically.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cleanMultipleFiles is true to clean until we're under budget, or false to clean at most</color>
+<color=#75715e>   *     one file.</color>
+<color=#75715e>   * @param forceCleaning is true to clean even if we're not under the utilization threshold.</color>
+<color=#75715e>   * @return the number of files cleaned, not including files cleaned unsuccessfully.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>doClean</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>cleanMultipleFiles</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forceCleaning</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>processor</color> <color=#f92672>=</color> <color=#f8f8f2>createProcessor</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>processor</color><color=#f8f8f2>.</color><color=#a6e22e>doClean</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*invokedFromDaemon*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>cleanMultipleFiles</color><color=#f8f8f2>,</color> <color=#f8f8f2>forceCleaning</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileProcessor</color> <color=#a6e22e>createProcessor</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileProcessor</color><color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>profile</color><color=#f8f8f2>,</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Load stats. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color> <color=#f92672>=</color> <color=#f8f8f2>statGroup</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* Add all CUMULATIVE stats explicitly. */</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>IntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_MIN_UTILIZATION</color><color=#f8f8f2>,</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentMinUtilization</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>IntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_MAX_UTILIZATION</color><color=#f8f8f2>,</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentMaxUtilization</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>IntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_PENDING_LN_QUEUE_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>getPendingLNQueueSize</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Synchronize on statGroup while adding log size stats, to return a</color>
+<color=#75715e>     * consistent set of values.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_ACTIVE_LOG_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSizeStats</color><color=#f8f8f2>.</color><color=#a6e22e>activeSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_RESERVED_LOG_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSizeStats</color><color=#f8f8f2>.</color><color=#a6e22e>reservedSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_PROTECTED_LOG_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSizeStats</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_AVAILABLE_LOG_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>availableLogSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_TOTAL_LOG_SIZE</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLogSize</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLongMapStat</color> <color=#f8f8f2>protectedSizeMap</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLongMapStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>CLEANER_PROTECTED_LOG_SIZE_MAP</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>logSizeStats</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSizeMap</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>protectedSizeMap</color><color=#f8f8f2>.</color><color=#a6e22e>createStat</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>()).</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enables or disabling processing of safe-to-delete files, including the truncation of the VLSN</color>
+<color=#75715e>   * index. Disabling this is needed for tests, when VLSNIndex changes should be prevented.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>enableFileDeletion</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>enable</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>fileDeletionEnabled</color> <color=#f92672>=</color> <color=#f8f8f2>enable</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Updates log size stats and deletes unprotected reserved files in order to stay within disk</color>
+<color=#75715e>   * limits.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method must be called frequently enough to maintain disk usage safely below the limits.</color>
+<color=#75715e>   * For an HA env this is particularly important since we retain all reserved files until we</color>
+<color=#75715e>   * approach the disk limits. For this, calling this method at least every CLEANER_BYTES_INTERVAL</color>
+<color=#75715e>   * should suffice.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>It is also important to call this method based on a time interval when writing stops, to</color>
+<color=#75715e>   * retry deletions when files are protected or the env is locked by read-only processes. For this,</color>
+<color=#75715e>   * calling this method at least every CLEANER_WAKEUP_INTERVAL should suffice.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>manageDiskUsage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Fail loudly if the environment is invalid. */</color>
+    <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>checkIfInvalid</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isMemOnly</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>mayNotWrite</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>fileDeletionEnabled</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Only one thread at a time can truncate the VLSNIndex head, request</color>
+<color=#75715e>     * the environment lock, and update stats. This is a periodic action,</color>
+<color=#75715e>     * so probe the lock to avoid blocking other cleaner threads.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>manageDiskUsageLock</color><color=#f8f8f2>.</color><color=#a6e22e>tryLock</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Periodically update the stats. */</color>
+      <color=#f8f8f2>freshenLogSizeStats</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>getNReservedFiles</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>freshenStats</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * Reserved files are retained until we approach a disk</color>
+<color=#75715e>           * limit. Determine how many bytes we need to reclaim by</color>
+<color=#75715e>           * deleting reserved files. Add a reasonable value to stay</color>
+<color=#75715e>           * safely below the limits between cleaner wakeups. Note</color>
+<color=#75715e>           * that max(overage,shortage) may be negative, since</color>
+<color=#75715e>           * overage and shortage may be negative.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>origBytesNeeded</color> <color=#f92672>=</color>
+              <color=#f8f8f2>((</color><color=#f8f8f2>maxDiskLimit</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>maxDiskOverage</color><color=#f8f8f2>,</color> <color=#f8f8f2>freeDiskShortage</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>freeDiskShortage</color><color=#f8f8f2>)</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#ae81ff>1L</color> <color=#f92672><<</color> <color=#ae81ff>20</color><color=#f8f8f2>,</color> <color=#ae81ff>3</color> <color=#f92672>*</color> <color=#f8f8f2>cleanerBytesInterval</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * First try deleting files without truncating the</color>
+<color=#75715e>           * VLSNIndex head.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>long</color> <color=#f8f8f2>bytesNeeded</color> <color=#f92672>=</color> <color=#f8f8f2>origBytesNeeded</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>bytesNeeded</color> <color=#f92672>=</color> <color=#f8f8f2>deleteUnprotectedFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * If we still need space, try truncating the VLSNIndex</color>
+<color=#75715e>           * and then deleting files. See FileProtector for details.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color> <color=#f92672>></color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>tryVlsnHeadTruncate</color><color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+            <color=#f8f8f2>bytesNeeded</color> <color=#f92672>=</color> <color=#f8f8f2>deleteUnprotectedFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>freshenStats</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color> <color=#f92672><</color> <color=#f8f8f2>origBytesNeeded</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>freshenStats</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * For a non-HA env, simply try to delete all the reserved</color>
+<color=#75715e>           * files.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>bytesNeeded</color> <color=#f92672>=</color> <color=#f8f8f2>deleteUnprotectedFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color> <color=#f92672><</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>freshenStats</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Freshen the stats if any files are deleted, so write</color>
+<color=#75715e>         * operations can occur ASAP if they were previously</color>
+<color=#75715e>         * prohibited. Also freshen the stats if we truncated the</color>
+<color=#75715e>         * VLSNIndex, so that the stats reflect the current factors</color>
+<color=#75715e>         * gating file deletion.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>freshenStats</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>freshenLogSizeStats</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If there is still a violation, and we have not logged it since</color>
+<color=#75715e>       * the violation status changed, then log it now. We do not expect</color>
+<color=#75715e>       * the violation status to change frequently.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>violation</color> <color=#f92672>=</color> <color=#f8f8f2>diskUsageViolationMessage</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>violation</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>loggedDiskLimitViolation</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color> <color=#f8f8f2>violation</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>loggedDiskLimitViolation</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>loggedDiskLimitViolation</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvLockedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Could not delete files due to read-only processes. "</color> <color=#f92672>+</color> <color=#f8f8f2>diskUsageMessage</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>manageDiskUsageLock</color><color=#f8f8f2>.</color><color=#a6e22e>unlock</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see #deleteUnprotectedFiles */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>EnvLockedException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Deletes unprotected reserved files in an attempt to free bytesNeeded. In a non-HA env, attempts</color>
+<color=#75715e>   * to delete all reserved files, irrespective of bytesNeeded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>An exclusive environment is held while deleting the files to lock out read-only processes.</color>
+<color=#75715e>   * The lock is held while deleting the reserved file records as well, but this is inexpensive and</color>
+<color=#75715e>   * should not cause long delays for read-only processes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param bytesNeeded the amount of space we need to reclaim to stay within disk limits.</color>
+<color=#75715e>   * @return number of bytes we could not reclaim due to protected files, or zero if we deleted</color>
+<color=#75715e>   *     files totaling bytesNeeded or more.</color>
+<color=#75715e>   * @throws EnvLockedException if we can't get an exclusive environment lock because the env is</color>
+<color=#75715e>   *     locked by read-only processes, and therefore no files can be deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>deleteUnprotectedFiles</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>EnvLockedException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>SortedSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>deletedFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeSet</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>lockEnvironment</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvLockedException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color> <color=#f92672>></color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>pair</color> <color=#f92672>=</color> <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>takeCondemnedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pair</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>pair</color><color=#f8f8f2>.</color><color=#a6e22e>first</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>pair</color><color=#f8f8f2>.</color><color=#a6e22e>second</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>deleteFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Sometimes files cannot be deleted on Windows. */</color>
+          <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>putBackCondemnedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>bytesNeeded</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>bytesNeeded</color> <color=#f92672>-</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>deleteReservedFileRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nCleanerDeletions</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>deletedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>releaseExclusiveLock</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>deletedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>(</color><color=#e6db74>"Cleaner deleted files:"</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color> <color=#f8f8f2>:</color> <color=#f8f8f2>deletedFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" 0x"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Attempts to delete the file and returns whether it has been deleted. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>deleteFile</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>expungeLabel</color> <color=#f92672>=</color> <color=#f8f8f2>expunge</color> <color=#f92672>?</color> <color=#e6db74>"delete"</color> <color=#f8f8f2>:</color> <color=#e6db74>"rename"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>expungedLabel</color> <color=#f92672>=</color> <color=#f8f8f2>expungeLabel</color> <color=#f92672>+</color> <color=#e6db74>"d"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expunge</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>deleteFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* See EnvironmentConfig.CLEANER_EXPUNGE. */</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>newFile</color> <color=#f92672>=</color>
+            <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>renameFile</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>DEL_SUFFIX</color><color=#f8f8f2>,</color> <color=#f8f8f2>useDeletedDir</color> <color=#f92672>?</color> <color=#f8f8f2>DELETED_SUBDIR</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>newFile</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>newFile</color><color=#f8f8f2>.</color><color=#a6e22e>setLastModified</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_WRITE</color><color=#f8f8f2>,</color> <color=#e6db74>"Unable to "</color> <color=#f92672>+</color> <color=#f8f8f2>expungeLabel</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If the file is not valid (missing) then the file was previously</color>
+<color=#75715e>     * deleted. This can occur on Windows when we retry deletion (see</color>
+<color=#75715e>     * below).</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>isFileValid</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Log a message and return false to retry the deletion later. The</color>
+<color=#75715e>     * deletion is known to fail on Windows, and probably this occurs whe</color>
+<color=#75715e>     * the file was recently closed.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLog</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>WARNING</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Log file 0x"</color>
+            <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>" could not be "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>expungedLabel</color>
+            <color=#f92672>+</color> <color=#e6db74>". The deletion will be retried later."</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Updates the cached set of log size stats, including maxDiskOverage, freeDiskShortage,</color>
+<color=#75715e>   * diskUsageMessage and diskUsageViolationMessage.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Normally this should only be called by manageDiskUsage while holding the</color>
+<color=#75715e>   * manageDiskUsageLock. However, it may be called directly during (single threaded) recovery.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>freshenLogSizeStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>recalcLogSizeStats</color><color=#f8f8f2>(</color><color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSizeStats</color><color=#f8f8f2>(),</color> <color=#f8f8f2>getDiskFreeSpace</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Implementation of freshenLogSizeStats. Exposed for testing. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>recalcLogSizeStats</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>FileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>LogSizeStats</color> <color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>diskFreeSpace</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use locals for limits, since they may be changed by other threads.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxLimit</color> <color=#f92672>=</color> <color=#f8f8f2>maxDiskLimit</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>adjustedMax</color> <color=#f92672>=</color> <color=#f8f8f2>adjustedMaxDiskLimit</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeLimit</color> <color=#f92672>=</color> <color=#f8f8f2>freeDiskLimit</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Calculate overage/shortage and available size. Below are examples of</color>
+<color=#75715e>     * availableLogBytes values where:</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *  totalLS=75 activeLS=50 reservedLS=25 protectedLS=5</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *    freeDL maxDL diskFS freeB1 freeB2 availableLS</color>
+<color=#75715e>     *      5      -     20     15      15      35</color>
+<color=#75715e>     *     25      -      5    -20     -20       0</color>
+<color=#75715e>     *     30      -      5    -25     -25      -5</color>
+<color=#75715e>     *      5    100     20     15      15      35</color>
+<color=#75715e>     *     25    100     20     -5      -5      15</color>
+<color=#75715e>     *      5     80     20     15       0      20</color>
+<color=#75715e>     *     25     80     20     -5     -20       0</color>
+<color=#75715e>     *     25    200      5    -20     -20       0</color>
+<color=#75715e>     *     25     75     20     -5     -25      -5</color>
+<color=#75715e>     *     50     80     90     40     -45     -25</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeBytes1</color> <color=#f92672>=</color> <color=#f8f8f2>diskFreeSpace</color> <color=#f92672>-</color> <color=#f8f8f2>freeLimit</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeShortage</color> <color=#f92672>=</color> <color=#ae81ff>0</color> <color=#f92672>-</color> <color=#f8f8f2>freeBytes1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalSize</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>activeSize</color> <color=#f92672>+</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>reservedSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxOverage</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>freeBytes2</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>adjustedMax</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxOverage</color> <color=#f92672>=</color> <color=#f8f8f2>totalSize</color> <color=#f92672>-</color> <color=#f8f8f2>adjustedMax</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>freeBytes2</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>freeBytes1</color><color=#f8f8f2>,</color> <color=#f8f8f2>adjustedMax</color> <color=#f92672>-</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxOverage</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>freeBytes2</color> <color=#f92672>=</color> <color=#f8f8f2>freeBytes1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>availBytes</color> <color=#f92672>=</color> <color=#f8f8f2>freeBytes2</color> <color=#f92672>+</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>reservedSize</color> <color=#f92672>-</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSize</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>availBytes</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"Disk usage is not within je.maxDisk or je.freeDisk "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"limits and write operations are prohibited:"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"Disk usage is currently within je.maxDisk and "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"je.freeDisk limits:"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" maxDiskLimit="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>maxLimit</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" freeDiskLimit="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>freeLimit</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" adjustedMaxDiskLimit="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>adjustedMax</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" maxDiskOverage="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>maxOverage</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" freeDiskShortage="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>freeShortage</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" diskFreeSpace="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>diskFreeSpace</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" availableLogSize="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>availBytes</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" totalLogSize="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" activeLogSize="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>activeSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" reservedLogSize="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>reservedSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" protectedLogSize="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" protectedLogSizeMap={"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSizeMap</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>":"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>INT_FORMAT</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"}"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>msg</color> <color=#f92672>=</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Synchronize on statGroup to maintain consistent set of stats. */</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>statGroup</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxDiskOverage</color> <color=#f92672>=</color> <color=#f8f8f2>maxOverage</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>freeDiskShortage</color> <color=#f92672>=</color> <color=#f8f8f2>freeShortage</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>diskUsageMessage</color> <color=#f92672>=</color> <color=#f8f8f2>msg</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>diskUsageViolationMessage</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>availBytes</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>msg</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>availableLogSize</color> <color=#f92672>=</color> <color=#f8f8f2>availBytes</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>totalLogSize</color> <color=#f92672>=</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>logSizeStats</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>getDiskFreeSpace</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>fileStoreInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getUsableSpace</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>getDiskTotalSpace</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>fileStoreInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getTotalSpace</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a message describing disk space limits and usage, regardless of whether the limit is</color>
+<color=#75715e>   * violated or not. If there is a limit violation, returns the same value as {@link</color>
+<color=#75715e>   * #getDiskLimitViolation()}. Does not return null.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getDiskLimitMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diskUsageMessage</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Uses cached disk usage info to determine whether disk space limits are currently violated. This</color>
+<color=#75715e>   * method simply returns a volatile field. The cached information is updated frequently enough to</color>
+<color=#75715e>   * prevent violating the limits by a large amount.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a non-null message (appropriate for an exception) if a disk limit is currently</color>
+<color=#75715e>   *     violated, else null.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getDiskLimitViolation</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diskUsageViolationMessage</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>getMaxDiskOverage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>maxDiskOverage</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>getFreeDiskShortage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>freeDiskShortage</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a copy of the cleaned and processed files at the time a checkpoint starts.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If non-null is returned, the checkpoint should flush an extra level, and</color>
+<color=#75715e>   * addCheckpointedFiles() should be called when the checkpoint is complete.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>CheckpointStartCleanerState</color> <color=#a6e22e>getFilesAtCheckpointStart</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Pending LNs can prevent file deletion. */</color>
+    <color=#f8f8f2>processPending</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>getFilesAtCheckpointStart</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * When a checkpoint is complete, update the files that were returned at the beginning of the</color>
+<color=#75715e>   * checkpoint.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>updateFilesAtCheckpointEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>CheckpointStartCleanerState</color> <color=#f8f8f2>info</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Update cleaned file status and get newly reserved files. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>FileInfo</color><color=#f92672>></color> <color=#f8f8f2>reservedFiles</color> <color=#f92672>=</color>
+        <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>updateFilesAtCheckpointEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Insert reserved file db record and delete other (unnecessary)</color>
+<color=#75715e>     * metadata for reserved files.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>reserveFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Try deleting files since file status may have changed. */</color>
+    <color=#f8f8f2>manageDiskUsage</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Periodically process completed expiration trackers. This is done</color>
+<color=#75715e>     * here in case cleaner threads are disabled.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>expirationProfile</color><color=#f8f8f2>.</color><color=#a6e22e>processCompletedTrackers</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If any LNs or databases are pending, process them. This method should be called often enough to</color>
+<color=#75715e>   * prevent the pending LN set from growing too large.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>processPending</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This method is not synchronized because that would block cleaner</color>
+<color=#75715e>     * and checkpointer threads unnecessarily.  However, we do prevent</color>
+<color=#75715e>     * reentrancy, for two reasons:</color>
+<color=#75715e>     * 1. It is wasteful for two threads to process the same pending</color>
+<color=#75715e>     *    entries.</color>
+<color=#75715e>     * 2. Many threads calling getDb may increase the liklihood of</color>
+<color=#75715e>     *    livelock. [#20816]</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>processPendingReentrancyGuard</color><color=#f8f8f2>.</color><color=#a6e22e>compareAndSet</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbMapTree</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>LockManager</color> <color=#f8f8f2>lockManager</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnManager</color><color=#f8f8f2>().</color><color=#a6e22e>getLockManager</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color><color=#f92672>></color> <color=#f8f8f2>pendingLNs</color> <color=#f92672>=</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>getPendingLNs</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingLNs</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>TreeLocation</color> <color=#f8f8f2>location</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeLocation</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>pendingLNs</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>diskUsageViolationMessage</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color> <color=#75715e>/* We can't write. */</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>expiresWithin</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationTime</color><color=#f8f8f2>(),</color> <color=#ae81ff>0</color> <color=#f92672>-</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getTtlLnPurgeDelay</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>isLockUncontended</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>removePendingLN</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>nLNsExpired</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+              <color=#f8f8f2>nLNsObsolete</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>nPendingLNsLocked</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockTimeout</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+
+            <color=#75715e>/* Evict before processing each entry. */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DO_CRITICAL_EVICTION</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>daemonEviction</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#f8f8f2>processPendingLN</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>location</color><color=#f8f8f2>);</color>
+
+          <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color><color=#f92672>[]</color> <color=#f8f8f2>pendingDBs</color> <color=#f92672>=</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>getPendingDBs</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingDBs</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>pendingDBs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockTimeout</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleteFinished</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>removePendingDB</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>processPendingReentrancyGuard</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Processes a pending LN, getting the lock first to ensure that the overhead of retries is</color>
+<color=#75715e>   * minimal.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processPendingLN</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyFromLog</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>TreeLocation</color> <color=#f8f8f2>location</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>parentFound</color><color=#f8f8f2>;</color> <color=#75715e>// We found the parent BIN.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>processedHere</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color> <color=#75715e>// The LN was cleaned here.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>lockDenied</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN lock was denied.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN is no longer in use.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// This method completed.</color>
+
+    <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nPendingLNsProcessed</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the DB is gone, this LN is obsolete.  If delete cleanup is in</color>
+<color=#75715e>       * progress, put the DB into the DB pending set; this LN will be</color>
+<color=#75715e>       * declared deleted after the delete cleanup is finished.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>addPendingDB</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>tree</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Get a non-blocking read lock on the original log LSN.  If this</color>
+<color=#75715e>       * fails, then the original LSN is still write-locked.  We may have</color>
+<color=#75715e>       * to lock again, if the LSN has changed in the BIN, but this</color>
+<color=#75715e>       * initial check prevents a Btree lookup in some cases.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*noWait*/</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Don't allow this short-lived lock to be preempted/stolen. */</color>
+      <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>setPreemptable</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockRet</color> <color=#f92672>=</color>
+          <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>READ</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockRet</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Try again later. */</color>
+        <color=#f8f8f2>nPendingLNsLocked</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>lockDenied</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Search down to the bottom most level for the parent of this LN.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>parentFound</color> <color=#f92672>=</color>
+          <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getParentBINForChildLN</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>location</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>keyFromLog</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*splitsAllowed*/</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*blindDeltaOps*/</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>bin</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>parentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Migrate an LN. */</color>
+      <color=#f8f8f2>processedHere</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>lockDenied</color> <color=#f92672>=</color> <color=#f8f8f2>migratePendingLN</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLogException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#e6db74>"com.sleepycat.je.cleaner.Cleaner"</color><color=#f8f8f2>,</color> <color=#e6db74>"processLN"</color><color=#f8f8f2>,</color> <color=#e6db74>"Exception thrown: "</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* BIN must not be latched when synchronizing on FileSelector. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>completed</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>lockDenied</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>removePendingLN</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If migratePendingLN was not called above, perform tracing in</color>
+<color=#75715e>       * this method.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>processedHere</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logFine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>CLEAN_PENDING_LN</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>null</color> <color=#75715e>/*node*/</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>completed</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>false</color> <color=#75715e>/*migrated*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Migrate a pending LN in the given BIN entry, if it is not obsolete. The BIN must be latched on</color>
+<color=#75715e>   * entry and is left latched by this method.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return whether migration could not be completed because the LN lock was denied.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>migratePendingLN</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Status variables are used to generate debug tracing info. */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN is no longer in use.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>migrated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN was in use and is migrated.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// This method completed.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>clearTarget</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// Node was non-resident when called.</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If wasCleaned is false we don't count statistics unless we migrate</color>
+<color=#75715e>     * the LN.  This avoids double counting.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>LN</color> <color=#f8f8f2>ln</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* This node was never written, no need to migrate. */</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* If the record has been deleted, the logrec is obsolete */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Get a non-blocking read lock on the LN.  A pending node is</color>
+<color=#75715e>       * already locked, but the original pending LSN may have changed.</color>
+<color=#75715e>       * We must lock the current LSN to guard against aborts.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>treeLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*noWait*/</color><color=#f8f8f2>);</color>
+        <color=#75715e>/* Don't allow this short-lived lock to be preempted/stolen. */</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>setPreemptable</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockRet</color> <color=#f92672>=</color>
+            <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>READ</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockRet</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * LN is currently locked by another Locker, so we can't</color>
+<color=#75715e>           * assume anything about the value of the LSN in the bin.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>nLNsLocked</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEmbeddedLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"LN is embedded although its associated logrec (at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>treeLsn</color>
+                <color=#f92672>+</color> <color=#e6db74>" does not have the embedded flag on"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Get the ln so that we can log it to its new position.</color>
+<color=#75715e>       * Notice that the fetchLN() call below will return null if the</color>
+<color=#75715e>       * slot is defunct and the LN has been purged by the cleaner.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>ln</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LN</color><color=#f8f8f2>)</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>ln</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ln</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>fetchLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>EVICT_LN</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>clearTarget</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>ID_DB_ID</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Don't migrate defunct LNs. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>ln</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>setKnownDeletedAndEvictLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Migrate the LN.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Do not pass a locker, because there is no need to lock the new</color>
+<color=#75715e>       * LSN, as done for user operations.  Another locker cannot attempt</color>
+<color=#75715e>       * to lock the new LSN until we're done, because we release the</color>
+<color=#75715e>       * lock before we release the BIN latch.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>logItem</color> <color=#f92672>=</color>
+          <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>log</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>db</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>null</color> <color=#75715e>/*locker*/</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>null</color> <color=#75715e>/*writeLockInfo*/</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*newEmbeddedLN*/</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+              <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiration</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+              <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isExpirationInHours</color><color=#f8f8f2>(),</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*currEmbeddedLN*/</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedSize</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*isInsertion*/</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>getMigrationRepContext</color><color=#f8f8f2>(</color><color=#f8f8f2>ln</color><color=#f8f8f2>));</color>
+
+      <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>updateEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>nLNsMigrated</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Lock new LSN on behalf of existing lockers. */</color>
+      <color=#f8f8f2>CursorImpl</color><color=#f8f8f2>.</color><color=#a6e22e>lockAfterLsnChange</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*excludeLocker*/</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>migrated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the node was originally non-resident, evict it now so that we</color>
+<color=#75715e>       * don't create more work for the evictor and reduce the cache</color>
+<color=#75715e>       * memory available to the application.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>clearTarget</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>evictLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>logFine</color><color=#f8f8f2>(</color><color=#f8f8f2>CLEAN_PENDING_LN</color><color=#f8f8f2>,</color> <color=#f8f8f2>ln</color><color=#f8f8f2>,</color> <color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>completed</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#f8f8f2>migrated</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the ReplicationContext to use for migrating the given LN. If VLSNs are preserved in</color>
+<color=#75715e>   * this Environment then the VLSN is logically part of the data record, and LN.getVLSNSequence</color>
+<color=#75715e>   * will return the VLSN, which should be included in the migrated LN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#f8f8f2>ReplicationContext</color> <color=#a6e22e>getMigrationRepContext</color><color=#f8f8f2>(</color><color=#f8f8f2>LN</color> <color=#f8f8f2>ln</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>vlsnSeq</color> <color=#f92672>=</color> <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNSequence</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnSeq</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>NO_REPLICATE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsnSeq</color><color=#f8f8f2>),</color> <color=#66d9ef>false</color> <color=#75715e>/*inReplicationStream*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Adds the DB ID to the pending DB set if it is being deleted but deletion is not yet complete.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>addPendingDB</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleteFinished</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>id</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>addPendingDB</color><color=#f8f8f2>(</color><color=#f8f8f2>id</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color> <color=#e6db74>"CleanAddPendingDB "</color> <color=#f92672>+</color> <color=#f8f8f2>id</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Send trace messages to the java.util.logger. Don't rely on the logger alone to conditionalize</color>
+<color=#75715e>   * whether we send this message, we don't even want to construct the message if the level is not</color>
+<color=#75715e>   * enabled.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>logFine</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>action</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Node</color> <color=#f8f8f2>node</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>dirtiedMigrated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>action</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>node</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>IN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" node="</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(((</color><color=#f8f8f2>IN</color><color=#f8f8f2>)</color> <color=#f8f8f2>node</color><color=#f8f8f2>).</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" logLsn="</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" complete="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>completed</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" obsolete="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsolete</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" dirtiedOrMigrated="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>dirtiedMigrated</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Release resources and update memory budget. Should only be called when this environment is</color>
+<color=#75715e>   * closed and will never be accessed again.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

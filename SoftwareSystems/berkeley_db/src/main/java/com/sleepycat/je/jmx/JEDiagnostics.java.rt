@@ -1,0 +1,279 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.jmx</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DbInternal</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Environment</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>javax.management.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * JEDiagnostics is a debugging mbean for a non replicated JE Environment. This is intended as a</color>
+<color=#75715e> * locus of field support functionality. While it may be used by the application developer, the</color>
+<color=#75715e> * primary use case is for a support situation. Currently much of this functionality is also</color>
+<color=#75715e> * available through the standard java.util.logging MBean.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>It is a concrete MBean created by registering a JE Environment as an MBean through setting the</color>
+<color=#75715e> * JEDiagnostics system property. It only works on an active JE Environment, and one Environment can</color>
+<color=#75715e> * only have one JEDiagnostics instance. There are two attributes and one operation:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p><u>Attributes:</u></color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>consoleHandlerLevel: which sets the console handler level.</color>
+<color=#75715e> *   <li>fileHandlerLevel: which sets the file handler level.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <u>Operations:</u></color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>resetLoggingLevel: which sets the level for the current loggers in the LogManager.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>We can use these attributes and operations to dynamically change the logging level for</color>
+<color=#75715e> * debugging purposes.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>JEDiagnostics</color> <color=#66d9ef>extends</color> <color=#f8f8f2>JEMBean</color> <color=#66d9ef>implements</color> <color=#f8f8f2>DynamicMBean</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* --------------------- Attributes -------------------------- */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CONSOLEHANDLER_LEVEL</color> <color=#f92672>=</color> <color=#e6db74>"consoleHandlerLevel"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>FILEHANDLER_LEVEL</color> <color=#f92672>=</color> <color=#e6db74>"fileHandlerLevel"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* ConsoleHandler. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>MBeanAttributeInfo</color> <color=#f8f8f2>ATT_CONSOLEHANDLER_LEVEL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>MBeanAttributeInfo</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>CONSOLEHANDLER_LEVEL</color><color=#f8f8f2>,</color> <color=#e6db74>"java.lang.String"</color><color=#f8f8f2>,</color> <color=#e6db74>"ConsoleHandler level."</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* FileHandler. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>MBeanAttributeInfo</color> <color=#f8f8f2>ATT_FILEHANDLER_LEVEL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>MBeanAttributeInfo</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>FILEHANDLER_LEVEL</color><color=#f8f8f2>,</color> <color=#e6db74>"java.lang.String"</color><color=#f8f8f2>,</color> <color=#e6db74>"FileHandler level."</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* --------------------- Operations -------------------------- */</color>
+
+  <color=#75715e>/* Operation names */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>OP_RESET_LOGGING</color> <color=#f92672>=</color> <color=#e6db74>"resetLoggerLevel"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Set the parameters and operation info for resetting logger's level. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>MBeanParameterInfo</color><color=#f92672>[]</color> <color=#f8f8f2>resetLoggingParams</color> <color=#f92672>=</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>MBeanParameterInfo</color><color=#f8f8f2>(</color><color=#e6db74>"Logger Name"</color><color=#f8f8f2>,</color> <color=#e6db74>"java.lang.String"</color><color=#f8f8f2>,</color> <color=#e6db74>"Specify the target logger."</color><color=#f8f8f2>),</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>MBeanParameterInfo</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"Logging Level"</color><color=#f8f8f2>,</color> <color=#e6db74>"java.lang.String"</color><color=#f8f8f2>,</color> <color=#e6db74>"The new logging level for the target logger."</color><color=#f8f8f2>)</color>
+  <color=#f8f8f2>};</color>
+
+  <color=#75715e>/* Reset logger's level operation. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>MBeanOperationInfo</color> <color=#f8f8f2>OP_RESET_LOGGING_LEVEL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>MBeanOperationInfo</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>OP_RESET_LOGGING</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Change the logging level for the specified logger."</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>resetLoggingParams</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"void"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>MBeanOperationInfo</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>protected</color> <color=#a6e22e>JEDiagnostics</color><color=#f8f8f2>(</color><color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>JEDiagnostics</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>initClassFields</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>currentClass</color> <color=#f92672>=</color> <color=#f8f8f2>JEDiagnostics</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#e6db74>"JEDiagnostics"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>DESCRIPTION</color> <color=#f92672>=</color> <color=#e6db74>"Logging Monitor on an open Environment."</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DynamicMBean#getAttribute */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>getAttribute</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>attributeName</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>MBeanException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attributeName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Attribute name can't be null."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attributeName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>CONSOLEHANDLER_LEVEL</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConsoleHandler</color><color=#f8f8f2>().</color><color=#a6e22e>getLevel</color><color=#f8f8f2>().</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attributeName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>FILEHANDLER_LEVEL</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHandler</color><color=#f8f8f2>().</color><color=#a6e22e>getLevel</color><color=#f8f8f2>().</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Attributes "</color> <color=#f92672>+</color> <color=#f8f8f2>attributeName</color> <color=#f92672>+</color> <color=#e6db74>" is not valid."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>MBeanException</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DynamicMBean#setAttribute */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setAttribute</color><color=#f8f8f2>(</color><color=#f8f8f2>Attribute</color> <color=#f8f8f2>attribute</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InvalidAttributeValueException</color><color=#f8f8f2>,</color> <color=#f8f8f2>MBeanException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attribute</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Attribute can't be null."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Sanity check parameters. */</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>attribute</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>attribute</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>name</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Attribute name can't be null."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidAttributeValueException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Attribute value for attribute "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" can't be null"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Level</color> <color=#f8f8f2>level</color> <color=#f92672>=</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>CONSOLEHANDLER_LEVEL</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConsoleHandler</color><color=#f8f8f2>().</color><color=#a6e22e>setLevel</color><color=#f8f8f2>(</color><color=#f8f8f2>level</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>FILEHANDLER_LEVEL</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHandler</color><color=#f8f8f2>().</color><color=#a6e22e>setLevel</color><color=#f8f8f2>(</color><color=#f8f8f2>level</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Attribute "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" is not valid."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NullPointerException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidAttributeValueException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Setting value for attribute "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>"is invalid because of "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecurityException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>MBeanException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Parse and return the level represented by an object. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Level</color> <color=#a6e22e>getLevel</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>level</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>level</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NullPointerException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Can't use null for level value."</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DynamicMBean#getAttributes */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>AttributeList</color> <color=#a6e22e>getAttributes</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>attributes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Sanity checking. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attributes</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Attributes can't be null"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>AttributeList</color> <color=#f8f8f2>results</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeList</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>attributes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>getAttribute</color><color=#f8f8f2>(</color><color=#f8f8f2>attributes</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>results</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Attribute</color><color=#f8f8f2>(</color><color=#f8f8f2>attributes</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#f8f8f2>value</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>results</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DynamicMBean#setAttributes */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>AttributeList</color> <color=#a6e22e>setAttributes</color><color=#f8f8f2>(</color><color=#f8f8f2>AttributeList</color> <color=#f8f8f2>attributes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Sanity checking. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>attributes</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Attribute list can't be null"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>AttributeList</color> <color=#f8f8f2>results</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AttributeList</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>attributes</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Attribute</color> <color=#f8f8f2>attr</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Attribute</color><color=#f8f8f2>)</color> <color=#f8f8f2>attributes</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>setAttribute</color><color=#f8f8f2>(</color><color=#f8f8f2>attr</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>attr</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>Object</color> <color=#f8f8f2>newValue</color> <color=#f92672>=</color> <color=#f8f8f2>getAttribute</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>results</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Attribute</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>newValue</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>results</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DynamicMBean#invoke */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>invoke</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>actionName</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>signature</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>MBeanException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Sanity checking. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>actionName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"ActionName can't be null."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>actionName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>OP_RESET_LOGGING</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>!=</color> <color=#ae81ff>2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Parameter is not valid"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>resetLoggingLevel</color><color=#f8f8f2>(((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>params</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>).</color><color=#a6e22e>trim</color><color=#f8f8f2>(),</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>params</color><color=#f92672>[</color><color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"ActionName: "</color> <color=#f92672>+</color> <color=#f8f8f2>actionName</color> <color=#f92672>+</color> <color=#e6db74>" is not valid."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Add the message for easiest deciphering of the problem. Since</color>
+<color=#75715e>       * the original exception cannot be transferred, send the exception</color>
+<color=#75715e>       * stack.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>MBeanException</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NullPointerException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>MBeanException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>doRegisterMBean</color><color=#f8f8f2>(</color><color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>registerMBean</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>JEDiagnostics</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>),</color> <color=#f8f8f2>jeName</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>MBeanAttributeInfo</color><color=#f92672>[]</color> <color=#a6e22e>getAttributeList</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>MBeanAttributeInfo</color><color=#f92672>></color> <color=#f8f8f2>attrList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>MBeanAttributeInfo</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>attrList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>ATT_CONSOLEHANDLER_LEVEL</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>).</color><color=#a6e22e>getFileHandler</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>attrList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>ATT_FILEHANDLER_LEVEL</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>attrList</color><color=#f8f8f2>.</color><color=#a6e22e>toArray</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>MBeanAttributeInfo</color><color=#f92672>[</color><color=#f8f8f2>attrList</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>addOperations</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>operationList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>OP_RESET_LOGGING_LEVEL</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

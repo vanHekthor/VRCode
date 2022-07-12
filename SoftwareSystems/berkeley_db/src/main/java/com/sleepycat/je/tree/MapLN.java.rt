@@ -1,0 +1,292 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.MemoryBudget</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.Loggable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.BasicLocker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockGrantType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockResult</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockType</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A MapLN represents a Leaf Node in the JE Db Mapping Tree.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>MapLNs contain a DatabaseImpl, which in turn contains three categories of information -</color>
+<color=#75715e> * database configuration information, the per-database File Summary utilization information, and</color>
+<color=#75715e> * each database's btree root. While LNs are written to the log as the result of API operations</color>
+<color=#75715e> * which create new data records, MapLNs are written to the log as a result of configuration</color>
+<color=#75715e> * changes, utilization information changes, or updates to the btree which cascade up the tree and</color>
+<color=#75715e> * result in a new root. Because they serve as a bridge between the application data btree and the</color>
+<color=#75715e> * db mapping tree, MapLNs must be written with special rules, and should only be written from</color>
+<color=#75715e> * DbTree.modifyDbRoot. The basic rule is that in order to ensure that the MapLN contains the proper</color>
+<color=#75715e> * btree root, the btree root latch is used to protect both any logging of the MapLN, and any</color>
+<color=#75715e> * updates to the root lsn.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Updates to the internal btree nodes obey a strict bottom up approach, in accordance with the</color>
+<color=#75715e> * log semantics which require that later log entries are known to supercede earlier log entries. In</color>
+<color=#75715e> * other words, for a btree that looks like MapLN | IN | BIN | LN we know that update operations</color>
+<color=#75715e> * cause the btree nodes must be logged in this order: LN, BIN, IN, MapLN, so that the reference to</color>
+<color=#75715e> * each on disk node is correct. (Note that logging order is special and different when the btree is</color>
+<color=#75715e> * initially created.)</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>However, MapLNs may need to be written to disk at arbitrary points in time in order to save</color>
+<color=#75715e> * database config or utilization data. Those writes don't have the time and context to be done in a</color>
+<color=#75715e> * cascading-upwards fashion. We ensure that MapLNs are not erroneously written with an out of sync</color>
+<color=#75715e> * root by requiring that DbTree.modifyDbRoot takes the root latch for the application data btree.</color>
+<color=#75715e> * RootINs are also written with the root latch, so it serves to ensure that the root doesn't change</color>
+<color=#75715e> * during the time when the MapLN is written. For example, suppose thread 1 is doing a cascading-up</color>
+<color=#75715e> * MapLN write, and thread 2 is doing an arbitrary-point MapLN write:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Thread 1 Thread 2 -------- -------- latch root latch BIN parent of MapLN log root IN log MapLN</color>
+<color=#75715e> * (Tree root) wants to log MapLN too -- but has to take to refer to new root IN root latch, so</color>
+<color=#75715e> * we'll get the right rootIN</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Without latching the root this could produce the following, incorrect log 30 LNa 40 BIN 50 IN</color>
+<color=#75715e> * (first version of root) 60 MapLN, refers to IN(50) ... 90 LNb 100 BIN 110 IN (second version of</color>
+<color=#75715e> * root) 120 CkptStart (the tree is not dirty, no IN will be logged during the ckpt interval)) ..</color>
+<color=#75715e> * something arbirarily writes out the MapLN 130 MapLN refers to first root, IN(50) <------</color>
+<color=#75715e> * impossible</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>While a MapLN can't be written out with the wrong root, it's possible for a rootIN to be</color>
+<color=#75715e> * logged without the MapLN, and for that rootIN not to be processed at recovery. Suppose a</color>
+<color=#75715e> * checkpoint begins and ends in the window between when a rootIN is written, and</color>
+<color=#75715e> * DbTree.modifyDbRoot is called: 300 log new root IN, update root reference in tree unlatch root</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>310 Checkpoint starts 320 Checkpoint ends ...if we crash here, before the MapLN is logged, ,</color>
+<color=#75715e> * we won't see the new root IN at lsn 300. However, the IN is non-txnal and will be recreated</color>
+<color=#75715e> * during reply of txnal information (LNs) by normal recovery processing.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>class</color> <color=#a6e22e>MapLN</color> <color=#66d9ef>extends</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BEGIN_TAG</color> <color=#f92672>=</color> <color=#e6db74>"<mapLN>"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>END_TAG</color> <color=#f92672>=</color> <color=#e6db74>"</mapLN>"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a new MapLn to hold a new databaseImpl. In the ideal world, we'd have a base LN class so</color>
+<color=#75715e>   * that this MapLN doesn't have a superfluous data field, but we want to optimize the LN class for</color>
+<color=#75715e>   * size and speed right now.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>MapLN</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>databaseImpl</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Create an empty MapLN, to be filled in from the log. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>MapLN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>databaseImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color><color=#75715e>//new DatabaseImpl();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>deleted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>makeDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Release all references to nodes held by this database. */</color>
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>setRoot</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseImpl</color> <color=#a6e22e>getDatabase</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDirty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>isDirty</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDirty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Does a fast check without acquiring the MapLN write-lock. This is important because the</color>
+<color=#75715e>   * overhead of requesting the lock is significant and unnecessary if this DB is open or the root</color>
+<color=#75715e>   * IN is resident. When there are lots of databases open, this method will be called often during</color>
+<color=#75715e>   * selection of BINs for eviction. [#13415]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEvictableInexact</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Always prohibit eviction when je.env.dbEviction=false. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnv</color><color=#f8f8f2>().</color><color=#a6e22e>getDbEviction</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isInUse</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>isRootResident</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Does a guaranteed check by acquiring the write-lock and then calling isEvictableInexact.</color>
+<color=#75715e>   * [#13415] Be sure to use the idDatabaseImpl, which owns this MapLN, rather than the databaseImpl</color>
+<color=#75715e>   * housed within the MapLN for the lock call. The databaseImpl field refers to the database that</color>
+<color=#75715e>   * the MapLN is representing. [#18524]</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isEvictable</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>evictable</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* To prevent DB open, get a write-lock on the MapLN. */</color>
+    <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnv</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>idDatabaseImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getIdDatabaseImpl</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockResult</color> <color=#f92672>=</color>
+          <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>idDatabaseImpl</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The isEvictableInexact result is guaranteed to hold true during</color>
+<color=#75715e>       * LN stripping if it is still true after acquiring the write-lock.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockResult</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color> <color=#f92672>&&</color> <color=#f8f8f2>isEvictableInexact</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * While holding both the BIN latch and a write-lock on the</color>
+<color=#75715e>         * MapLN, we are guaranteed that the DB is not currently open</color>
+<color=#75715e>         * or otherwise in use.  It cannot be subsequently opened or</color>
+<color=#75715e>         * used until the BIN latch is released, since the BIN latch</color>
+<color=#75715e>         * will block DbTree.getDb (called during DB open and by other</color>
+<color=#75715e>         * callers needing to use the database).  We will evict the LN</color>
+<color=#75715e>         * before releasing the BIN latch.  After releasing the BIN</color>
+<color=#75715e>         * latch, if a caller of DbTree.getDb is waiting on the BIN</color>
+<color=#75715e>         * latch, then it will fetch the evicted MapLN and proceed to</color>
+<color=#75715e>         * open/use the database.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>evictable</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Release the write-lock.  The BIN latch is still held. */</color>
+      <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>evictable</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Initialize a node that has been faulted in from the log. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setEnvironmentImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnv</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Compute the approximate size of this node in memory for evictor invocation purposes. Don't</color>
+<color=#75715e>   * count the treeAdmin memory, because that goes into a different bucket.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>MAPLN_OVERHEAD</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see LN#releaseMemoryBudget */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>releaseMemoryBudget</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>releaseTreeAdminMemory</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTreeAdminMemory</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTreeAdminMemory</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dumping</color>
+<color=#75715e>   */</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dumpString</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>beginTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>BEGIN_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>endTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>END_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<deleted val=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>deleted</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\">"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Logging</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Return the correct log entry type for a MapLN depends on whether it's transactional. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>getLogType</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>isInsert</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isTransactional</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_MAPLN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#75715e>// deleted</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>booleans</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleted</color> <color=#f92672>?</color> <color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>booleans</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>booleans</color> <color=#f92672>=</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>booleans</color> <color=#f92672>&</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Should never be replicated. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>Loggable</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Dump additional fields. Done this way so the additional info can be within the XML tags</color>
+<color=#75715e>   * defining the dumped log entry.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>databaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

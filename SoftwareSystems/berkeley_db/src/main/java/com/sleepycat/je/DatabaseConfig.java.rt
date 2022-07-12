@@ -1,0 +1,1439 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.trigger.PersistentTrigger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.trigger.ReplicatedDatabaseTrigger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.trigger.Trigger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Specifies the attributes of a database.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>There are two groups of database attributes: per-database handle attributes, and database-wide</color>
+<color=#75715e> * attributes. An attribute may be persistent/transient or mutable/immutable:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <table border="true"></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td>Scope</td></color>
+<color=#75715e> *     <td>Mutable</td></color>
+<color=#75715e> *     <td>Persistent</td></color>
+<color=#75715e> *     <td>Attribute</td></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td rowspan="4">Database-wide attribute</td></color>
+<color=#75715e> *     <td>True</td></color>
+<color=#75715e> *     <td>True</td></color>
+<color=#75715e> *     <td>{@link DatabaseConfig#getBtreeComparator() btree comparator}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getDuplicateComparator() duplicate comparator}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getKeyPrefixing() key prefixing}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getNodeMaxEntries() nodeMaxEntries}<br></color>
+<color=#75715e> *         <!--</color>
+<color=#75715e> *         {@link DatabaseConfig#getTriggers() triggers}<br></td></color>
+<color=#75715e> *         --></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td>True</td></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>{@link DatabaseConfig#getDeferredWrite() deferred write}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getTransactional() transactional}<br></td></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>True</td></color>
+<color=#75715e> *     <td></color>
+<color=#75715e> *         {@link DatabaseConfig#getSortedDuplicates() sorted duplicates}<br></color>
+<color=#75715e> *     </td></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>{@link DatabaseConfig#getTemporary() temporary}</td></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * <tr></color>
+<color=#75715e> *     <td>Per-database handle attributes</td></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>False</td></color>
+<color=#75715e> *     <td>{@link DatabaseConfig#getAllowCreate() allow create}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getExclusiveCreate() exclusive create}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getReadOnly() read only}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getCacheMode()}  read only}<br></color>
+<color=#75715e> *         {@link DatabaseConfig#getUseExistingConfig() use existing config}<br></color>
+<color=#75715e> *     </td></color>
+<color=#75715e> * </tr></color>
+<color=#75715e> * </table></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Persistent attributes will be saved in the log and remain in effect every time the environment</color>
+<color=#75715e> * is reopened. Transient attributes only remain in effect until:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>the database configuration is updated</color>
+<color=#75715e> *   <li>the database handle(per-database handle attributes) is closed, or all handles for this</color>
+<color=#75715e> *       database (database-wide attributes) are closed.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DatabaseConfig</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An instance created using the default constructor is initialized with the system's default</color>
+<color=#75715e>   * settings.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>DEFAULT</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseConfig</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>allowCreate</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>exclusiveCreate</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>transactional</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>readOnly</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sortedDuplicates</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>deferredWrite</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>temporary</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>keyPrefixing</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>replicated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>duplicateComparator</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>btreeComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>duplicateComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>overrideBtreeComparator</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>overrideDuplicateComparator</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>useExistingConfig</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>SecondaryAssociation</color> <color=#f8f8f2>secAssociation</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* User defined triggers associated with this database. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color> <color=#f8f8f2>triggers</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedList</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>overrideTriggers</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An instance created using the default constructor is initialized with the system's default</color>
+<color=#75715e>   * settings.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DatabaseConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the {@link Environment#openDatabase Environment.openDatabase} method to create the</color>
+<color=#75715e>   * database if it does not already exist.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param allowCreate If true, configure the {@link Environment#openDatabase</color>
+<color=#75715e>   *     Environment.openDatabase} method to create the database if it does not already exist.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setAllowCreate</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>allowCreate</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setAllowCreateVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>allowCreate</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setAllowCreateVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>allowCreate</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>allowCreate</color> <color=#f92672>=</color> <color=#f8f8f2>allowCreate</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the {@link Environment#openDatabase Environment.openDatabase} method is</color>
+<color=#75715e>   * configured to create the database if it does not already exist.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the {@link Environment#openDatabase Environment.openDatabase} method is</color>
+<color=#75715e>   *     configured to create the database if it does not already exist.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getAllowCreate</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>allowCreate</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configure the {@link Environment#openDatabase Environment.openDatabase} method to fail if the</color>
+<color=#75715e>   * database already exists.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The exclusiveCreate mode is only meaningful if specified with the allowCreate mode.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param exclusiveCreate If true, configure the {@link Environment#openDatabase</color>
+<color=#75715e>   *     Environment.openDatabase} method to fail if the database already exists.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setExclusiveCreate</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>exclusiveCreate</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setExclusiveCreateVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>exclusiveCreate</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setExclusiveCreateVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>exclusiveCreate</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exclusiveCreate</color> <color=#f92672>=</color> <color=#f8f8f2>exclusiveCreate</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the {@link Environment#openDatabase Environment.openDatabase} method is</color>
+<color=#75715e>   * configured to fail if the database already exists.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the {@link Environment#openDatabase Environment.openDatabase} method is</color>
+<color=#75715e>   *     configured to fail if the database already exists.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getExclusiveCreate</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>exclusiveCreate</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setSortedDuplicates</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>setSortedDuplicatesVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSortedDuplicatesVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>sortedDuplicates</color> <color=#f92672>=</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setKeyPrefixingVoid</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the database is configured to support records with duplicate keys.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the database is configured to support records with duplicate keys.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the key prefixing configuration. Note that key prefixing is always enabled for a</color>
+<color=#75715e>   * database with duplicates configured.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if key prefixing has been enabled in this database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getKeyPrefixing</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>keyPrefixing</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configure the database to support key prefixing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Key prefixing causes the representation of keys in the b-tree internal nodes to be split in</color>
+<color=#75715e>   * each BIN (bottom internal node) between the common prefix of all keys and the suffixes. Using</color>
+<color=#75715e>   * this often results in a more space-efficient representation in both the in-memory and on-disk</color>
+<color=#75715e>   * formats. In general the cost of maintaining the prefix separately is low compared to the</color>
+<color=#75715e>   * benefit, and therefore enabling key prefixing is strongly recommended.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When duplicate keys are configured for a database, key prefixing is also implicitly</color>
+<color=#75715e>   * configured. Without key prefixing, databases with duplicates would store keys inefficiently.</color>
+<color=#75715e>   * Key prefixing is therefore mandatory for databases with duplicates.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param keyPrefixing If true, enables keyPrefixing for the database.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   * @throws IllegalStateException if the keyPrefixing argument is false and {@link</color>
+<color=#75715e>   *     #setSortedDuplicates} has been called to configure duplicates. Key prefixing is therefore</color>
+<color=#75715e>   *     mandatory for databases with duplicates.</color>
+<color=#75715e>   * @see <a href="EnvironmentStats.html#cacheSizeOptimizations">Cache Statistics: Size</color>
+<color=#75715e>   *     Optimizations</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setKeyPrefixing</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>keyPrefixing</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setKeyPrefixingVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>keyPrefixing</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setKeyPrefixingVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>keyPrefixing</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>keyPrefixing</color> <color=#f92672>&&</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Key prefixing is mandatory for databases with duplicates"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keyPrefixing</color> <color=#f92672>=</color> <color=#f8f8f2>keyPrefixing</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactionalVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>transactional</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTransactionalVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>transactional</color> <color=#f92672>=</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the database open is enclosed within a transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the database open is enclosed within a transaction.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getTransactional</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the database in read-only mode.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Any attempt to modify items in the database will fail, regardless of the actual permissions</color>
+<color=#75715e>   * of any underlying files.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param readOnly If true, configure the database in read-only mode.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setReadOnly</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setReadOnlyVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setReadOnlyVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>readOnly</color> <color=#f92672>=</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the database is configured in read-only mode.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the database is configured in read-only mode.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getReadOnly</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the {@link Environment#openDatabase Environment.openDatabase} method to have a</color>
+<color=#75715e>   * B+Tree fanout of nodeMaxEntries.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The nodeMaxEntries parameter is only meaningful if specified with the allowCreate mode. See</color>
+<color=#75715e>   * {@link EnvironmentConfig#NODE_MAX_ENTRIES} for the valid value range, and the default value.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param nodeMaxEntries The maximum children per B+Tree node.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setNodeMaxEntries</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setNodeMaxEntriesVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setNodeMaxEntriesVoid</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nodeMaxEntries</color> <color=#f92672>=</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @deprecated this property no longer has any effect; {@link #setNodeMaxEntries} should be used</color>
+<color=#75715e>   *     instead.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setNodeMaxDupTreeEntries</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxDupTreeEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setNodeMaxDupTreeEntriesVoid</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxDupTreeEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the maximum number of children a B+Tree node can have.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method may be called at any time during the life of the application.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return The maximum number of children a B+Tree node can have.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNodeMaxEntries</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @deprecated this property no longer has any effect and zero is always returned; {@link</color>
+<color=#75715e>   *     #getNodeMaxEntries} should be used instead.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNodeMaxDupTreeEntries</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * By default, a byte by byte lexicographic comparison is used for btree keys. To customize the</color>
+<color=#75715e>   * comparison, supply a different Comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there are two ways to set the comparator: by specifying the class or by specifying</color>
+<color=#75715e>   * a serializable object. This method is used to specify a serializable object. The comparator</color>
+<color=#75715e>   * class must implement java.util.Comparator and must be serializable. JE will serialize the</color>
+<color=#75715e>   * Comparator and deserialize it when subsequently opening the database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a comparator needs to be initialized before it is used or needs access to the</color>
+<color=#75715e>   * environment's ClassLoader property, it may implement the {@link DatabaseComparator} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The Comparator.compare() method is passed the byte arrays that are stored in the database.</color>
+<color=#75715e>   * If you know how your data is organized in the byte array, then you can write a comparison</color>
+<color=#75715e>   * routine that directly examines the contents of the arrays. Otherwise, you have to reconstruct</color>
+<color=#75715e>   * your original objects, and then perform the comparison. See the <a</color>
+<color=#75715e>   * href="{@docRoot}/../GettingStartedGuide/comparator.html" target="_top">Getting Started</color>
+<color=#75715e>   * Guide</a> for examples.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><em>WARNING:</em> There are several special considerations that must be taken into account</color>
+<color=#75715e>   * when implementing a comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>Comparator instances are shared by multiple threads and comparator methods are called</color>
+<color=#75715e>   *       without any special synchronization. Therefore, comparators must be thread safe. In</color>
+<color=#75715e>   *       general no shared state should be used and any caching of computed values must be done</color>
+<color=#75715e>   *       with proper synchronization.</color>
+<color=#75715e>   *   <li>Because records are stored in the order determined by the Comparator, the Comparator's</color>
+<color=#75715e>   *       behavior must not change over time and therefore should not be dependent on any state</color>
+<color=#75715e>   *       that may change over time. In addition, although it is possible to change the comparator</color>
+<color=#75715e>   *       for an existing database, care must be taken that the new comparator provides compatible</color>
+<color=#75715e>   *       results with the previous comparator, or database corruption will occur.</color>
+<color=#75715e>   *   <li>JE uses comparators internally in a wide variety of circumstances, so custom comparators</color>
+<color=#75715e>   *       must be sure to return valid values for any two arbitrary keys. The user must not make</color>
+<color=#75715e>   *       any assumptions about the range of key values that might be compared. For example, it's</color>
+<color=#75715e>   *       possible for the comparator may be used against previously deleted values.</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A special type of comparator is a <em>partial comparator</em>, which allows for the keys of</color>
+<color=#75715e>   * a database to be updated, but only if the updates do not change the relative order of the keys.</color>
+<color=#75715e>   * For example, if a database uses strings as keys and a case-insensitive comparator, it is</color>
+<color=#75715e>   * possible to change the case of characters in the keys, as this will not change the ordering of</color>
+<color=#75715e>   * the keys. Another example is when the keys contain multiple fields but uniquely identify each</color>
+<color=#75715e>   * record with a single field. The partial comparator could then compare only the single</color>
+<color=#75715e>   * identifying field, allowing the rest of the fields to be updated. A query ({@link</color>
+<color=#75715e>   * Cursor#getSearchKey Cursor.getSearchKey}, for example) could then be performed by passing a</color>
+<color=#75715e>   * partial key that contains only the identifying field.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><strong>WARNING:</strong> To allow for key updates in situations like those described above,</color>
+<color=#75715e>   * all partial comparators must implement the {@link PartialComparator} tag interface. Otherwise,</color>
+<color=#75715e>   * BDB JE will raise an exception if an attempt is made to update a key in a database whose</color>
+<color=#75715e>   * comparators do not implement PartialComparator. See "Upgrading from JE 5.0 or earlier" in the</color>
+<color=#75715e>   * change log and the {@link PartialComparator} javadoc for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Another special type of comparator is a <em>binary equality</em> comparator, which considers</color>
+<color=#75715e>   * two keys to be equal if and only if they have the same length and they are equal byte-per-byte.</color>
+<color=#75715e>   * All binary equality comparators must implement the {@link BinaryEqualityComparator} interface.</color>
+<color=#75715e>   * The significance of binary equality comparators is that they make possible certain internal</color>
+<color=#75715e>   * optimizations, like the "blind puts" optimization, described in {@link</color>
+<color=#75715e>   * BinaryEqualityComparator}</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The comparator for an existing database will not be overridden unless</color>
+<color=#75715e>   * setOverrideBtreeComparator() is set to true.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setBtreeComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note: comparator may be null */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>validateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Btree"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * By default, a byte by byte lexicographic comparison is used for btree keys. To customize the</color>
+<color=#75715e>   * comparison, supply a different Comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there are two ways to set the comparator: by specifying the class or by specifying</color>
+<color=#75715e>   * a serializable object. This method is used to specify a Comparator class. The comparator class</color>
+<color=#75715e>   * must implement java.util.Comparator and must have a public zero-parameter constructor. JE will</color>
+<color=#75715e>   * store the class name and instantiate the Comparator by class name (using <code>Class.forName</color>
+<color=#75715e>   * </code> and <code>newInstance</code>) when subsequently opening the database. Because the</color>
+<color=#75715e>   * Comparator is instantiated using its default constructor, it should not be dependent on other</color>
+<color=#75715e>   * constructor parameters.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The Comparator.compare() method is passed the byte arrays that are stored in the database.</color>
+<color=#75715e>   * If you know how your data is organized in the byte array, then you can write a comparison</color>
+<color=#75715e>   * routine that directly examines the contents of the arrays. Otherwise, you have to reconstruct</color>
+<color=#75715e>   * your original objects, and then perform the comparison. See the <a</color>
+<color=#75715e>   * href="{@docRoot}/../GettingStartedGuide/comparator.html" target="_top">Getting Started</color>
+<color=#75715e>   * Guide</a> for examples.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a comparator needs to be initialized before it is used or needs access to the</color>
+<color=#75715e>   * environment's ClassLoader property, it may implement the {@link DatabaseComparator} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><em>WARNING:</em> There are several special considerations that must be taken into account</color>
+<color=#75715e>   * when implementing a comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>Comparator instances are shared by multiple threads and comparator methods are called</color>
+<color=#75715e>   *       without any special synchronization. Therefore, comparators must be thread safe. In</color>
+<color=#75715e>   *       general no shared state should be used and any caching of computed values must be done</color>
+<color=#75715e>   *       with proper synchronization.</color>
+<color=#75715e>   *   <li>Because records are stored in the order determined by the Comparator, the Comparator's</color>
+<color=#75715e>   *       behavior must not change over time and therefore should not be dependent on any state</color>
+<color=#75715e>   *       that may change over time. In addition, although it is possible to change the comparator</color>
+<color=#75715e>   *       for an existing database, care must be taken that the new comparator provides compatible</color>
+<color=#75715e>   *       results with the previous comparator, or database corruption will occur.</color>
+<color=#75715e>   *   <li>JE uses comparators internally in a wide variety of circumstances, so custom comparators</color>
+<color=#75715e>   *       must be sure to return valid values for any two arbitrary keys. The user must not make</color>
+<color=#75715e>   *       any assumptions about the range of key values that might be compared. For example, it's</color>
+<color=#75715e>   *       possible for the comparator may be used against previously deleted values.</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A special type of comparator is a <em>partial comparator</em>, which allows for the keys of</color>
+<color=#75715e>   * a database to be updated, but only if the updates do not change the relative order of the keys.</color>
+<color=#75715e>   * For example, if a database uses strings as keys and a case-insensitive comparator, it is</color>
+<color=#75715e>   * possible to change the case of characters in the keys, as this will not change the ordering of</color>
+<color=#75715e>   * the keys. Another example is when the keys contain multiple fields but uniquely identify each</color>
+<color=#75715e>   * record with a single field. The partial comparator could then compare only the single</color>
+<color=#75715e>   * identifying field, allowing the rest of the fields to be updated. A query ({@link</color>
+<color=#75715e>   * Cursor#getSearchKey Cursor.getSearchKey}, for example) could then be performed by passing a</color>
+<color=#75715e>   * partial key that contains only the identifying field.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><strong>WARNING:</strong> To allow for key updates in situations like those described above,</color>
+<color=#75715e>   * all partial comparators must implement the {@link PartialComparator} tag interface. See</color>
+<color=#75715e>   * "Upgrading from JE 5.0 or earlier" in the change log and the {@link PartialComparator} javadoc</color>
+<color=#75715e>   * for more information. Another special type of comparator is a <em>binary equality</em></color>
+<color=#75715e>   * comparator, which considers two keys to be equal if and only if they have the same length and</color>
+<color=#75715e>   * they are equal byte-per-byte. All binary equality comparators must implement the {@link</color>
+<color=#75715e>   * BinaryEqualityComparator} interface. The significance of binary equality comparators is that</color>
+<color=#75715e>   * they make possible certain internal optimizations, like the "blind puts" optimization,</color>
+<color=#75715e>   * described in {@link BinaryEqualityComparator}</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The comparator for an existing database will not be overridden unless</color>
+<color=#75715e>   * setOverrideBtreeComparator() is set to true.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setBtreeComparator</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]>></color> <color=#f8f8f2>btreeComparatorClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeComparatorClass</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]>></color> <color=#f8f8f2>btreeComparatorClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note: comparator may be null */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>validateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeComparatorClass</color><color=#f8f8f2>,</color> <color=#e6db74>"Btree"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the Comparator used for key comparison on this database. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#a6e22e>getBtreeComparator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the btree comparator is set by class name, not by serializable Comparator</color>
+<color=#75715e>   * object</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the comparator is set by class name, not by serializable Comparator object.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getBtreeComparatorByClassName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>btreeComparatorByClassName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets to true if the database exists and the btree comparator specified in this configuration</color>
+<color=#75715e>   * object should override the current comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param override Set to true to override the existing comparator.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setOverrideBtreeComparator</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setOverrideBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>override</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setOverrideBtreeComparatorVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>overrideBtreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>override</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the override setting for the btree comparator. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getOverrideBtreeComparator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>overrideBtreeComparator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * By default, a byte by byte lexicographic comparison is used for duplicate data items in a</color>
+<color=#75715e>   * duplicate set. To customize the comparison, supply a different Comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there are two ways to set the comparator: by specifying the class or by specifying</color>
+<color=#75715e>   * a serializable object. This method is used to specify a serializable object. The comparator</color>
+<color=#75715e>   * class must implement java.util.Comparator and must be serializable. JE will serialize the</color>
+<color=#75715e>   * Comparator and deserialize it when subsequently opening the database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The Comparator.compare() method is passed the byte arrays that are stored in the database.</color>
+<color=#75715e>   * If you know how your data is organized in the byte array, then you can write a comparison</color>
+<color=#75715e>   * routine that directly examines the contents of the arrays. Otherwise, you have to reconstruct</color>
+<color=#75715e>   * your original objects, and then perform the comparison. See the <a</color>
+<color=#75715e>   * href="{@docRoot}/../GettingStartedGuide/comparator.html" target="_top">Getting Started</color>
+<color=#75715e>   * Guide</a> for examples.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a comparator needs to be initialized before it is used or needs access to the</color>
+<color=#75715e>   * environment's ClassLoader property, it may implement the {@link DatabaseComparator} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><em>WARNING:</em> There are several special considerations that must be taken into account</color>
+<color=#75715e>   * when implementing a comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>Comparator instances are shared by multiple threads and comparator methods are called</color>
+<color=#75715e>   *       without any special synchronization. Therefore, comparators must be thread safe. In</color>
+<color=#75715e>   *       general no shared state should be used and any caching of computed values must be done</color>
+<color=#75715e>   *       with proper synchronization.</color>
+<color=#75715e>   *   <li>Because records are stored in the order determined by the Comparator, the Comparator's</color>
+<color=#75715e>   *       behavior must not change over time and therefore should not be dependent on any state</color>
+<color=#75715e>   *       that may change over time. In addition, although it is possible to change the comparator</color>
+<color=#75715e>   *       for an existing database, care must be taken that the new comparator provides compatible</color>
+<color=#75715e>   *       results with the previous comparator, or database corruption will occur.</color>
+<color=#75715e>   *   <li>JE uses comparators internally in a wide variety of circumstances, so custom comparators</color>
+<color=#75715e>   *       must be sure to return valid values for any two arbitrary keys. The user must not make</color>
+<color=#75715e>   *       any assumptions about the range of key values that might be compared. For example, it's</color>
+<color=#75715e>   *       possible for the comparator may be used against previously deleted values.</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A special type of comparator is a <em>partial comparator</em>, which allows for the keys of</color>
+<color=#75715e>   * a database to be updated, but only if the updates do not change the relative order of the keys.</color>
+<color=#75715e>   * For example, if a database uses strings as keys and a case-insensitive comparator, it is</color>
+<color=#75715e>   * possible to change the case of characters in the keys, as this will not change the ordering of</color>
+<color=#75715e>   * the keys. Another example is when the keys contain multiple fields but uniquely identify each</color>
+<color=#75715e>   * record with a single field. The partial comparator could then compare only the single</color>
+<color=#75715e>   * identifying field, allowing the rest of the fields to be updated. A query ({@link</color>
+<color=#75715e>   * Cursor#getSearchKey Cursor.getSearchKey}, for example) could then be performed by passing a</color>
+<color=#75715e>   * partial key that contains only the identifying field.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When using a partial duplicates comparator, it is possible to update the data for a</color>
+<color=#75715e>   * duplicate record, as long as only the non-identifying fields in the data are changed. See</color>
+<color=#75715e>   * {@link Cursor#putCurrent Cursor.putCurrent} for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><strong>WARNING:</strong> To allow for key updates in situations like those described above,</color>
+<color=#75715e>   * all partial comparators must implement the {@link PartialComparator} tag interface. See</color>
+<color=#75715e>   * "Upgrading from JE 5.0 or earlier" in the change log and the {@link PartialComparator} javadoc</color>
+<color=#75715e>   * for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Another special type of comparator is a <em>binary equality</em> comparator, which considers</color>
+<color=#75715e>   * two keys to be equal if and only if they have the same length and they are equal byte-per-byte.</color>
+<color=#75715e>   * All binary equality comparators must implement the {@link BinaryEqualityComparator} interface.</color>
+<color=#75715e>   * The significance of binary equality comparators is that they make possible certain internal</color>
+<color=#75715e>   * optimizations, like the "blind puts" optimization, described in {@link</color>
+<color=#75715e>   * BinaryEqualityComparator}</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The comparator for an existing database will not be overridden unless</color>
+<color=#75715e>   * setOverrideDuplicateComparator() is set to true.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setDuplicateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note: comparator may be null */</color>
+    <color=#f8f8f2>setDuplicateComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDuplicateComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note: comparator may be null */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>=</color> <color=#f8f8f2>validateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Duplicate"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * By default, a byte by byte lexicographic comparison is used for duplicate data items in a</color>
+<color=#75715e>   * duplicate set. To customize the comparison, supply a different Comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there are two ways to set the comparator: by specifying the class or by specifying</color>
+<color=#75715e>   * a serializable object. This method is used to specify a Comparator class. The comparator class</color>
+<color=#75715e>   * must implement java.util.Comparator and must have a public zero-parameter constructor. JE will</color>
+<color=#75715e>   * store the class name and instantiate the Comparator by class name (using <code>Class.forName</color>
+<color=#75715e>   * </code> and <code>newInstance</code>) when subsequently opening the database. Because the</color>
+<color=#75715e>   * Comparator is instantiated using its default constructor, it should not be dependent on other</color>
+<color=#75715e>   * constructor parameters.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The Comparator.compare() method is passed the byte arrays that are stored in the database.</color>
+<color=#75715e>   * If you know how your data is organized in the byte array, then you can write a comparison</color>
+<color=#75715e>   * routine that directly examines the contents of the arrays. Otherwise, you have to reconstruct</color>
+<color=#75715e>   * your original objects, and then perform the comparison. See the <a</color>
+<color=#75715e>   * href="{@docRoot}/../GettingStartedGuide/comparator.html" target="_top">Getting Started</color>
+<color=#75715e>   * Guide</a> for examples.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a comparator needs to be initialized before it is used or needs access to the</color>
+<color=#75715e>   * environment's ClassLoader property, it may implement the {@link DatabaseComparator} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><em>WARNING:</em> There are several special considerations that must be taken into account</color>
+<color=#75715e>   * when implementing a comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>Comparator instances are shared by multiple threads and comparator methods are called</color>
+<color=#75715e>   *       without any special synchronization. Therefore, comparators must be thread safe. In</color>
+<color=#75715e>   *       general no shared state should be used and any caching of computed values must be done</color>
+<color=#75715e>   *       with proper synchronization.</color>
+<color=#75715e>   *   <li>Because records are stored in the order determined by the Comparator, the Comparator's</color>
+<color=#75715e>   *       behavior must not change over time and therefore should not be dependent on any state</color>
+<color=#75715e>   *       that may change over time. In addition, although it is possible to change the comparator</color>
+<color=#75715e>   *       for an existing database, care must be taken that the new comparator provides compatible</color>
+<color=#75715e>   *       results with the previous comparator, or database corruption will occur.</color>
+<color=#75715e>   *   <li>JE uses comparators internally in a wide variety of circumstances, so custom comparators</color>
+<color=#75715e>   *       must be sure to return valid values for any two arbitrary keys. The user must not make</color>
+<color=#75715e>   *       any assumptions about the range of key values that might be compared. For example, it's</color>
+<color=#75715e>   *       possible for the comparator may be used against previously deleted values.</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A special type of comparator is a <em>partial comparator</em>, which allows for the keys of</color>
+<color=#75715e>   * a database to be updated, but only if the updates do not change the relative order of the keys.</color>
+<color=#75715e>   * For example, if a database uses strings as keys and a case-insensitive comparator, it is</color>
+<color=#75715e>   * possible to change the case of characters in the keys, as this will not change the ordering of</color>
+<color=#75715e>   * the keys. Another example is when the keys contain multiple fields but uniquely identify each</color>
+<color=#75715e>   * record with a single field. The partial comparator could then compare only the single</color>
+<color=#75715e>   * identifying field, allowing the rest of the fields to be updated. A query ({@link</color>
+<color=#75715e>   * Cursor#getSearchKey Cursor.getSearchKey}, for example) could then be performed by passing a</color>
+<color=#75715e>   * partial key that contains only the identifying field.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When using a partial duplicates comparator, it is possible to update the data for a</color>
+<color=#75715e>   * duplicate record, as long as only the non-identifying fields in the data are changed. See</color>
+<color=#75715e>   * {@link Cursor#putCurrent Cursor.putCurrent} for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p><strong>WARNING:</strong> To allow for key updates in situations like those described above,</color>
+<color=#75715e>   * all partial comparators must implement the {@link PartialComparator} tag interface. See</color>
+<color=#75715e>   * "Upgrading from JE 5.0 or earlier" in the change log and the {@link PartialComparator} javadoc</color>
+<color=#75715e>   * for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Another special type of comparator is a <em>binary equality</em> comparator, which considers</color>
+<color=#75715e>   * two keys to be equal if and only if they have the same length and they are equal byte-per-byte.</color>
+<color=#75715e>   * All binary equality comparators must implement the {@link BinaryEqualityComparator} interface.</color>
+<color=#75715e>   * The significance of binary equality comparators is that they make possible certain internal</color>
+<color=#75715e>   * optimizations, like the "blind puts" optimization, described in {@link</color>
+<color=#75715e>   * BinaryEqualityComparator}</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The comparator for an existing database will not be overridden unless</color>
+<color=#75715e>   * setOverrideDuplicateComparator() is set to true.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setDuplicateComparator</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]>></color> <color=#f8f8f2>duplicateComparatorClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setDuplicateComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparatorClass</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDuplicateComparatorVoid</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]>></color> <color=#f8f8f2>duplicateComparatorClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note: comparator may be null */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>=</color> <color=#f8f8f2>validateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparatorClass</color><color=#f8f8f2>,</color> <color=#e6db74>"Duplicate"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparatorByClassName</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the Comparator used for duplicate record comparison on this database. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#a6e22e>getDuplicateComparator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the duplicate comparator is set by class name, not by serializable Comparator</color>
+<color=#75715e>   * object.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the duplicate comparator is set by class name, not by serializable Comparator</color>
+<color=#75715e>   *     object.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getDuplicateComparatorByClassName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>duplicateComparatorByClassName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets to true if the database exists and the duplicate comparator specified in this</color>
+<color=#75715e>   * configuration object should override the current comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param override Set to true to override the existing comparator.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setOverrideDuplicateComparator</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setOverrideDuplicateComparatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>override</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setOverrideDuplicateComparatorVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>overrideDuplicateComparator</color> <color=#f92672>=</color> <color=#f8f8f2>override</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the override setting for the duplicate comparator. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getOverrideDuplicateComparator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>overrideDuplicateComparator</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Specifies the list of triggers associated with the database; triggers are executed in</color>
+<color=#75715e>   *     the order specified by this list.</color>
+<color=#75715e>   *     <p>This configuration parameter is only meaningful when configuring a <code>Primary</code></color>
+<color=#75715e>   *     database.</color>
+<color=#75715e>   *     <p>The type of the trigger specified in the list must match the type of database being</color>
+<color=#75715e>   *     configured. For example, the trigger object must implement the <code></color>
+<color=#75715e>   *     ReplicatedDatabaseTrigger</code> interface if it's used to configure a replicated database.</color>
+<color=#75715e>   *     <p>Some of the incorrect uses of this parameter are detected during calls to {@link</color>
+<color=#75715e>   *     Environment#openDatabase Environment.openDatabase} or {@link</color>
+<color=#75715e>   *     Environment#openSecondaryDatabase Environment.openSecondaryDatabase} and will result in an</color>
+<color=#75715e>   *     <code>IllegalArgumentException</code>.</color>
+<color=#75715e>   * @param triggers the list of database triggers to be associated with the environment.</color>
+<color=#75715e>   * @throws IllegalArgumentException If the triggers in the list do not have unique names, have</color>
+<color=#75715e>   *     conflicting types (e.g. only a subset implement {@link ReplicatedDatabaseTrigger</color>
+<color=#75715e>   *     ReplicatedDatabaseTrigger}), or do not implement {@link ReplicatedDatabaseTrigger</color>
+<color=#75715e>   *     ReplicatedDatabaseTrigger} for a replicated database.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color> <color=#f8f8f2>triggers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setTriggersVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>triggers</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTriggersVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color> <color=#f8f8f2>triggers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>triggers</color> <color=#f92672>=</color> <color=#f8f8f2>triggers</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>triggers</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>triggers</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>checkTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>triggers</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Returns the list of configured database triggers.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color> <color=#a6e22e>getTriggers</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>triggers</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Set to true if the database exists and the {@link PersistentTrigger}s in the trigger</color>
+<color=#75715e>   *     list specified in this configuration object should override those in the current list of</color>
+<color=#75715e>   *     triggers. Note that any transient triggers that are specified are always configured,</color>
+<color=#75715e>   *     because they do not override existing triggers.</color>
+<color=#75715e>   * @param override Set to true to override the existing comparator.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setOverrideTriggers</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setOverrideTriggersVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>override</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setOverrideTriggersVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>override</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>overrideTriggers</color> <color=#f92672>=</color> <color=#f8f8f2>override</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Returns the override setting for triggers.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getOverrideTriggers</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>overrideTriggers</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the temporary database option.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Temporary databases operate internally in deferred-write mode to provide reduced disk I/O</color>
+<color=#75715e>   * and increased concurrency. But unlike an ordinary deferred-write database, the information in a</color>
+<color=#75715e>   * temporary database is not durable or persistent.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A temporary database is not flushed to disk when the database is closed or when a checkpoint</color>
+<color=#75715e>   * is performed, and the Database.sync method may not be called. When all handles for a temporary</color>
+<color=#75715e>   * database are closed, the database is automatically removed. If a crash occurs before closing a</color>
+<color=#75715e>   * temporary database, the database will be automatically removed when the environment is</color>
+<color=#75715e>   * re-opened.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that although temporary databases can page to disk if the cache is not large enough to</color>
+<color=#75715e>   * hold the databases, they are much more efficient if the database remains in memory. See the JE</color>
+<color=#75715e>   * FAQ on the Oracle Technology Network site for information on how to estimate the cache size</color>
+<color=#75715e>   * needed by a given database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See the {@link <a href="{@docRoot}/../GettingStartedGuide/DB.html#tempdbje">Getting Started</color>
+<color=#75715e>   * Guide, Database chapter</a>} for a full description of temporary databases.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param temporary if true, the database will be opened as a temporary database.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setTemporary</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>temporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setTemporaryVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>temporary</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTemporaryVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>temporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>temporary</color> <color=#f92672>=</color> <color=#f8f8f2>temporary</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the temporary database option.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return boolean if true, the database is temporary.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getTemporary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>temporary</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the deferred-write option.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Deferred-write databases have reduced disk I/O and improved concurrency. Disk I/O is reduced</color>
+<color=#75715e>   * when data records are frequently modified or deleted. The information in a deferred-write</color>
+<color=#75715e>   * database is not guaranteed to be durable or persistent until {@link Database#close} or {@link</color>
+<color=#75715e>   * Database#sync} is called, or a checkpoint is performed. Since the usual write ahead logging</color>
+<color=#75715e>   * system is relaxed in order to improve performance, if the environment crashes before a {@link</color>
+<color=#75715e>   * Database#sync} or {@link Database#close}, none, all, or a unpredictable set of the operations</color>
+<color=#75715e>   * previously done may be persistent.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After a deferred-write database is closed it may be re-opened as an ordinary transactional</color>
+<color=#75715e>   * or non-transactional database. For example, this can be used to initially load a large data set</color>
+<color=#75715e>   * in deferred-write mode and then switch to transactional mode for subsequent operations.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that although deferred-write databases can page to disk if the cache is not large</color>
+<color=#75715e>   * enough to hold the databases, they are much more efficient if the database remains in memory.</color>
+<color=#75715e>   * See the JE FAQ on the Oracle Technology Network site for information on how to estimate the</color>
+<color=#75715e>   * cache size needed by a given database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See the {@link <a href="{@docRoot}/../GettingStartedGuide/DB.html#dwdatabase">Getting</color>
+<color=#75715e>   * Started Guide, Database chapter</a>} for a full description of deferred-write databases.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param deferredWrite if true, the database will be opened as a deferred-write database.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setDeferredWrite</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setDeferredWriteVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>deferredWrite</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDeferredWriteVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>deferredWrite</color> <color=#f92672>=</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the deferred-write option.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return boolean if true, deferred-write is enabled.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getDeferredWrite</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to set the comparator when filling in a configuration from an existing database. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setBtreeComparatorInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>byClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>btreeComparator</color> <color=#f92672>=</color> <color=#f8f8f2>comparator</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>btreeComparatorByClassName</color> <color=#f92672>=</color> <color=#f8f8f2>byClassName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to set the comparator when filling in a configuration from an existing database. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setDuplicateComparatorInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>byClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>duplicateComparator</color> <color=#f92672>=</color> <color=#f8f8f2>comparator</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>duplicateComparatorByClassName</color> <color=#f92672>=</color> <color=#f8f8f2>byClassName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Setting useExistingConfig to true allows a program to open a database without knowing a prior</color>
+<color=#75715e>   * what its configuration is. For example, if you want to open a database without knowing whether</color>
+<color=#75715e>   * it contains sorted duplicates or not, you can set this property to true. In general, this is</color>
+<color=#75715e>   * used by the JE utilities, to avoid having to know the configuration of a database. The</color>
+<color=#75715e>   * databases should be opened readOnly when this property is set to true.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param useExistingConfig true if this Database should be opened using the existing</color>
+<color=#75715e>   *     configuration.</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setUseExistingConfig</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>useExistingConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setUseExistingConfigVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>useExistingConfig</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setUseExistingConfigVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>useExistingConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>useExistingConfig</color> <color=#f92672>=</color> <color=#f8f8f2>useExistingConfig</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the value of the useExistingConfig property.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the value of the useExistingConfig property.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getUseExistingConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>useExistingConfig</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the default {@code CacheMode} used for operations performed on this database. If this</color>
+<color=#75715e>   * property is non-null, it overrides the default specified using {@link</color>
+<color=#75715e>   * EnvironmentConfig#setCacheMode} for operations on this database. The default cache mode may be</color>
+<color=#75715e>   * overridden on a per-record or per-operation basis using {@link Cursor#setCacheMode}, {@link</color>
+<color=#75715e>   * ReadOptions#setCacheMode(CacheMode)} or {@link WriteOptions#setCacheMode(CacheMode)}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cacheMode is the default {@code CacheMode} used for operations performed on this</color>
+<color=#75715e>   *     database. If {@code null} is specified, the environment default will be used.</color>
+<color=#75715e>   * @see CacheMode for further details.</color>
+<color=#75715e>   * @since 4.0.97</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setCacheMode</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setCacheModeVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>cacheMode</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setCacheModeVoid</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cacheMode</color> <color=#f92672>=</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the default {@code CacheMode} used for operations performed on this database, or null</color>
+<color=#75715e>   * if the environment default is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the default {@code CacheMode} used for operations performed on this database, or null</color>
+<color=#75715e>   *     if the environment default is used.</color>
+<color=#75715e>   * @see #setCacheMode</color>
+<color=#75715e>   * @since 4.0.97</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>CacheMode</color> <color=#a6e22e>getCacheMode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures a database to be replicated or non-replicated, in a replicated Environment. By</color>
+<color=#75715e>   * default this property is true, meaning that by default a database is replicated in a replicated</color>
+<color=#75715e>   * Environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In a non-replicated Environment, this property is ignored. All databases are non-replicated</color>
+<color=#75715e>   * in a non-replicated Environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see <a href="rep/ReplicatedEnvironment.html#nonRepDbs">Non-replicated Databases in a</color>
+<color=#75715e>   *     Replicated Environment</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setReplicated</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setReplicatedVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>replicated</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setReplicatedVoid</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replicated</color> <color=#f92672>=</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the replicated property for the database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method returns true by default. However, in a non-replicated Environment, this property</color>
+<color=#75715e>   * is ignored. All databases are non-replicated in a non-replicated Environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #setReplicated</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getReplicated</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Configures a SecondaryAssociation that is used to define primary-secondary associations</color>
+<color=#75715e>   *     for a group of primary and secondary databases. The same SecondaryAssociation instance must</color>
+<color=#75715e>   *     be configured on the primary and secondary databases.</color>
+<color=#75715e>   * @see SecondaryAssociation</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>setSecondaryAssociation</color><color=#f8f8f2>(</color><color=#f8f8f2>SecondaryAssociation</color> <color=#f8f8f2>association</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>setSecondaryAssociationVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>association</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSecondaryAssociationVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>SecondaryAssociation</color> <color=#f8f8f2>association</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>secAssociation</color> <color=#f92672>=</color> <color=#f8f8f2>association</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For internal use only.</color>
+<color=#75715e>   *     <p>Returns the configured SecondaryAssociation.</color>
+<color=#75715e>   * @see #setSecondaryAssociation</color>
+<color=#75715e>   * @see SecondaryAssociation</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>SecondaryAssociation</color> <color=#a6e22e>getSecondaryAssociation</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>secAssociation</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a copy of this configuration object.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @deprecated As of JE 4.0.13, replaced by {@link DatabaseConfig#clone()}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>cloneConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>clone</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a copy of this configuration object. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>clone</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseConfig</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>CloneNotSupportedException</color> <color=#f8f8f2>willNeverOccur</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For JCA Database handle caching.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via JEConnection.openDatabase.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>validate</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#f8f8f2>DatabaseConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>txnMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>transactional</color> <color=#f92672>==</color> <color=#f8f8f2>transactional</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>roMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>readOnly</color> <color=#f92672>==</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>sdMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>sortedDuplicates</color> <color=#f92672>==</color> <color=#f8f8f2>sortedDuplicates</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>dwMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getDeferredWrite</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>btCmpMatch</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>overrideBtreeComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>btCmpMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparatorByClassName</color> <color=#f92672>!=</color> <color=#f8f8f2>btreeComparatorByClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>btCmpMatch</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparatorByClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>btCmpMatch</color> <color=#f92672>=</color> <color=#f8f8f2>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>btCmpMatch</color> <color=#f92672>=</color>
+            <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>objectToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Btree"</color><color=#f8f8f2>),</color>
+                <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>objectToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Btree"</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>dtCmpMatch</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>overrideDuplicateComparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dtCmpMatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparatorByClassName</color> <color=#f92672>!=</color> <color=#f8f8f2>duplicateComparatorByClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dtCmpMatch</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparatorByClassName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dtCmpMatch</color> <color=#f92672>=</color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dtCmpMatch</color> <color=#f92672>=</color>
+            <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>objectToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Duplicate"</color><color=#f8f8f2>),</color>
+                <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>objectToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color><color=#f8f8f2>,</color> <color=#e6db74>"Duplicate"</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnMatch</color> <color=#f92672>&&</color> <color=#f8f8f2>roMatch</color> <color=#f92672>&&</color> <color=#f8f8f2>sdMatch</color> <color=#f92672>&&</color> <color=#f8f8f2>dwMatch</color> <color=#f92672>&&</color> <color=#f8f8f2>btCmpMatch</color> <color=#f92672>&&</color> <color=#f8f8f2>dtCmpMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>message</color> <color=#f92672>=</color>
+        <color=#f8f8f2>genDatabaseConfigMismatchMessage</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>txnMatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>roMatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>sdMatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>dwMatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>btCmpMatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>dtCmpMatch</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>genDatabaseConfigMismatchMessage</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>txnMatch</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>roMatch</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>sdMatch</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>dwMatch</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>btCmpMatch</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>dtCmpMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"The following DatabaseConfig parameters for the\n"</color>
+                <color=#f92672>+</color> <color=#e6db74>"cached Database do not match the parameters for the\n"</color>
+                <color=#f92672>+</color> <color=#e6db74>"requested Database:\n"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>txnMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Transactional\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>roMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Read-Only\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>sdMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Sorted Duplicates\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>dwMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Deferred Write"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>btCmpMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Btree Comparator\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>dtCmpMatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Duplicate Comparator\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks that this comparator can be serialized by JE.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via setBtreeComparator and setDuplicateComparator</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#a6e22e>validateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>comparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>comparatorToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>comparator</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*byClassName*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>comparator</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>+</color> <color=#e6db74>" comparator is not valid."</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks that this comparator class can be instantiated by JE.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via setBtreeComparator and setDuplicateComparator</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#a6e22e>validateComparator</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]>></color> <color=#f8f8f2>comparatorClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>comparatorClass</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>Comparator</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>comparatorClass</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>comparatorClass</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" is is not valid as a "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>type</color>
+              <color=#f92672>+</color> <color=#e6db74>" comparator because it does not "</color>
+              <color=#f92672>+</color> <color=#e6db74>" implement java.util.Comparator."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>DatabaseImpl</color><color=#f8f8f2>.</color><color=#a6e22e>instantiateComparator</color><color=#f8f8f2>(</color><color=#f8f8f2>comparatorClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>type</color>
+              <color=#f92672>+</color> <color=#e6db74>" comparator is not valid. "</color>
+              <color=#f92672>+</color> <color=#e6db74>"Perhaps you have not implemented a zero-parameter "</color>
+              <color=#f92672>+</color> <color=#e6db74>"constructor for the comparator or the comparator class "</color>
+              <color=#f92672>+</color> <color=#e6db74>"cannot be found."</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks that this database configuration is valid for a new, non-existant database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via Environment.openDatabase and openSecondaryDatabase</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>validateForNewDb</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"DatabaseConfig.setReadOnly() must be set to false "</color> <color=#f92672>+</color> <color=#e6db74>"when creating a Database"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>transactional</color> <color=#f92672>&&</color> <color=#f8f8f2>deferredWrite</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"deferredWrite mode is not supported for transactional "</color> <color=#f92672>+</color> <color=#e6db74>"databases"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For unit tests, checks that the database configuration attributes that are saved persistently</color>
+<color=#75715e>   * are equal.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>persistentEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>sortedDuplicates</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>sortedDuplicates</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>temporary</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>temporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replicated</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>replicated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeMaxEntries</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>nodeMaxEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(((</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color>
+        <color=#f92672>||</color> <color=#f8f8f2>((</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>btreeComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(((</color><color=#f8f8f2>duplicateComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color>
+        <color=#f92672>||</color> <color=#f8f8f2>((</color><color=#f8f8f2>duplicateComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>duplicateComparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>duplicateComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>duplicateComparator</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Perform validations at database open time on the completed DbConfig object. Inter-attribute</color>
+<color=#75715e>   * checks are done here.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>validateOnDbOpen</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dbIsReplicated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>getDeferredWrite</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>getTemporary</color><color=#f8f8f2>())</color>
+        <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>getDeferredWrite</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>getTransactional</color><color=#f8f8f2>())</color>
+        <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>getTemporary</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>getTransactional</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Attempted to open Database "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>databaseName</color>
+              <color=#f92672>+</color> <color=#e6db74>" and two ore more of the following exclusive properties"</color>
+              <color=#f92672>+</color> <color=#e6db74>" are true: deferredWrite, temporary, transactional"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>triggers</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>triggers</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>replicatedTriggers</color> <color=#f92672>=</color> <color=#f8f8f2>checkTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>triggers</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbIsReplicated</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>replicatedTriggers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"For a replicated Database, triggers must implement "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>ReplicatedDatabaseTrigger</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks that the triggers in the list have consistent definitions.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param triggerList the list of triggers to be checked</color>
+<color=#75715e>   * @return true if the list consists of just replicated triggers, false if it consists entirely of</color>
+<color=#75715e>   *     non-replicated triggers.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the list had triggers with duplicate names or the types</color>
+<color=#75715e>   *     were not consistent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>checkTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Trigger</color><color=#f92672>></color> <color=#f8f8f2>triggerList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>replicatedTrigger</color> <color=#f92672>=</color> <color=#f8f8f2>triggerList</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ReplicatedDatabaseTrigger</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>triggerNames</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Trigger</color> <color=#f8f8f2>trigger</color> <color=#f8f8f2>:</color> <color=#f8f8f2>triggerList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Note that we do not disallow the unsupported PersistentTrigger</color>
+<color=#75715e>       * or ReplicatedDatabaseTrigger intefaces here, to enable the</color>
+<color=#75715e>       * continued testing of these partially implemented features.</color>
+<color=#75715e>       *</color>
+<color=#75715e>      if (trigger instanceof PersistentTrigger) {</color>
+<color=#75715e>          throw new IllegalArgumentException</color>
+<color=#75715e>              ("PeristentTrigger not supported: " + trigger.getName());</color>
+<color=#75715e>      }</color>
+<color=#75715e>      */</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>triggerNames</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>trigger</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Duplicate trigger name:"</color> <color=#f92672>+</color> <color=#f8f8f2>trigger</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replicatedTrigger</color> <color=#f92672>!=</color> <color=#f8f8f2>(</color><color=#f8f8f2>trigger</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ReplicatedDatabaseTrigger</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Conflicting trigger types in list:"</color> <color=#f92672>+</color> <color=#f8f8f2>triggerList</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicatedTrigger</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Combine the per-Database handle and Database-wide properties for a database handle.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param dbImpl the underlying DatabaseImpl for a database handle, which provides the</color>
+<color=#75715e>   *     Database-wide properties</color>
+<color=#75715e>   * @param dbHandleConfig DatabaseConfig field for the same database handle, which provides the</color>
+<color=#75715e>   *     per-Database properties.</color>
+<color=#75715e>   * @return a DatabaseConfig which includes the correct Database-wide and per-Database handle</color>
+<color=#75715e>   *     properties.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#f8f8f2>DatabaseConfig</color> <color=#a6e22e>combineConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbHandleConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>showConfig</color> <color=#f92672>=</color> <color=#f8f8f2>dbHandleConfig</color><color=#f8f8f2>.</color><color=#a6e22e>cloneConfig</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set the Database-wide properties from the DatabaseImpl, since they</color>
+<color=#75715e>     * might have changed from other database handles.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Note: sorted duplicates, temporary and replicated attributes are not</color>
+<color=#75715e>     * mutable and were checked at handle creation to make sure these</color>
+<color=#75715e>     * properties in dbHandleConfig are consistent with</color>
+<color=#75715e>     * DatabaseImpl. They're still set here in case the useExistingConfig</color>
+<color=#75715e>     * property is set, and those field were not initialized.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* mutable, persistent, database wide attributes. */</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setBtreeComparatorInternal</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getBtreeComparator</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getBtreeComparatorByClass</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setDuplicateComparatorInternal</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDuplicateComparator</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDuplicateComparatorByClass</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setKeyPrefixing</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyPrefixing</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeMaxEntries</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeMaxTreeEntries</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTriggers</color><color=#f8f8f2>());</color>
+
+      <color=#75715e>/* mutable, but non-persistent attributes. */</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setDeferredWrite</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDurableDeferredWrite</color><color=#f8f8f2>());</color>
+
+      <color=#75715e>/* not mutable, but initialized in the showConfig. */</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setReplicated</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setSortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>showConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTemporary</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isTemporary</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>showConfig</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the values for each configuration attribute.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the values for each configuration attribute.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"allowCreate="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>allowCreate</color>
+        <color=#f92672>+</color> <color=#e6db74>"\nexclusiveCreate="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>exclusiveCreate</color>
+        <color=#f92672>+</color> <color=#e6db74>"\ntransactional="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>transactional</color>
+        <color=#f92672>+</color> <color=#e6db74>"\nreadOnly="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>readOnly</color>
+        <color=#f92672>+</color> <color=#e6db74>"\nsortedDuplicates="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>sortedDuplicates</color>
+        <color=#f92672>+</color> <color=#e6db74>"\ndeferredWrite="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>deferredWrite</color>
+        <color=#f92672>+</color> <color=#e6db74>"\ntemporary="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>temporary</color>
+        <color=#f92672>+</color> <color=#e6db74>"\nkeyPrefixing="</color>
+        <color=#f92672>+</color> <color=#f8f8f2>keyPrefixing</color>
+        <color=#f92672>+</color> <color=#e6db74>"\n"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

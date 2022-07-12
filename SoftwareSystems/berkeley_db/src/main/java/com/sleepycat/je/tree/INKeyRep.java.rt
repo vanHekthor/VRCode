@@ -1,0 +1,679 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DupKeyData</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.MemoryBudget</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.evictor.Evictor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.SizeofMarker</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Arrays</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Comparator</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The abstract class that defines the various formats used to represent the keys associated with</color>
+<color=#75715e> * the IN node. The class is also used to store embedded records, where the actual key and the data</color>
+<color=#75715e> * portion of a record are stored together as a single byte sequence.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>There are currently two supported representations:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ol></color>
+<color=#75715e> *   <li>A default representation <code>Default</code> that's capable of holding any set of keys.</color>
+<color=#75715e> *   <li>A compact representation <code>MaxKeySize</code> that's more efficient for holding small</color>
+<color=#75715e> *       keys (LTE 16 bytes) in length. If key prefixing is in use this represents the unprefixed</color>
+<color=#75715e> *       part of the key, since that's what is stored in this array.</color>
+<color=#75715e> * </ol></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The choice of representation is made when an IN node is first read in from the log. The <code></color>
+<color=#75715e> * MaxKeySize</code> representation is only used when it is more storage efficient than the default</color>
+<color=#75715e> * representation for the set of keys currently associated with the IN.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that no attempt is currently made to optimize the storage representation as keys are</color>
+<color=#75715e> * added to, or removed from, the <code>Default</code> representation to minimize the chances of</color>
+<color=#75715e> * transitionary "back and forth" representation changes that could prove to be expensive.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>INKeyRep</color> <color=#66d9ef>extends</color> <color=#f8f8f2>INArrayRep</color><color=#f92672><</color><color=#f8f8f2>INKeyRep</color><color=#f8f8f2>,</color> <color=#f8f8f2>INKeyRep</color><color=#f8f8f2>.</color><color=#a6e22e>Type</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The different representations for keys. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>Type</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>DEFAULT</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>MAX_KEY_SIZE</color>
+  <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>INKeyRep</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>int</color> <color=#a6e22e>length</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the key bytes mem usage is accounted for internally here, or false if each key</color>
+<color=#75715e>   * has a separate byte array and its mem usage is accounted for by the parent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>accountsForKeyByteMemUsage</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getFullKey</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>int</color> <color=#a6e22e>compareKeys</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** The default representation that's capable of storing keys of any size. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>Default</color> <color=#66d9ef>extends</color> <color=#f8f8f2>INKeyRep</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>keys</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Default</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keys</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>nodeMaxEntries</color><color=#f92672>][]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Default</color><color=#f8f8f2>(</color><color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#f8f8f2>SizeofMarker</color> <color=#f8f8f2>marker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keys</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>Default</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[][]</color> <color=#f8f8f2>keys</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keys</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>capacity</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Default</color><color=#f8f8f2>(</color><color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>copyOfRange</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>capacity</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Type</color> <color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Type</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>combine</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * TODO #21488: optimize this to avoid creation of new combined</color>
+<color=#75715e>       * key, when possible.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>),</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>suffix</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>suffix</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>suffix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>suffix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>suffix</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getFullKey</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prefix</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>suffix</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>suffix</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>suffix</color> <color=#f92672>=</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>prefixLen</color> <color=#f92672>=</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>suffixLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>suffixLen</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyLength</color><color=#f8f8f2>(</color><color=#f8f8f2>suffix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>suffix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>suffixLen</color> <color=#f92672>=</color> <color=#f8f8f2>suffix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>prefixLen</color> <color=#f92672>+</color> <color=#f8f8f2>suffixLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefixLen</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>suffix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefixLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>suffixLen</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compareKeys</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>comparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>myKey</color> <color=#f92672>=</color> <color=#f8f8f2>getFullKey</color><color=#f8f8f2>(</color><color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareKeys</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>comparator</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>cmp</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prefix</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>compareSuffixes</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>cmp</color> <color=#f92672>=</color>
+          <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>),</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cmp</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyOffset</color> <color=#f92672>=</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>compareSuffixes</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>cmp</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>compareSuffixes</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyOff</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>myKey</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>idx</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>myKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>myKey</color> <color=#f92672>=</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyLength</color><color=#f8f8f2>(</color><color=#f8f8f2>myKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>myKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKeyLen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>from</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>to</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>n</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>from</color><color=#f8f8f2>,</color> <color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>to</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Evolves to the MaxKeySize representation if that is more efficient for the current set of</color>
+<color=#75715e>     * keys. Note that since all the keys must be examined to make the decision, there is a</color>
+<color=#75715e>     * reasonable cost to the method and it should not be invoked indiscriminately.</color>
+<color=#75715e>     */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>compact</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>></color> <color=#f8f8f2>MaxKeySize</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_KEYS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>compactMaxKeyLength</color> <color=#f92672>=</color> <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>getCompactMaxKeyLength</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>compactMaxKeyLength</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>keyCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxKeyLength</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>defaultKeyBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f8f8f2>:</color> <color=#f8f8f2>keys</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>keyCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>></color> <color=#f8f8f2>maxKeyLength</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>maxKeyLength</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxKeyLength</color> <color=#f92672>></color> <color=#f8f8f2>compactMaxKeyLength</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>defaultKeyBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>defaultSizeWithKeys</color> <color=#f92672>=</color> <color=#f8f8f2>calculateMemorySize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>defaultKeyBytes</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>defaultSizeWithKeys</color> <color=#f92672>></color> <color=#f8f8f2>MaxKeySize</color><color=#f8f8f2>.</color><color=#a6e22e>calculateMemorySize</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxKeyLength</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>compactToMaxKeySizeRep</color><color=#f8f8f2>(</color><color=#f8f8f2>maxKeyLength</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>MaxKeySize</color> <color=#a6e22e>compactToMaxKeySizeRep</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>maxKeyLength</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>MaxKeySize</color> <color=#f8f8f2>newRep</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MaxKeySize</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#f8f8f2>maxKeyLength</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>INKeyRep</color> <color=#f8f8f2>rep</color> <color=#f92672>=</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>rep</color> <color=#f92672>==</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>;</color> <color=#75715e>/* Rep remains unchanged. */</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>noteRepChange</color><color=#f8f8f2>(</color><color=#f8f8f2>newRep</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>calculateMemorySize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Assume empty keys array. The memory consumed by the actual keys</color>
+<color=#75715e>       * is accounted for by the IN.getEntryInMemorySize() method.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT_KEYVALS_OVERHEAD</color> <color=#f92672>+</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>objectArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>accountsForKeyByteMemUsage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>void</color> <color=#a6e22e>updateCacheStats</color><color=#f8f8f2>(</color>
+        <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>increment</color><color=#f8f8f2>,</color>
+        <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#f8f8f2>Evictor</color> <color=#f8f8f2>evictor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* No stats for the default representation. */</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The compact representation that can be used to represent keys LTE 16 bytes in length. The keys</color>
+<color=#75715e>   * are all represented inside a single byte array instead of having one byte array per key. Within</color>
+<color=#75715e>   * the array, all keys are assigned a storage size equal to that taken up by the longest key, plus</color>
+<color=#75715e>   * one byte to hold the actual key length. This makes key retreival fast. However, insertion and</color>
+<color=#75715e>   * deletion for larger keys moves bytes proportional to the storage length of the keys. This is</color>
+<color=#75715e>   * why the representation is restricted to keys LTE 16 bytes in size.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>On a 32 bit VM the per key overhead for the Default representation is 4 bytes for the</color>
+<color=#75715e>   * pointer + 16 bytes for each byte array key object, for a total of 20 bytes/key. On a 64 bit</color>
+<color=#75715e>   * machine the overheads are much larger: 8 bytes for the pointer plus 24 bytes per key.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The more fully populated the IN the more the savings with this representation since the</color>
+<color=#75715e>   * single byte array is sized to hold all the keys regardless of the actual number of keys that</color>
+<color=#75715e>   * are present.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>It's worth noting that the storage savings here are realized in addition to the storage</color>
+<color=#75715e>   * benefits of key prefixing, since the keys stored in the key array are the smaller key values</color>
+<color=#75715e>   * after the prefix has been stripped, reducing the length of the key and making it more likely</color>
+<color=#75715e>   * that it's small enough for this specialized representation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>MaxKeySize</color> <color=#66d9ef>extends</color> <color=#f8f8f2>INKeyRep</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LENGTH_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>DEFAULT_MAX_KEY_LENGTH</color> <color=#f92672>=</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MAX_KEYS</color> <color=#f92672>=</color> <color=#ae81ff>256</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>NULL_KEY</color> <color=#f92672>=</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The array is sized to hold all the keys associated with the IN node.</color>
+<color=#75715e>     * Each key is allocated a fixed amount of storage equal to the maximum</color>
+<color=#75715e>     * length of all the keys in the IN node + 1 byte to hold the size of</color>
+<color=#75715e>     * each key. The length is biased, by -128. That is, a zero length</color>
+<color=#75715e>     * key is represented by -128, a 1 byte key by -127, etc.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keys</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The number of butes used to store each key ==</color>
+<color=#75715e>     * DEFAULT_MAX_KEY_LENGTH (16) + LENGTH_BYTES (1)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>short</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MaxKeySize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>,</color> <color=#66d9ef>short</color> <color=#f8f8f2>maxKeyLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>maxKeyLen</color> <color=#f92672><</color> <color=#ae81ff>255</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fixedKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxKeyLen</color> <color=#f92672>+</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keys</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>fixedKeyLen</color> <color=#f92672>*</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nodeMaxEntries</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>INKeyRep</color> <color=#f8f8f2>rep</color> <color=#f92672>=</color> <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>rep</color> <color=#f92672>==</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color> <color=#75715e>/* Rep remains unchanged. */</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Only for use by Sizeof */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>MaxKeySize</color><color=#f8f8f2>(</color><color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#f8f8f2>SizeofMarker</color> <color=#f8f8f2>marker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keys</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>fixedKeyLen</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>MaxKeySize</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#66d9ef>short</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>keys</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fixedKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>resize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>capacity</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>MaxKeySize</color><color=#f8f8f2>(</color><color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>copyOfRange</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>capacity</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>),</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Type</color> <color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Type</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_KEY_SIZE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>/</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>>=</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Default</color> <color=#f8f8f2>newRep</color> <color=#f92672>=</color> <color=#f8f8f2>expandToDefaultRep</color><color=#f8f8f2>(</color><color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>slotOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>twoPartKey</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>combine</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>twoPartKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * TODO #21488: optimize this to avoid creation of new combined</color>
+<color=#75715e>       * key, when possible.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>),</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>Default</color> <color=#a6e22e>expandToDefaultRep</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>capacity</color> <color=#f92672>=</color> <color=#f8f8f2>length</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Default</color> <color=#f8f8f2>newRep</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Default</color><color=#f8f8f2>(</color><color=#f8f8f2>capacity</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>capacity</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>k</color> <color=#f92672>=</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>INKeyRep</color> <color=#f8f8f2>rep</color> <color=#f92672>=</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>k</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>rep</color> <color=#f92672>==</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>;</color> <color=#75715e>/* Rep remains unchanged. */</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>noteRepChange</color><color=#f8f8f2>(</color><color=#f8f8f2>newRep</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>newRep</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotLen</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>slotOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>slotLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotLen</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>slotOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotLen</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>slotOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>slotLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getFullKey</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prefix</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>slotLen</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>slotOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>slotOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>prefixLen</color> <color=#f92672>=</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>suffixLen</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>suffixLen</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyLength</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>suffixLen</color> <color=#f92672>=</color> <color=#f8f8f2>slotLen</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>suffixLen</color> <color=#f92672>+</color> <color=#f8f8f2>prefixLen</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefixLen</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>slotOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefixLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>suffixLen</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compareKeys</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>comparator</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>comparator</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>myKey</color> <color=#f92672>=</color> <color=#f8f8f2>getFullKey</color><color=#f8f8f2>(</color><color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareKeys</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>comparator</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>cmp</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prefix</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>compareSuffixes</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>cmp</color> <color=#f92672>=</color>
+          <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>),</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cmp</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyOff</color> <color=#f92672>=</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>prefix</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>compareSuffixes</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>cmp</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>compareSuffixes</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyOff</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>myKeyOff</color> <color=#f92672>=</color> <color=#f8f8f2>idx</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>myKeyOff</color><color=#f92672>]</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_KEY</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>keys</color><color=#f92672>[</color><color=#f8f8f2>myKeyOff</color><color=#f92672>]</color> <color=#f92672>-</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>myKeyOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>myKeyLen</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyLength</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKeyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKeyLen</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>embeddedData</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>myKeyOff</color> <color=#f92672>+=</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>compareUnsignedBytes</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>searchKeyLen</color><color=#f8f8f2>,</color> <color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKeyOff</color><color=#f8f8f2>,</color> <color=#f8f8f2>myKeyLen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>from</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>to</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>n</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#f8f8f2>from</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>),</color> <color=#f8f8f2>keys</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#f8f8f2>to</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>),</color> <color=#f8f8f2>n</color> <color=#f92672>*</color> <color=#f8f8f2>fixedKeyLen</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>INKeyRep</color> <color=#a6e22e>compact</color><color=#f8f8f2>(</color><color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* It's as compact as it gets. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>calculateMemorySize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_KEY_SIZE_KEYVALS_OVERHEAD</color> <color=#f92672>+</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>keys</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>calculateMemorySize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>maxKeys</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxKeySize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_KEY_SIZE_KEYVALS_OVERHEAD</color>
+          <color=#f92672>+</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>maxKeys</color> <color=#f92672>*</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxKeySize</color> <color=#f92672>+</color> <color=#f8f8f2>LENGTH_BYTES</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>accountsForKeyByteMemUsage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>void</color> <color=#a6e22e>updateCacheStats</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>increment</color><color=#f8f8f2>,</color> <color=#f8f8f2>Evictor</color> <color=#f8f8f2>evictor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>increment</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>evictor</color><color=#f8f8f2>.</color><color=#a6e22e>getNINCompactKey</color><color=#f8f8f2>().</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>evictor</color><color=#f8f8f2>.</color><color=#a6e22e>getNINCompactKey</color><color=#f8f8f2>().</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

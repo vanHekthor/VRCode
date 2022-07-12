@@ -1,0 +1,171 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ExecutorService</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.Executors</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicBoolean</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicInteger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Tracks the number of operations begun, as a way of measuring level of activity. Is capable of</color>
+<color=#75715e> * displaying thread dumps if the activity level reaches a specified ceiling</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ActivityCounter</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>activeCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicBoolean</color> <color=#f8f8f2>threadDumpInProgress</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastThreadDumpTime</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>int</color> <color=#f8f8f2>numCompletedDumps</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>activeThreshold</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxNumDumps</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>maxActivity</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Thread dumps can only happen this many milliseconds apart, to avoid</color>
+<color=#75715e>   * overwhelming the system.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>requiredIntervalMillis</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ExecutorService</color> <color=#f8f8f2>dumper</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>ActivityCounter</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>activeThreshold</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>requiredIntervalMillis</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxNumDumps</color><color=#f8f8f2>,</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>activeCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>threadDumpInProgress</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicBoolean</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>maxActivity</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>activeThreshold</color> <color=#f92672>=</color> <color=#f8f8f2>activeThreshold</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>requiredIntervalMillis</color> <color=#f92672>=</color> <color=#f8f8f2>requiredIntervalMillis</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>maxNumDumps</color> <color=#f92672>=</color> <color=#f8f8f2>maxNumDumps</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>dumper</color> <color=#f92672>=</color> <color=#f8f8f2>Executors</color><color=#f8f8f2>.</color><color=#a6e22e>newSingleThreadExecutor</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* An operation has started. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>start</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>numActive</color> <color=#f92672>=</color> <color=#f8f8f2>activeCount</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>max</color> <color=#f92672>=</color> <color=#f8f8f2>maxActivity</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>numActive</color> <color=#f92672>></color> <color=#f8f8f2>max</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxActivity</color><color=#f8f8f2>.</color><color=#a6e22e>compareAndSet</color><color=#f8f8f2>(</color><color=#f8f8f2>max</color><color=#f8f8f2>,</color> <color=#f8f8f2>numActive</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>check</color><color=#f8f8f2>(</color><color=#f8f8f2>numActive</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* An operation has finished. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>finish</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>activeCount</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getAndClearMaxActivity</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>maxActivity</color><color=#f8f8f2>.</color><color=#a6e22e>getAndSet</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>intervalIsTooShort</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Don't do a thread dump if the last dump was too recent */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>interval</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>lastThreadDumpTime</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>interval</color> <color=#f92672><</color> <color=#f8f8f2>requiredIntervalMillis</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If the activity level is above a threshold, there is no other thread that is dumping now, and a</color>
+<color=#75715e>   * dump hasn't happened for a while, dump thread stack traces.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>numActive</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Activity is low, no need to do any dumps. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>numActive</color> <color=#f92672><=</color> <color=#f8f8f2>activeThreshold</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>numCompletedDumps</color> <color=#f92672>>=</color> <color=#f8f8f2>maxNumDumps</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Don't do a thread dump if the last dump was too recent */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>intervalIsTooShort</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* There's one in progress. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>threadDumpInProgress</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Let's do a dump. The ExecutorServices guarantees that all activity</color>
+<color=#75715e>     * executes in a single thread, so further serialization and</color>
+<color=#75715e>     * synchronization is handled there.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>dumper</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>GetStackTraces</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit test support. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNumCompletedDumps</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>numCompletedDumps</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>GetStackTraces</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Runnable</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>intervalIsTooShort</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>threadDumpInProgress</color><color=#f8f8f2>.</color><color=#a6e22e>compareAndSet</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Unexpected: ActivityCounter stack trace "</color>
+                <color=#f92672>+</color> <color=#e6db74>"dumper saw threadDumpInProgress flag set."</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lastThreadDumpTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>dumpThreads</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>numCompletedDumps</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>reset</color> <color=#f92672>=</color> <color=#f8f8f2>threadDumpInProgress</color><color=#f8f8f2>.</color><color=#a6e22e>compareAndSet</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>reset</color> <color=#f8f8f2>:</color> <color=#e6db74>"ThreadDump should have been in progress"</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpThreads</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>whichDump</color> <color=#f92672>=</color> <color=#f8f8f2>numCompletedDumps</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#e6db74>"[Dump "</color> <color=#f92672>+</color> <color=#f8f8f2>whichDump</color> <color=#f92672>+</color> <color=#e6db74>" --Dumping stack traces for all threads]"</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Thread</color><color=#f8f8f2>,</color> <color=#f8f8f2>StackTraceElement</color><color=#f92672>[]></color> <color=#f8f8f2>stackTraces</color> <color=#f92672>=</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>getAllStackTraces</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Thread</color><color=#f8f8f2>,</color> <color=#f8f8f2>StackTraceElement</color><color=#f92672>[]></color> <color=#f8f8f2>stme</color> <color=#f8f8f2>:</color> <color=#f8f8f2>stackTraces</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>stme</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>stme</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>().</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>StackTraceElement</color> <color=#f8f8f2>ste</color> <color=#f8f8f2>:</color> <color=#f8f8f2>stme</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#e6db74>"     "</color> <color=#f92672>+</color> <color=#f8f8f2>ste</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#e6db74>"[Dump "</color> <color=#f92672>+</color> <color=#f8f8f2>whichDump</color> <color=#f92672>+</color> <color=#e6db74>" --Thread dump completed]"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

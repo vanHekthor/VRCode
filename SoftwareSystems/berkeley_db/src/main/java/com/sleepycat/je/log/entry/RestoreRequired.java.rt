@@ -1,0 +1,133 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log.entry</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.Loggable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Timestamp</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.StringReader</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.StringWriter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Properties</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * This log entry is used to indicate that the environment's log files are not recoverable and that</color>
+<color=#75715e> * some sort of curative action should happen first. It's a general purpose mechanism that can be</color>
+<color=#75715e> * used for many types of errors.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RestoreRequired</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Loggable</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The failure type is used to decide on the course of action. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>FailureType</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>NETWORK_RESTORE</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>LOG_CHECKSUM</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>BTREE_CORRUPTION</color>
+  <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>FailureType</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For debugging, information */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Timestamp</color> <color=#f8f8f2>time</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * PropVals is a general purpose, serialized property list, to hold</color>
+<color=#75715e>   * whatever each failure type needs, in order to fix the environment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>propVals</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>RestoreRequired</color><color=#f8f8f2>(</color><color=#f8f8f2>FailureType</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>,</color> <color=#f8f8f2>Properties</color> <color=#f8f8f2>props</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>failureType</color> <color=#f92672>=</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>time</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Timestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>StringWriter</color> <color=#f8f8f2>sw</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringWriter</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>store</color><color=#f8f8f2>(</color><color=#f8f8f2>sw</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>propVals</color> <color=#f92672>=</color> <color=#f8f8f2>sw</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>RestoreRequired</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FailureType</color> <color=#a6e22e>getFailureType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Properties</color> <color=#a6e22e>getProperties</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Properties</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Properties</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>StringReader</color> <color=#f8f8f2>reader</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringReader</color><color=#f8f8f2>(</color><color=#f8f8f2>propVals</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>load</color><color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* This should never occur since there is no real IO. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>p</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStringLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>failureType</color><color=#f8f8f2>.</color><color=#a6e22e>name</color><color=#f8f8f2>())</color>
+        <color=#f92672>+</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getTimestampLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>time</color><color=#f8f8f2>)</color>
+        <color=#f92672>+</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStringLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>propVals</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeString</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>.</color><color=#a6e22e>name</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeString</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>propVals</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>typeName</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readString</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>failureType</color> <color=#f92672>=</color> <color=#f8f8f2>FailureType</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>FailureType</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>,</color> <color=#f8f8f2>typeName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>time</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>propVals</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readString</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<RestoreRequired failureType=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>failureType</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" time=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>time</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" properties=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>propVals</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTransactionId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>Loggable</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>RestoreRequired</color> <color=#f8f8f2>otherEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>)</color> <color=#f8f8f2>other</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>time</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>otherEntry</color><color=#f8f8f2>.</color><color=#a6e22e>time</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>propVals</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>otherEntry</color><color=#f8f8f2>.</color><color=#a6e22e>propVals</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

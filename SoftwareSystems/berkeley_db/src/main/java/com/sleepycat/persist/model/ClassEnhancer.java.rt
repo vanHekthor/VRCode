@@ -1,0 +1,305 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.model</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.asm.ClassReader</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.asm.ClassVisitor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.asm.ClassWriter</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileInputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileOutputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.instrument.ClassFileTransformer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.instrument.Instrumentation</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.security.ProtectionDomain</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Enhances the bytecode of persistent classes to provide efficient access to fields and</color>
+<color=#75715e> * constructors, and to avoid special security policy settings for accessing non-public members.</color>
+<color=#75715e> * Classes are enhanced if they are annotated with {@link Entity} or {@link Persistent}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>{@code ClassEnhancer} objects are thread-safe. Multiple threads may safely call the methods of</color>
+<color=#75715e> * a shared {@code ClassEnhancer} object.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>As described in the <a href="../package-summary.html#bytecode">package summary</a>, bytecode</color>
+<color=#75715e> * enhancement may be used either at runtime or offline (at build time).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To use enhancement offline, this class may be used as a {@link #main main program}.</color>
+<color=#75715e> * <!-- begin JE only --></color>
+<color=#75715e> * It may also be used via an {@link ClassEnhancerTask ant task}.</color>
+<color=#75715e> * <!-- end JE only --></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For enhancement at runtime, this class provides the low level support needed to transform</color>
+<color=#75715e> * class bytes during class loading. To configure runtime enhancement you may use one of the</color>
+<color=#75715e> * following approaches:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ol></color>
+<color=#75715e> *   <li>The BDB {@code je-<version>.jar} or {@code db.jar} file may be used as an instrumentation</color>
+<color=#75715e> *       agent as follows:</color>
+<color=#75715e> *       <pre class="code">{@literal java -javaagent:<BDB-JAR-FILE>=enhance:packageNames ...}</pre></color>
+<color=#75715e> *       {@code packageNames} is a comma separated list of packages containing persistent classes.</color>
+<color=#75715e> *       Sub-packages of these packages are also searched. If {@code packageNames} is omitted then</color>
+<color=#75715e> *       all packages known to the current classloader are searched.</color>
+<color=#75715e> *       <p>The "-v" option may be included in the comma separated list to print the name of each</color>
+<color=#75715e> *       class that is enhanced.</color>
+<color=#75715e> *   <li>The {@link #enhance} method may be called to implement a class loader that performs</color>
+<color=#75715e> *       enhancement. Using this approach, it is the developer's responsibility to implement and</color>
+<color=#75715e> *       configure the class loader.</color>
+<color=#75715e> * </ol></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ClassEnhancer</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ClassFileTransformer</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>AGENT_PREFIX</color> <color=#f92672>=</color> <color=#e6db74>"enhance:"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>packagePrefixes</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enhances classes in the directories specified. The class files are replaced when they are</color>
+<color=#75715e>   * enhanced, without changing the file modification date. For example:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre class="code"></color>
+<color=#75715e>   * java -cp je-&lt;version&gt;.jar com.sleepycat.persist.model.ClassEnhancer ./classes</pre></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The "-v" argument may be specified to print the name of each class file that is enhanced.</color>
+<color=#75715e>   * The total number of class files enhanced will always be printed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param args one or more directories containing classes to be enhanced. Subdirectories of these</color>
+<color=#75715e>   *     directories will also be searched. Optionally, -v may be included to print the name of</color>
+<color=#75715e>   *     every class file enhanced.</color>
+<color=#75715e>   * @throws Exception if a problem occurs.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>args</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>fileList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>arg</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>.</color><color=#a6e22e>startsWith</color><color=#f8f8f2>(</color><color=#e6db74>"-"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>"-v"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>verbose</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown arg: "</color> <color=#f92672>+</color> <color=#f8f8f2>arg</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>ClassEnhancer</color> <color=#f8f8f2>enhancer</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassEnhancer</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>enhancer</color><color=#f8f8f2>.</color><color=#a6e22e>setVerbose</color><color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>nFiles</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nFiles</color> <color=#f92672>+=</color> <color=#f8f8f2>enhancer</color><color=#f8f8f2>.</color><color=#a6e22e>enhanceFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nFiles</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Enhanced: "</color> <color=#f92672>+</color> <color=#f8f8f2>nFiles</color> <color=#f92672>+</color> <color=#e6db74>" files"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enhances classes as specified by a JVM -javaagent argument.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param args see java.lang.instrument.Instrumentation.</color>
+<color=#75715e>   * @param inst see java.lang.instrument.Instrumentation.</color>
+<color=#75715e>   * @see Instrumentation</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>premain</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>args</color><color=#f8f8f2>,</color> <color=#f8f8f2>Instrumentation</color> <color=#f8f8f2>inst</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>startsWith</color><color=#f8f8f2>(</color><color=#f8f8f2>AGENT_PREFIX</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Unknown javaagent args: "</color> <color=#f92672>+</color> <color=#f8f8f2>args</color> <color=#f92672>+</color> <color=#e6db74>" Args must start with: \""</color> <color=#f92672>+</color> <color=#f8f8f2>AGENT_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>'"'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>args</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>AGENT_PREFIX</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>packageNames</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>packageNames</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>StringTokenizer</color> <color=#f8f8f2>tokens</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringTokenizer</color><color=#f8f8f2>(</color><color=#f8f8f2>args</color><color=#f8f8f2>,</color> <color=#e6db74>","</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>hasMoreTokens</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>token</color> <color=#f92672>=</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>nextToken</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>token</color><color=#f8f8f2>.</color><color=#a6e22e>startsWith</color><color=#f8f8f2>(</color><color=#e6db74>"-"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>token</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-v"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>verbose</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown javaagent arg: "</color> <color=#f92672>+</color> <color=#f8f8f2>token</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>packageNames</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>token</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>ClassEnhancer</color> <color=#f8f8f2>enhancer</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassEnhancer</color><color=#f8f8f2>(</color><color=#f8f8f2>packageNames</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>enhancer</color><color=#f8f8f2>.</color><color=#a6e22e>setVerbose</color><color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>inst</color><color=#f8f8f2>.</color><color=#a6e22e>addTransformer</color><color=#f8f8f2>(</color><color=#f8f8f2>enhancer</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates a class enhancer that searches all packages. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ClassEnhancer</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets verbose mode.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>True may be specified to print the name of each class file that is enhanced. This property</color>
+<color=#75715e>   * is false by default.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param verbose whether to use verbose mode.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setVerbose</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>verbose</color> <color=#f92672>=</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Gets verbose mode.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return whether to use verbose mode.</color>
+<color=#75715e>   * @see #setVerbose</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getVerbose</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a class enhancer that searches a given set of packages.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param packageNames a set of packages to search for persistent classes. Sub-packages of these</color>
+<color=#75715e>   *     packages are also searched. If empty or null, all packages known to the current classloader</color>
+<color=#75715e>   *     are searched.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ClassEnhancer</color><color=#f8f8f2>(</color><color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>packageNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>packageNames</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>packagePrefixes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f8f8f2>:</color> <color=#f8f8f2>packageNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>packagePrefixes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>'.'</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>transform</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>ClassLoader</color> <color=#f8f8f2>loader</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>classBeingRedefined</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ProtectionDomain</color> <color=#f8f8f2>protectionDomain</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classfileBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>className</color><color=#f8f8f2>.</color><color=#a6e22e>replace</color><color=#f8f8f2>(</color><color=#e6db74>'/'</color><color=#f8f8f2>,</color> <color=#e6db74>'.'</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#f8f8f2>enhance</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>classfileBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color> <color=#f92672>&&</color> <color=#f8f8f2>bytes</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Enhanced: "</color> <color=#f92672>+</color> <color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enhances the given class bytes if the class is annotated with {@link Entity} or {@link</color>
+<color=#75715e>   * Persistent}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the class name in binary format; for example, "my.package.MyClass$Name", or</color>
+<color=#75715e>   *     null if no filtering by class name should be performed.</color>
+<color=#75715e>   * @param classBytes are the class file bytes to be enhanced.</color>
+<color=#75715e>   * @return the enhanced bytes, or null if no enhancement was performed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>enhance</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classBytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>className</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>packagePrefixes</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>prefix</color> <color=#f8f8f2>:</color> <color=#f8f8f2>packagePrefixes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>.</color><color=#a6e22e>startsWith</color><color=#f8f8f2>(</color><color=#f8f8f2>prefix</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>enhanceBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>classBytes</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>enhanceBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>classBytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>int</color> <color=#a6e22e>enhanceFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>nFiles</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>isDirectory</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>names</color> <color=#f92672>=</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>list</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>names</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>names</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nFiles</color> <color=#f92672>+=</color> <color=#f8f8f2>enhanceFile</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>names</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>().</color><color=#a6e22e>endsWith</color><color=#f8f8f2>(</color><color=#e6db74>".class"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newBytes</color> <color=#f92672>=</color> <color=#f8f8f2>enhanceBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>readFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>newBytes</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>modified</color> <color=#f92672>=</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>lastModified</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>writeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>newBytes</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>setLastModified</color><color=#f8f8f2>(</color><color=#f8f8f2>modified</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nFiles</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Enhanced: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nFiles</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>readFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>FileInputStream</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileInputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>writeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>FileOutputStream</color> <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>enhanceBytes</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The writer is at the end of the visitor chain.  Pass COMPUTE_FRAMES</color>
+<color=#75715e>     * to calculate stack size, for safety.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>writer</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>(</color><color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>COMPUTE_FRAMES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ClassVisitor</color> <color=#f8f8f2>visitor</color> <color=#f92672>=</color> <color=#f8f8f2>writer</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The enhancer is at the beginning of the visitor chain. */</color>
+    <color=#f8f8f2>visitor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BytecodeEnhancer</color><color=#f8f8f2>(</color><color=#f8f8f2>visitor</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* The reader processes the class and invokes the visitors. */</color>
+    <color=#f8f8f2>ClassReader</color> <color=#f8f8f2>reader</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassReader</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Pass false for skipDebug since we are rewriting the class and</color>
+<color=#75715e>       * should include all information.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>accept</color><color=#f8f8f2>(</color><color=#f8f8f2>visitor</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>writer</color><color=#f8f8f2>.</color><color=#a6e22e>toByteArray</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>BytecodeEnhancer</color><color=#f8f8f2>.</color><color=#a6e22e>NotPersistentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* The class is not persistent and should not be enhanced. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,818 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Durability.ReplicaAckPolicy</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.Locker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.Txn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.PropUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The Transaction object is the handle for a transaction. Methods off the transaction handle are</color>
+<color=#75715e> * used to configure, abort and commit the transaction. Transaction handles are provided to other</color>
+<color=#75715e> * Berkeley DB methods in order to transactionally protect those operations.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A single Transaction may be used to protect operations for any number of Databases in a given</color>
+<color=#75715e> * environment. However, a single Transaction may not be used for operations in more than one</color>
+<color=#75715e> * distinct environment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Transaction handles are free-threaded; transactions handles may be used concurrently by</color>
+<color=#75715e> * multiple threads. Once the {@link Transaction#abort Transaction.abort} or {@link</color>
+<color=#75715e> * Transaction#commit Transaction.commit} method is called, the handle may not be accessed again,</color>
+<color=#75715e> * regardless of the success or failure of the method, with one exception: the {@code abort} method</color>
+<color=#75715e> * may be called any number of times to simplify error handling.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To obtain a transaction with default attributes:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <blockquote></color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> *     Transaction txn = myEnvironment.beginTransaction(null, null);</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * </blockquote></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To customize the attributes of a transaction:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <blockquote></color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> *     TransactionConfig config = new TransactionConfig();</color>
+<color=#75715e> *     config.setReadUncommitted(true);</color>
+<color=#75715e> *     Transaction txn = myEnvironment.beginTransaction(null, config);</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * </blockquote></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Transaction</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The current state of the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @since 5.0.48</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>State</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The transaction has not been committed or aborted, and can be used for performing operations.</color>
+<color=#75715e>     * This state is also indicated if {@link #isValid} returns true. For all other states, {@link</color>
+<color=#75715e>     * #isValid} will return false.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>OPEN</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * An exception was thrown by the {@code commit} method due to an error that occurred while</color>
+<color=#75715e>     * attempting to make the transaction durable. The transaction may or may not be locally</color>
+<color=#75715e>     * durable, according to the {@link Durability#getLocalSync local SyncPolicy} requested.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * <p>This is an unusual situation and is normally due to a system failure, storage device</color>
+<color=#75715e>     * failure, disk full condition, thread interrupt, or a bug of some kind. When a transaction is</color>
+<color=#75715e>     * in this state, the Environment will have been {@link Environment#isValid() invalidated} by</color>
+<color=#75715e>     * the error.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * <p>In a replicated environment, a transaction in this state is not transferred to replicas.</color>
+<color=#75715e>     * If it turns out that the transaction is indeed durable, it will be transferred to replicas</color>
+<color=#75715e>     * via normal replication mechanisms when the Environment is re-opened.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * <p>When the {@code commit} method throws an exception and the transaction is in the {@code</color>
+<color=#75715e>     * POSSIBLY_COMMITTED} state, some applications may wish to perform a data query to determine</color>
+<color=#75715e>     * whether the transaction is durable or not. Note that in the event of a system level failure,</color>
+<color=#75715e>     * the reads themselves may be unreliable, e.g. the data may be in the file system cache but not</color>
+<color=#75715e>     * on disk. Other applications may wish to repeat the transaction unconditionally, after</color>
+<color=#75715e>     * resolving the error condition, particularly when the set of operations in the transaction is</color>
+<color=#75715e>     * designed to be idempotent.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>POSSIBLY_COMMITTED</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The transaction has been committed and is locally durable according to the {@link</color>
+<color=#75715e>     * Durability#getLocalSync local SyncPolicy} requested.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * <p>Note that a transaction may be in this state even when an exception is thrown by the</color>
+<color=#75715e>     * {@code commit} method. For example, in a replicated environment, an {@link</color>
+<color=#75715e>     * com.sleepycat.je.rep.InsufficientAcksException} may be thrown after the transaction is</color>
+<color=#75715e>     * committed locally.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>COMMITTED</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The transaction has been invalidated by an exception and cannot be committed. See {@link</color>
+<color=#75715e>     * OperationFailureException} for a description of how a transaction can become invalid. The</color>
+<color=#75715e>     * application is responsible for aborting the transaction.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>MUST_ABORT</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/** The transaction has been aborted. */</color>
+    <color=#f8f8f2>ABORTED</color><color=#f8f8f2>,</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * It's set upon a successful updating replicated commit and identifies the</color>
+<color=#75715e>   * VLSN associated with the commit entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>CommitToken</color> <color=#f8f8f2>commitToken</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Is null until setTxnNull is called, and then it holds the state at the</color>
+<color=#75715e>   * time the txn was closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>State</color> <color=#f8f8f2>finalState</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Commit and abort methods are synchronized to prevent them from running</color>
+<color=#75715e>   * concurrently with operations using the transaction.  See</color>
+<color=#75715e>   * Cursor.getTxnSynchronizer.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates a transaction.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>Transaction</color><color=#f8f8f2>(</color><color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>env</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>txn</color> <color=#f92672>=</color> <color=#f8f8f2>txn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>setTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Copy the id to this wrapper object so the id will be available</color>
+<color=#75715e>     * after the transaction is closed and the txn field is nulled.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>id</color> <color=#f92672>=</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Cause an abnormal termination of the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The log is played backward, and any necessary undo operations are done. Before</color>
+<color=#75715e>   * Transaction.abort returns, any locks held by the transaction will have been released.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In the case of nested transactions, aborting a parent transaction causes all children</color>
+<color=#75715e>   * (unresolved or not) of the parent transaction to be aborted.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is aborted.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method itself may be called</color>
+<color=#75715e>   * any number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the environment has been closed, or cursors associated with</color>
+<color=#75715e>   *     the transaction are still open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>abort</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the transaction is already closed, do nothing.  Do not call</color>
+<color=#75715e>       * checkOpen in order to support any number of calls to abort().</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Check env only after checking for closed txn, to mimic close()</color>
+<color=#75715e>       * behavior for Cursors, etc, and avoid unnecessary exception</color>
+<color=#75715e>       * handling.  [#21264]</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>removeReferringHandle</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Remove reference to internal txn, so we can reclaim memory. */</color>
+      <color=#f8f8f2>setTxnNull</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>).</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the transaction's unique ID.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return The transaction's unique ID.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method is intended for use with a replicated environment.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>It returns the commitToken associated with a successful replicated commit. A null value is</color>
+<color=#75715e>   * returned if the txn was not associated with a replicated environment, or the txn did not result</color>
+<color=#75715e>   * in any changes to the environment. This method should only be called after the transaction has</color>
+<color=#75715e>   * finished.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is typically used in conjunction with the <code></color>
+<color=#75715e>   * CommitPointConsistencyPolicy</code>.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the token used to identify the replicated commit. Return null if the transaction has</color>
+<color=#75715e>   *     aborted, or has committed without making any updates.</color>
+<color=#75715e>   * @throws IllegalStateException if the method is called before the transaction has committed or</color>
+<color=#75715e>   *     aborted.</color>
+<color=#75715e>   * @see com.sleepycat.je.rep.CommitPointConsistencyPolicy</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>CommitToken</color> <color=#a6e22e>getCommitToken</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalStateException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The commit token is only legitimate after the transaction is</color>
+<color=#75715e>       * closed. A null txn field means the transaction is closed.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>commitToken</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"This transaction is still in progress and a commit token "</color> <color=#f92672>+</color> <color=#e6db74>"is not available"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * End the transaction. If the environment is configured for synchronous commit, the transaction</color>
+<color=#75715e>   * will be committed synchronously to stable storage before the call returns. This means the</color>
+<color=#75715e>   * transaction will exhibit all of the ACID (atomicity, consistency, isolation, and durability)</color>
+<color=#75715e>   * properties.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the environment is not configured for synchronous commit, the commit will not necessarily</color>
+<color=#75715e>   * have been committed to stable storage before the call returns. This means the transaction will</color>
+<color=#75715e>   * exhibit the ACI (atomicity, consistency, and isolation) properties, but not D (durability);</color>
+<color=#75715e>   * that is, database integrity will be maintained, but it is possible this transaction may be</color>
+<color=#75715e>   * undone during recovery.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is</color>
+<color=#75715e>   * committed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the method encounters an error, the transaction</color>
+<color=#75715e>   * <!-- and all child</color>
+<color=#75715e>   * transactions of the transaction --></color>
+<color=#75715e>   * will have been aborted when the call returns.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method may be called any</color>
+<color=#75715e>   * number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientReplicasException if the master in a replicated</color>
+<color=#75715e>   *     environment could not contact a quorum of replicas as determined by the {@link</color>
+<color=#75715e>   *     ReplicaAckPolicy}.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientAcksException if the master in a replicated</color>
+<color=#75715e>   *     environment did not receive enough replica acknowledgments, although the commit succeeded</color>
+<color=#75715e>   *     locally.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.ReplicaWriteException if a write operation was performed with this</color>
+<color=#75715e>   *     transaction, but this node is now a Replica.</color>
+<color=#75715e>   * @throws OperationFailureException if this exception occurred earlier and caused the transaction</color>
+<color=#75715e>   *     to be invalidated.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed, or cursors</color>
+<color=#75715e>   *     associated with the transaction are still open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>commit</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>removeReferringHandle</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>commitToken</color> <color=#f92672>=</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getCommitToken</color><color=#f8f8f2>();</color>
+      <color=#75715e>/* Remove reference to internal txn, so we can reclaim memory. */</color>
+      <color=#f8f8f2>setTxnNull</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>).</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * End the transaction using the specified durability requirements. This requirement overrides any</color>
+<color=#75715e>   * default durability requirements associated with the environment. If the durability requirements</color>
+<color=#75715e>   * cannot be satisfied, an exception is thrown to describe the problem. Please see {@link</color>
+<color=#75715e>   * Durability} for specific exceptions that could result when the durability requirements cannot</color>
+<color=#75715e>   * be satisfied.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is</color>
+<color=#75715e>   * committed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the method encounters an error, the transaction</color>
+<color=#75715e>   * <!-- and all child</color>
+<color=#75715e>   * transactions of the transaction --></color>
+<color=#75715e>   * will have been aborted when the call returns.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method may be called any</color>
+<color=#75715e>   * number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param durability the durability requirements for this transaction</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientReplicasException if the master in a replicated</color>
+<color=#75715e>   *     environment could not contact enough replicas to initiate the commit.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientAcksException if the master in a replicated</color>
+<color=#75715e>   *     environment did not receive enough replica acknowledgments, althought the commit succeeded</color>
+<color=#75715e>   *     locally.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.ReplicaWriteException if a write operation was performed with this</color>
+<color=#75715e>   *     transaction, but this node is now a Replica.</color>
+<color=#75715e>   * @throws OperationFailureException if this exception occurred earlier and caused the transaction</color>
+<color=#75715e>   *     to be invalidated.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed, or cursors</color>
+<color=#75715e>   *     associated with the transaction are still open.</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>commit</color><color=#f8f8f2>(</color><color=#f8f8f2>Durability</color> <color=#f8f8f2>durability</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>doCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>durability</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/* explicitSync */</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * End the transaction, writing to stable storage and committing synchronously. This means the</color>
+<color=#75715e>   * transaction will exhibit all of the ACID (atomicity, consistency, isolation, and durability)</color>
+<color=#75715e>   * properties.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This behavior is the default for database environments unless otherwise configured using the</color>
+<color=#75715e>   * {@link com.sleepycat.je.EnvironmentConfig#setTxnNoSync EnvironmentConfig.setTxnNoSync} method.</color>
+<color=#75715e>   * This behavior may also be set for a single transaction using the {@link</color>
+<color=#75715e>   * Environment#beginTransaction Environment.beginTransaction} method. Any value specified to this</color>
+<color=#75715e>   * method overrides both of those settings.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is</color>
+<color=#75715e>   * committed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the method encounters an error, the transaction</color>
+<color=#75715e>   * <!-- and all child</color>
+<color=#75715e>   * transactions of the transaction --></color>
+<color=#75715e>   * will have been aborted when the call returns.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method may be called any</color>
+<color=#75715e>   * number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientReplicasException if the master in a replicated</color>
+<color=#75715e>   *     environment could not contact enough replicas to initiate the commit.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientAcksException if the master in a replicated</color>
+<color=#75715e>   *     environment did not receive enough replica acknowledgments, althought the commit succeeded</color>
+<color=#75715e>   *     locally.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.ReplicaWriteException if a write operation was performed with this</color>
+<color=#75715e>   *     transaction, but this node is now a Replica.</color>
+<color=#75715e>   * @throws OperationFailureException if this exception occurred earlier and caused the transaction</color>
+<color=#75715e>   *     to be invalidated.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed, or cursors</color>
+<color=#75715e>   *     associated with the transaction are still open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>commitSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>doCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>COMMIT_SYNC</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/* explicitSync */</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * End the transaction, not writing to stable storage and not committing synchronously. This means</color>
+<color=#75715e>   * the transaction will exhibit the ACI (atomicity, consistency, and isolation) properties, but</color>
+<color=#75715e>   * not D (durability); that is, database integrity will be maintained, but it is possible this</color>
+<color=#75715e>   * transaction may be undone during recovery.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This behavior may be set for a database environment using the {@link</color>
+<color=#75715e>   * com.sleepycat.je.EnvironmentConfig#setTxnNoSync EnvironmentConfig.setTxnNoSync} method or for a</color>
+<color=#75715e>   * single transaction using the {@link Environment#beginTransaction Environment.beginTransaction}</color>
+<color=#75715e>   * method. Any value specified to this method overrides both of those settings.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is</color>
+<color=#75715e>   * committed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the method encounters an error, the transaction</color>
+<color=#75715e>   * <!-- and all child</color>
+<color=#75715e>   * transactions of the transaction --></color>
+<color=#75715e>   * will have been aborted when the call returns.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method may be called any</color>
+<color=#75715e>   * number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientReplicasException if the master in a replicated</color>
+<color=#75715e>   *     environment could not contact enough replicas to initiate the commit.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientAcksException if the master in a replicated</color>
+<color=#75715e>   *     environment did not receive enough replica acknowledgments, althought the commit succeeded</color>
+<color=#75715e>   *     locally.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.ReplicaWriteException if a write operation was performed with this</color>
+<color=#75715e>   *     transaction, but this node is now a Replica.</color>
+<color=#75715e>   * @throws OperationFailureException if this exception occurred earlier and caused the transaction</color>
+<color=#75715e>   *     to be invalidated.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed, or cursors</color>
+<color=#75715e>   *     associated with the transaction are still open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>commitNoSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>doCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>COMMIT_NO_SYNC</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/* explicitSync */</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * End the transaction, writing to stable storage but not committing synchronously. This means the</color>
+<color=#75715e>   * transaction will exhibit the ACI (atomicity, consistency, and isolation) properties, but not D</color>
+<color=#75715e>   * (durability); that is, database integrity will be maintained, but it is possible this</color>
+<color=#75715e>   * transaction may be undone during recovery.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This behavior is the default for database environments unless otherwise configured using the</color>
+<color=#75715e>   * {@link com.sleepycat.je.EnvironmentConfig#setTxnNoSync EnvironmentConfig.setTxnNoSync} method.</color>
+<color=#75715e>   * This behavior may also be set for a single transaction using the {@link</color>
+<color=#75715e>   * Environment#beginTransaction Environment.beginTransaction} method. Any value specified to this</color>
+<color=#75715e>   * method overrides both of those settings.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All cursors opened within the transaction must be closed before the transaction is</color>
+<color=#75715e>   * committed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the method encounters an error, the transaction</color>
+<color=#75715e>   * <!-- and all child</color>
+<color=#75715e>   * transactions of the transaction --></color>
+<color=#75715e>   * will have been aborted when the call returns.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After this method has been called, regardless of its return, the {@link Transaction} handle</color>
+<color=#75715e>   * may not be accessed again, with one exception: the {@code abort} method may be called any</color>
+<color=#75715e>   * number of times to simplify error handling.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: To guard against memory leaks, the application should discard all references to the</color>
+<color=#75715e>   * closed handle. While BDB makes an effort to discard references from closed objects to the</color>
+<color=#75715e>   * allocated memory for an environment, this behavior is not guaranteed. The safe course of action</color>
+<color=#75715e>   * for an application is to discard all references to closed BDB objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientReplicasException if the master in a replicated</color>
+<color=#75715e>   *     environment could not contact enough replicas to initiate the commit.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.InsufficientAcksException if the master in a replicated</color>
+<color=#75715e>   *     environment did not receive enough replica acknowledgments, althought the commit succeeded</color>
+<color=#75715e>   *     locally.</color>
+<color=#75715e>   * @throws com.sleepycat.je.rep.ReplicaWriteException if a write operation was performed with this</color>
+<color=#75715e>   *     transaction, but this node is now a Replica.</color>
+<color=#75715e>   * @throws OperationFailureException if this exception occurred earlier and caused the transaction</color>
+<color=#75715e>   *     to be invalidated.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed, or cursors</color>
+<color=#75715e>   *     associated with the transaction are still open.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>commitWriteNoSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>doCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>COMMIT_WRITE_NO_SYNC</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/* explicitSync */</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getPrepared</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getPrepared</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Perform error checking and invoke the commit on Txn.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param durability the durability to use for the commit</color>
+<color=#75715e>   * @param explicitSync true if the method was invoked from one of the sync-specific APIs, false if</color>
+<color=#75715e>   *     durability was used explicitly. This parameter exists solely to support mixed mode api</color>
+<color=#75715e>   *     usage checks.</color>
+<color=#75715e>   * @throws IllegalArgumentException via commit(Durability)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>doCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>Durability</color> <color=#f8f8f2>durability</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>explicitSync</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>removeReferringHandle</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>explicitSync</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* A sync-specific api was invoked. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getExplicitDurabilityConfigured</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Mixed use of deprecated durability API for the "</color>
+                  <color=#f92672>+</color> <color=#e6db74>"transaction commit with the new durability API for"</color>
+                  <color=#f92672>+</color> <color=#e6db74>" TransactionConfig or MutableEnvironmentConfig"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getExplicitSyncConfigured</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Durability was explicitly configured for commit */</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Mixed use of new durability API for the "</color>
+                <color=#f92672>+</color> <color=#e6db74>"transaction commit with deprecated durability API for"</color>
+                <color=#f92672>+</color> <color=#e6db74>" TransactionConfig or MutableEnvironmentConfig"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>(</color><color=#f8f8f2>durability</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>commitToken</color> <color=#f92672>=</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getCommitToken</color><color=#f8f8f2>();</color>
+      <color=#75715e>/* Remove reference to internal txn, so we can reclaim memory. */</color>
+      <color=#f8f8f2>setTxnNull</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>).</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>E</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the timeout value for the transaction lifetime.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If {@link #setTxnTimeout(long,TimeUnit)} has not been called to configure the timeout, the</color>
+<color=#75715e>   * environment configuration value ({@link EnvironmentConfig#TXN_TIMEOUT} )is returned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param unit the {@code TimeUnit} of the returned value. May not be null.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the unit is null.</color>
+<color=#75715e>   * @since 4.0</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>unit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>PropUtil</color><color=#f8f8f2>.</color><color=#a6e22e>millisToDuration</color><color=#f8f8f2>((</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>(),</color> <color=#f8f8f2>unit</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the timeout value for the transaction lifetime.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the transaction runs longer than this time, an operation using the transaction may throw</color>
+<color=#75715e>   * {@link TransactionTimeoutException}. The transaction timeout is checked when locking a record,</color>
+<color=#75715e>   * as part of a read or write operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A value of zero (which is the default) disables timeouts for the transaction, meaning that</color>
+<color=#75715e>   * no limit on the duration of the transaction is enforced. Note that the {@link</color>
+<color=#75715e>   * #setLockTimeout(long, TimeUnit)} lock timeout} is independent of the transaction timeout, and</color>
+<color=#75715e>   * the lock timeout should not normally be set to zero.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param timeOut The timeout value for the transaction lifetime, or zero to disable transaction</color>
+<color=#75715e>   *     timeouts.</color>
+<color=#75715e>   * @param unit the {@code TimeUnit} of the timeOut value. May be null only if timeOut is zero.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed.</color>
+<color=#75715e>   * @throws IllegalArgumentException if timeOut or unit is invalid.</color>
+<color=#75715e>   * @since 4.0</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>unit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>PropUtil</color><color=#f8f8f2>.</color><color=#a6e22e>durationToMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>unit</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the timeout value for the transaction lifetime, with the timeout value specified in</color>
+<color=#75715e>   * microseconds. This method is equivalent to:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre>setTxnTimeout(long, TimeUnit.MICROSECONDS);</pre></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @deprecated as of 4.0, replaced by {@link #setTxnTimeout(long, TimeUnit)}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeOut</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setTxnTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MICROSECONDS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the lock request timeout value for the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If {@link #setLockTimeout(long,TimeUnit)} has not been called to configure the timeout, the</color>
+<color=#75715e>   * environment configuration value ({@link EnvironmentConfig#LOCK_TIMEOUT}) is returned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param unit the {@code TimeUnit} of the returned value. May not be null.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the unit is null.</color>
+<color=#75715e>   * @since 4.0</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getLockTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>unit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>PropUtil</color><color=#f8f8f2>.</color><color=#a6e22e>millisToDuration</color><color=#f8f8f2>((</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getLockTimeout</color><color=#f8f8f2>(),</color> <color=#f8f8f2>unit</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the lock request timeout value for the transaction. This overrides the {@link</color>
+<color=#75715e>   * EnvironmentConfig#setLockTimeout(long, TimeUnit) default lock timeout}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A value of zero disables lock timeouts. This is not recommended, even when the application</color>
+<color=#75715e>   * expects that deadlocks will not occur or will be easily resolved. A lock timeout is a fall-back</color>
+<color=#75715e>   * that guards against unexpected "live lock", unresponsive threads, or application failure to</color>
+<color=#75715e>   * close a cursor or to commit or abort a transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param timeOut The lock timeout for all transactional and non-transactional operations, or zero</color>
+<color=#75715e>   *     to disable lock timeouts.</color>
+<color=#75715e>   * @param unit the {@code TimeUnit} of the timeOut value. May be null only if timeOut is zero.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the transaction or environment has been closed.</color>
+<color=#75715e>   * @throws IllegalArgumentException if timeOut or unit is invalid.</color>
+<color=#75715e>   * @since 4.0</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>unit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkEnv</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checkOpen</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>PropUtil</color><color=#f8f8f2>.</color><color=#a6e22e>durationToMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>unit</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the lock request timeout value for the transaction, with the timeout value specified</color>
+<color=#75715e>   * in microseconds. This method is equivalent to:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre>setLockTimeout(long, TimeUnit.MICROSECONDS);</pre></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @deprecated as of 4.0, replaced by {@link #setLockTimeout(long, TimeUnit)}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeOut</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setLockTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>timeOut</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MICROSECONDS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the user visible name for the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param name The user visible name for the transaction.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setName</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>name</color> <color=#f92672>=</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the user visible name for the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return The user visible name for the transaction.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Transaction</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>Transaction</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>id</color> <color=#f92672>==</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<Transaction id=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>id</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\""</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>name</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" name=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>">"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method should only be called by the LockerFactory.getReadableLocker and getWritableLocker</color>
+<color=#75715e>   * methods. The locker returned does not enforce the readCommitted isolation setting.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException via all API methods with a txn param</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Locker</color> <color=#a6e22e>getLocker</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Transaction "</color> <color=#f92672>+</color> <color=#f8f8f2>id</color> <color=#f92672>+</color> <color=#e6db74>" has been closed and is no longer usable."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Helpers</color>
+<color=#75715e>   */</color>
+
+  <color=#f8f8f2>Txn</color> <color=#a6e22e>getTxn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>Environment</color> <color=#a6e22e>getEnvironment</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @throws EnvironmentFailureException if the underlying environment is invalid, via all methods.</color>
+<color=#75715e>   * @throws IllegalStateException via all methods.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkEnv</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"The environment has been closed. "</color> <color=#f92672>+</color> <color=#e6db74>"This transaction is no longer usable."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>checkIfInvalid</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @throws IllegalStateException via all methods except abort. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>checkOpen</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>isClosed</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Transaction Id "</color> <color=#f92672>+</color> <color=#f8f8f2>id</color> <color=#f92672>+</color> <color=#e6db74>" has been closed."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether this {@code Transaction} is open, which is equivalent to when {@link</color>
+<color=#75715e>   * Transaction#getState} returns {@link State#OPEN}. See {@link State#OPEN} for more information.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When an {@link OperationFailureException}, or one of its subclasses, is caught, the {@code</color>
+<color=#75715e>   * isValid} method may be called to determine whether the {@code Transaction} can continue to be</color>
+<color=#75715e>   * used, or should be aborted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isValid</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Remove reference to internal txn, so we can reclaim memory. Before setting it null, save the</color>
+<color=#75715e>   * final State value, so we can return it from getState.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setTxnNull</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>finalState</color> <color=#f92672>=</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the current state of the transaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @since 5.0.48</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>State</color> <color=#a6e22e>getState</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>finalState</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>finalState</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>finalState</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,167 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseId</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Accumulates changes to the utilization profile during recovery.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Per-database information is keyed by DatabaseId because the DatabaseImpl is not always</color>
+<color=#75715e> * available during recovery. In fact this is the only reason that a "local" tracker is used during</color>
+<color=#75715e> * recovery -- to avoid requiring that the DatabaseImpl is available, which is necessary to use the</color>
+<color=#75715e> * "global" UtilizationTracker. There is no requirement to accumulate totals locally, since recovery</color>
+<color=#75715e> * is single threaded.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When finished with this object, its information should be added to the Environment's</color>
+<color=#75715e> * UtilizationTracker and DatabaseImpl objects by calling transferToUtilizationTracker. This is done</color>
+<color=#75715e> * at the end of recovery, just prior to the checkpoint. It does not have to be done under the log</color>
+<color=#75715e> * write latch, since recovery is single threaded.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RecoveryUtilizationTracker</color> <color=#66d9ef>extends</color> <color=#f8f8f2>BaseLocalUtilizationTracker</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* File number -> LSN of FileSummaryLN */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>fileSummaryLsns</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* DatabaseId  -> LSN of MapLN */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>databaseLsns</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>RecoveryUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummaryMap</color><color=#f92672>></color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>fileSummaryLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>databaseLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Saves the LSN of the last logged FileSummaryLN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>saveLastLoggedFileSummaryLN</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>fileSummaryLsns</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>),</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Saves the LSN of the last logged MapLN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>saveLastLoggedMapLN</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>databaseLsns</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Counts the addition of all new log entries including LNs. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countNewLogEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>countNew</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Counts the LSN of a node obsolete unconditionally.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Even when trackOffset is true, duplicate offsets are not checked (no assertion is fired)</color>
+<color=#75715e>   * because recovery is known to count the same LSN offset twice in certain circumstances.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsoleteUnconditional</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>trackOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>countObsolete</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>type</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>size</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// countPerFile</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// countPerDb</color>
+        <color=#f8f8f2>trackOffset</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>);</color> <color=#75715e>// checkDupOffsets</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Counts the oldLsn of a node obsolete if it has not already been counted at the point of lsn in</color>
+<color=#75715e>   * the log.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Even when trackOffset is true, duplicate offsets are not checked (no assertion is fired)</color>
+<color=#75715e>   * because recovery is known to count the same LSN offset twice in certain circumstances.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return whether the file was previously uncounted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>countObsoleteIfUncounted</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>trackOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>fileUncounted</color> <color=#f92672>=</color> <color=#f8f8f2>isFileUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>dbUncounted</color> <color=#f92672>=</color> <color=#f8f8f2>isDbUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>countObsolete</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>type</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>size</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>fileUncounted</color><color=#f8f8f2>,</color> <color=#75715e>// countPerFile</color>
+        <color=#f8f8f2>dbUncounted</color><color=#f8f8f2>,</color> <color=#75715e>// countPerDb</color>
+        <color=#f8f8f2>trackOffset</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>);</color> <color=#75715e>// checkDupOffsets</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileUncounted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Overrides this method for recovery and returns whether the most recently seen FileSummaryLN for</color>
+<color=#75715e>   * the given file is prior to the given LSN.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isFileUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>fsLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>longToLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>fileSummaryLsns</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>cmpFsLsnToNewLsn</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>fsLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>?</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>fsLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cmpFsLsnToNewLsn</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the MapLN for the given database ID is prior to the given LSN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDbUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>dbLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>longToLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseLsns</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>cmpDbLsnToLsn</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>dbLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cmpDbLsnToLsn</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Clears all accmulated utilization info for the given file. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetFileInfo</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>trackedSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getTrackedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trackedSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Clears all accmulated utilization info for the given database. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetDbInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>removeDbFileSummaries</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the DatabaseImpl from the database key, which in this case is the DatabaseId. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#f8f8f2>DatabaseImpl</color> <color=#a6e22e>databaseKeyToDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>)</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Must release the database, since DbTree.getDb was called by databaseKeyToDatabaseImpl. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>releaseDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

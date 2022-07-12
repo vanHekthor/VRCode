@@ -1,0 +1,315 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Durability</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Transaction</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CmdUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileNotFoundException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.CountDownLatch</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.NODE_HOST_PORT</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * DbSync is a utility for ensuring that a group of replication nodes have fully caught up on the</color>
+<color=#75715e> * replication stream. The target use case is testing. If a replication group has crashed abruptly,</color>
+<color=#75715e> * nodes may have closed without finishing the full replay of the replication stream and the</color>
+<color=#75715e> * environments might not have the same contents. This makes it impossible to compare the contents</color>
+<color=#75715e> * of the environments for correctness.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>DbSync assumes that all nodes are down. The utility is invoked for each node in the group. The</color>
+<color=#75715e> * node will come up and rejoin the group, causing the whole group to reach the same point in the</color>
+<color=#75715e> * replication stream. If the node becomes the master, it will issue a shutdown request. Otherwise,</color>
+<color=#75715e> * a node is a replica, and will wait for the shutdown message to come, and will then close.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbSync</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_ENV</color> <color=#f92672>=</color> <color=#e6db74>"-env"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_GROUP_NAME</color> <color=#f92672>=</color> <color=#e6db74>"-groupName"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_NODE_NAME</color> <color=#f92672>=</color> <color=#e6db74>"-nodeName"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_NODE_HOST</color> <color=#f92672>=</color> <color=#e6db74>"-nodeHost"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_HELPER_HOST</color> <color=#f92672>=</color> <color=#e6db74>"-helperHost"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_TIMEOUT</color> <color=#f92672>=</color> <color=#e6db74>"-timeout"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DBSYNC_NET_PROPS</color> <color=#f92672>=</color> <color=#e6db74>"-netProps"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>FORMAT</color> <color=#f92672>=</color> <color=#e6db74>"%1$-15s"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>helperHost</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The group shutdown timeout value, in milliseconds. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>usageString</color> <color=#f92672>=</color>
+      <color=#e6db74>"usage: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getJavaCommand</color><color=#f8f8f2>(</color><color=#f8f8f2>DbSync</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_ENV</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# environment home directory for the node\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_GROUP_NAME</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# name of the replication group\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_NODE_NAME</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# name of the node in the group\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_NODE_HOST</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# host name or IP address and port number for the node\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_HELPER_HOST</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# helperHost for the node\n"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>DBSYNC_TIMEOUT</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"# time for the node to catch up with master, in milliseconds\n"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>args</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbSync</color> <color=#f8f8f2>syncup</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbSync</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>args</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>sync</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>usageString</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>args</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>argc</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nArgs</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>nodeHost</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>netPropsName</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>thisArg</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>.</color><color=#a6e22e>trim</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_ENV</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_ENV</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_GROUP_NAME</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_GROUP_NAME</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_NAME</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_NAME</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_HOST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nodeHost</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_HOST</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_HELPER_HOST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>helperHost</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_HELPER_HOST</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_TIMEOUT</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>timeout</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>parseLong</color><color=#f8f8f2>(</color><color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_TIMEOUT</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NET_PROPS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>netPropsName</color> <color=#f92672>=</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NET_PROPS</color> <color=#f92672>+</color> <color=#e6db74>" requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envHome</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_ENV</color> <color=#f92672>+</color> <color=#e6db74>" is a required argument."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>groupName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_GROUP_NAME</color> <color=#f92672>+</color> <color=#e6db74>" is a required argument."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_NAME</color> <color=#f92672>+</color> <color=#e6db74>" is a required argument."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeHost</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_NODE_HOST</color> <color=#f92672>+</color> <color=#e6db74>" is a required argument."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>helperHost</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_HELPER_HOST</color> <color=#f92672>+</color> <color=#e6db74>" is a required argument."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>DBSYNC_TIMEOUT</color> <color=#f92672>+</color> <color=#e6db74>" should be a positive long number."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>NODE_HOST_PORT</color><color=#f8f8f2>.</color><color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeHost</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"Host and Port pair for this node is illegal."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#f8f8f2>repNetConfig</color> <color=#f92672>=</color> <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>createDefault</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>netPropsName</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repNetConfig</color> <color=#f92672>=</color> <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>netPropsName</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>fnfe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"The netProps file "</color> <color=#f92672>+</color> <color=#f8f8f2>netPropsName</color> <color=#f92672>+</color> <color=#e6db74>" does not exist."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>iae</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"The net properties file "</color> <color=#f92672>+</color> <color=#f8f8f2>netPropsName</color> <color=#f92672>+</color> <color=#e6db74>" is not valid: "</color> <color=#f92672>+</color> <color=#f8f8f2>iae</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>envConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setAllowCreate</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>repConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeName</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setGroupName</color><color=#f8f8f2>(</color><color=#f8f8f2>groupName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setNodeHostPort</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeHost</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setHelperHosts</color><color=#f8f8f2>(</color><color=#f8f8f2>helperHost</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setRepNetConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>repNetConfig</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>DbSync</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a DbSync object for the purposed of syncing up a specific replication group.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param envHome The Environment home directories of this replica.</color>
+<color=#75715e>   * @param helperHost The helper host for this replica.</color>
+<color=#75715e>   * @param timeout The permitted time period, in milliseconds, for the replica to catch up with</color>
+<color=#75715e>   *     master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DbSync</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>helperHost</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envHome</color> <color=#f92672>=</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envConfig</color> <color=#f92672>=</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repConfig</color> <color=#f92672>=</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>helperHost</color> <color=#f92672>=</color> <color=#f8f8f2>helperHost</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>timeout</color> <color=#f92672>=</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Open this replication node. Block until the node has opened, synced up, and closed. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>sync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set the ReplicaAckPolicy to ALL, so that all the replicas can get</color>
+<color=#75715e>     * into a same sync point.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Durability</color> <color=#f8f8f2>durability</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>Durability</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE_NO_SYNC</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE_NO_SYNC</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Durability</color><color=#f8f8f2>.</color><color=#a6e22e>ReplicaAckPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>ALL</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setDurability</color><color=#f8f8f2>(</color><color=#f8f8f2>durability</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setHelperHosts</color><color=#f8f8f2>(</color><color=#f8f8f2>helperHost</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Exit if can't create a replicated Environment successfully. */</color>
+    <color=#f8f8f2>StatusListener</color> <color=#f8f8f2>listener</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatusListener</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ReplicatedEnvironment</color> <color=#f8f8f2>repEnv</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repEnv</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>ReplicatedEnvironment</color><color=#f8f8f2>(</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>),</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>QuorumPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>ALL</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>setStateChangeListener</color><color=#f8f8f2>(</color><color=#f8f8f2>listener</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Can't successfully initialize "</color> <color=#f92672>+</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" because of "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Wait until the node becomes active. */</color>
+    <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>awaitActiveState</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>().</color><color=#a6e22e>isMaster</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If master, start a transaction as a way of ascertaining whether</color>
+<color=#75715e>       * all nodes are up. Since the ReplicaAckPolicy is ALL, the</color>
+<color=#75715e>       * transaction will only begin when all the nodes are available.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>beginTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Invoke the group shutdown API. */</color>
+      <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>timeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>SECONDS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>().</color><color=#a6e22e>isReplica</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * The replica will throw a GroupShutdownException if it</color>
+<color=#75715e>           * has received and processed the group close command from</color>
+<color=#75715e>           * the master.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#ae81ff>1000</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Shutdown the rep node. */</color>
+    <color=#f8f8f2>repEnv</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Wait for this node to become either a master or a replica. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>StatusListener</color> <color=#66d9ef>implements</color> <color=#f8f8f2>StateChangeListener</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>CountDownLatch</color> <color=#f8f8f2>activeLatch</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CountDownLatch</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>stateChange</color><color=#f8f8f2>(</color><color=#f8f8f2>StateChangeEvent</color> <color=#f8f8f2>stateChangeEvent</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>stateChangeEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>case</color> <color=#f8f8f2>MASTER</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>case</color> <color=#f8f8f2>REPLICA</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>activeLatch</color><color=#f8f8f2>.</color><color=#a6e22e>countDown</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" is disconnected from group."</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>awaitActiveState</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>activeLatch</color><color=#f8f8f2>.</color><color=#a6e22e>await</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

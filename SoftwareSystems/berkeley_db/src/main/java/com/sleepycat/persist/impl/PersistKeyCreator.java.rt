@@ -1,0 +1,235 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.tuple.TupleBase</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.EntityMetadata</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.Relationship</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.SecondaryKeyMetadata</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawObject</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collection</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A persistence secondary key creator/nullifier. This class always uses rawAccess=true to avoid</color>
+<color=#75715e> * depending on the presence of the proxy class.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>PersistKeyCreator</color>
+    <color=#66d9ef>implements</color> <color=#f8f8f2>SecondaryKeyCreator</color><color=#f8f8f2>,</color> <color=#f8f8f2>SecondaryMultiKeyCreator</color><color=#f8f8f2>,</color> <color=#f8f8f2>ForeignMultiKeyNullifier</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isManyType</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>cls</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cls</color><color=#f8f8f2>.</color><color=#a6e22e>isArray</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>Collection</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>cls</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* See Store.refresh for an explanation of the use of volatile fields. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>keyFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>toMany</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a key creator/nullifier for a given entity class and key name. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>PersistKeyCreator</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalogParam</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntityMetadata</color> <color=#f8f8f2>entityMeta</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SecondaryKeyMetadata</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>catalogParam</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>getFormats</color><color=#f8f8f2>(</color><color=#f8f8f2>entityMeta</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>,</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Must assign catalog field in constructor. */</color>
+      <color=#f8f8f2>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>getFormats</color><color=#f8f8f2>(</color><color=#f8f8f2>entityMeta</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>,</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>keyName</color> <color=#f92672>=</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyName</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Relationship</color> <color=#f8f8f2>rel</color> <color=#f92672>=</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getRelationship</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>toMany</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>rel</color> <color=#f92672>==</color> <color=#f8f8f2>Relationship</color><color=#f8f8f2>.</color><color=#a6e22e>ONE_TO_MANY</color> <color=#f92672>||</color> <color=#f8f8f2>rel</color> <color=#f92672>==</color> <color=#f8f8f2>Relationship</color><color=#f8f8f2>.</color><color=#a6e22e>MANY_TO_MANY</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>getFormats</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EntityMetadata</color> <color=#f8f8f2>entityMeta</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SecondaryKeyMetadata</color> <color=#f8f8f2>secKeyMeta</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>priKeyFormat</color> <color=#f92672>=</color>
+        <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>getOrCreateFormat</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>entityMeta</color><color=#f8f8f2>.</color><color=#a6e22e>getPrimaryKey</color><color=#f8f8f2>().</color><color=#a6e22e>getClassName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>keyFormat</color> <color=#f92672>=</color> <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>getOrCreateFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Not a key class: "</color> <color=#f92672>+</color> <color=#f8f8f2>keyClassName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyFormat</color><color=#f8f8f2>.</color><color=#a6e22e>isPrimitive</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Use a primitive wrapper class instead of class: "</color> <color=#f92672>+</color> <color=#f8f8f2>keyFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>createSecondaryKey</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>result</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>createSecondaryKeyInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>createSecondaryKeyInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>createSecondaryKeyInternal</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>result</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>toMany</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>KeyLocation</color> <color=#f8f8f2>loc</color> <color=#f92672>=</color> <color=#f8f8f2>moveToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>loc</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>RecordOutput</color> <color=#f8f8f2>output</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RecordOutput</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*rawAccess*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>loc</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>.</color><color=#a6e22e>copySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>loc</color><color=#f8f8f2>.</color><color=#a6e22e>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>output</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>TupleBase</color><color=#f8f8f2>.</color><color=#a6e22e>outputToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Key field is not present or null. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>createSecondaryKeys</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>Set</color> <color=#f8f8f2>results</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>createSecondaryKeysInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>results</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>createSecondaryKeysInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>results</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>createSecondaryKeysInternal</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>Set</color> <color=#f8f8f2>results</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>toMany</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>KeyLocation</color> <color=#f8f8f2>loc</color> <color=#f92672>=</color> <color=#f8f8f2>moveToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>loc</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>loc</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>.</color><color=#a6e22e>copySecMultiKey</color><color=#f8f8f2>(</color><color=#f8f8f2>loc</color><color=#f8f8f2>.</color><color=#a6e22e>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>results</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Else key field is not present or null. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>nullifyForeignKey</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>secKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>nullifyForeignKeyInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>secKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>nullifyForeignKeyInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>secKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>nullifyForeignKeyInternal</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>secondary</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>secKey</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Deserialize the entity and get its current class format. */</color>
+    <color=#f8f8f2>RawObject</color> <color=#f8f8f2>entity</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>RawObject</color><color=#f8f8f2>)</color> <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>readEntity</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*rawAccess*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Format</color> <color=#f8f8f2>entityFormat</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Format</color><color=#f8f8f2>)</color> <color=#f8f8f2>entity</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set the key to null.  For a TO_MANY key, pass the key object to be</color>
+<color=#75715e>     * removed from the array/collection.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Object</color> <color=#f8f8f2>secKeyObject</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>toMany</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>secKeyObject</color> <color=#f92672>=</color>
+          <color=#f8f8f2>PersistKeyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>readKey</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>keyFormat</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>secKey</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color>
+              <color=#f8f8f2>secKey</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color>
+              <color=#f8f8f2>secKey</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>(),</color>
+              <color=#66d9ef>true</color> <color=#75715e>/*rawAccess*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityFormat</color><color=#f8f8f2>.</color><color=#a6e22e>nullifySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>,</color> <color=#f8f8f2>secKeyObject</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Using the current format for the entity, serialize the modified</color>
+<color=#75715e>       * entity back to the data entry.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>writeEntity</color><color=#f8f8f2>(</color><color=#f8f8f2>entityFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*rawAccess*/</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Key field is not present or null. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the location from which the secondary key field can be copied. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>KeyLocation</color> <color=#a6e22e>moveToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>priKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>RecordInput</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>true</color> <color=#75715e>/*rawAccess*/</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>priKey</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>formatId</color> <color=#f92672>=</color> <color=#f8f8f2>input</color><color=#f8f8f2>.</color><color=#a6e22e>readPackedInt</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Format</color> <color=#f8f8f2>entityFormat</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>formatId</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*expectStored*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>input</color><color=#f8f8f2>.</color><color=#a6e22e>registerEntityFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>entityFormat</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Format</color> <color=#f8f8f2>fieldFormat</color> <color=#f92672>=</color> <color=#f8f8f2>entityFormat</color><color=#f8f8f2>.</color><color=#a6e22e>skipToSecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyName</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fieldFormat</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Returns null if key field is null. */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>input</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyLocation</color><color=#f8f8f2>(</color><color=#f8f8f2>fieldFormat</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Key field is not present in this class. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** See Store.refresh. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>refresh</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>PersistCatalog</color> <color=#f8f8f2>newCatalog</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>newCatalog</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>keyFormat</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>keyFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>priKeyFormat</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

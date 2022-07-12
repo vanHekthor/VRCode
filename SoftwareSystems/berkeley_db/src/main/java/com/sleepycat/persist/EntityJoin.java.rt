@@ -1,0 +1,336 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntityBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntryBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Performs an equality join on two or more secondary keys.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>{@code EntityJoin} objects are thread-safe. Multiple threads may safely call the methods of a</color>
+<color=#75715e> * shared {@code EntityJoin} object.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>An equality join is a match on all entities in a given primary index that have two or more</color>
+<color=#75715e> * specific secondary key values. Note that key ranges may not be matched by an equality join, only</color>
+<color=#75715e> * exact keys are matched.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> *  // Index declarations -- see <a href="package-summary.html#example">package summary example</a>.</color>
+<color=#75715e> *  //</color>
+<color=#75715e> *  {@literal PrimaryIndex<String, Person> personBySsn;}</color>
+<color=#75715e> *  {@literal SecondaryIndex<String, String, Person> personByParentSsn;}</color>
+<color=#75715e> *  {@literal SecondaryIndex<Long, String, Person> personByEmployerIds;}</color>
+<color=#75715e> *  Employer employer = ...;</color>
+<color=#75715e> *</color>
+<color=#75715e> *  // Match on all Person objects having parentSsn "111-11-1111" and also</color>
+<color=#75715e> *  // containing an employerId of employer.id.  In other words, match on all</color>
+<color=#75715e> *  // of Bob's children that work for a given employer.</color>
+<color=#75715e> *  //</color>
+<color=#75715e> *  {@literal EntityJoin<String, Person> join = new EntityJoin(personBySsn);}</color>
+<color=#75715e> *  join.addCondition(personByParentSsn, "111-11-1111");</color>
+<color=#75715e> *  join.addCondition(personByEmployerIds, employer.id);</color>
+<color=#75715e> *</color>
+<color=#75715e> *  // Perform the join operation by traversing the results with a cursor.</color>
+<color=#75715e> *  //</color>
+<color=#75715e> *  {@literal ForwardCursor<Person> results = join.entities();}</color>
+<color=#75715e> *  try {</color>
+<color=#75715e> *      for (Person person : results) {</color>
+<color=#75715e> *          System.out.println(person.ssn + ' ' + person.name);</color>
+<color=#75715e> *      }</color>
+<color=#75715e> *  } finally {</color>
+<color=#75715e> *      results.close();</color>
+<color=#75715e> *  }</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>EntityJoin</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>PrimaryIndex</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>primary</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Condition</color><color=#f92672>></color> <color=#f8f8f2>conditions</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a join object for a given primary index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param index the primary index on which the join will operate.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>EntityJoin</color><color=#f8f8f2>(</color><color=#f8f8f2>PrimaryIndex</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>primary</color> <color=#f92672>=</color> <color=#f8f8f2>index</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>conditions</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Condition</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Adds a secondary key condition to the equality join. Only entities having the given key value</color>
+<color=#75715e>   * in the given secondary index will be returned by the join operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param index the secondary index containing the given key value.</color>
+<color=#75715e>   * @param key the key value to match during the join.</color>
+<color=#75715e>   * @param <SK> the secondary key class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f92672><</color><color=#f8f8f2>SK</color><color=#f92672>></color> <color=#66d9ef>void</color> <color=#a6e22e>addCondition</color><color=#f8f8f2>(</color><color=#f8f8f2>SecondaryIndex</color><color=#f92672><</color><color=#f8f8f2>SK</color><color=#f8f8f2>,</color> <color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>SK</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Make key entry. */</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>index</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyBinding</color><color=#f8f8f2>().</color><color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Use keys database if available. */</color>
+    <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>index</color><color=#f8f8f2>.</color><color=#a6e22e>getKeysDatabase</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>index</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Add condition. */</color>
+    <color=#f8f8f2>conditions</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Condition</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Opens a cursor that returns the entities qualifying for the join. The join operation is</color>
+<color=#75715e>   * performed as the returned cursor is accessed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The operations performed with the cursor will not be transaction protected, and {@link</color>
+<color=#75715e>   * CursorConfig#DEFAULT} is used implicitly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the cursor.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws IllegalStateException if less than two conditions were added.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ForwardCursor</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>entities</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>entities</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Opens a cursor that returns the entities qualifying for the join. The join operation is</color>
+<color=#75715e>   * performed as the returned cursor is accessed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect all operations performed with the cursor, or null if</color>
+<color=#75715e>   *     the operations should not be transaction protected. If the store is non-transactional, null</color>
+<color=#75715e>   *     must be specified. For a transactional store the transaction is optional for read-only</color>
+<color=#75715e>   *     access and required for read-write access.</color>
+<color=#75715e>   * @param config the cursor configuration that determines the default lock mode used for all</color>
+<color=#75715e>   *     cursor operations, or null to implicitly use {@link CursorConfig#DEFAULT}.</color>
+<color=#75715e>   * @return the cursor.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws IllegalStateException if less than two conditions were added.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ForwardCursor</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>entities</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>JoinForwardCursor</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Opens a cursor that returns the primary keys of entities qualifying for the join. The join</color>
+<color=#75715e>   * operation is performed as the returned cursor is accessed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The operations performed with the cursor will not be transaction protected, and {@link</color>
+<color=#75715e>   * CursorConfig#DEFAULT} is used implicitly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the cursor.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws IllegalStateException if less than two conditions were added.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ForwardCursor</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#a6e22e>keys</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>keys</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Opens a cursor that returns the primary keys of entities qualifying for the join. The join</color>
+<color=#75715e>   * operation is performed as the returned cursor is accessed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect all operations performed with the cursor, or null if</color>
+<color=#75715e>   *     the operations should not be transaction protected. If the store is non-transactional, null</color>
+<color=#75715e>   *     must be specified. For a transactional store the transaction is optional for read-only</color>
+<color=#75715e>   *     access and required for read-write access.</color>
+<color=#75715e>   * @param config the cursor configuration that determines the default lock mode used for all</color>
+<color=#75715e>   *     cursor operations, or null to implicitly use {@link CursorConfig#DEFAULT}.</color>
+<color=#75715e>   * @return the cursor.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws IllegalStateException if less than two conditions were added.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ForwardCursor</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#a6e22e>keys</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>JoinForwardCursor</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>Condition</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Condition</color><color=#f8f8f2>(</color><color=#f8f8f2>Database</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>db</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>key</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Cursor</color> <color=#a6e22e>openCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>openCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>BasicIndex</color><color=#f8f8f2>.</color><color=#a6e22e>NO_RETURN_ENTRY</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>ignored</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>JoinForwardCursor</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>ForwardCursor</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>Cursor</color><color=#f92672>[]</color> <color=#f8f8f2>cursors</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>JoinCursor</color> <color=#f8f8f2>joinCursor</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>doKeys</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>JoinForwardCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>doKeys</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>doKeys</color> <color=#f92672>=</color> <color=#f8f8f2>doKeys</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursors</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Cursor</color><color=#f92672>[</color><color=#f8f8f2>conditions</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>cursors</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>Condition</color> <color=#f8f8f2>cond</color> <color=#f92672>=</color> <color=#f8f8f2>conditions</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>cond</color><color=#f8f8f2>.</color><color=#a6e22e>openCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Leave joinCursor null. */</color>
+            <color=#f8f8f2>doClose</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>cursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>joinCursor</color> <color=#f92672>=</color> <color=#f8f8f2>primary</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>join</color><color=#f8f8f2>(</color><color=#f8f8f2>cursors</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* doClose will throw e. */</color>
+        <color=#f8f8f2>doClose</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>next</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>V</color> <color=#a6e22e>next</color><color=#f8f8f2>(</color><color=#f8f8f2>LockMode</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinCursor</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doKeys</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>joinCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>binding</color> <color=#f92672>=</color> <color=#f8f8f2>primary</color><color=#f8f8f2>.</color><color=#a6e22e>getKeyBinding</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>V</color><color=#f8f8f2>)</color> <color=#f8f8f2>binding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>joinCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>EntityBinding</color> <color=#f8f8f2>binding</color> <color=#f92672>=</color> <color=#f8f8f2>primary</color><color=#f8f8f2>.</color><color=#a6e22e>getEntityBinding</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>V</color><color=#f8f8f2>)</color> <color=#f8f8f2>binding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>iterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color> <color=#a6e22e>iterator</color><color=#f8f8f2>(</color><color=#f8f8f2>LockMode</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>BasicIterator</color><color=#f92672><</color><color=#f8f8f2>V</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>doClose</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>doClose</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>firstException</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>joinCursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>joinCursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstException</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>firstException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>cursors</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>cursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>cursors</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstException</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>firstException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstException</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>firstException</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

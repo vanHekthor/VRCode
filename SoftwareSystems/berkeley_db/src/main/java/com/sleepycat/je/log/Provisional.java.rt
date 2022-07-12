@@ -1,0 +1,227 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Specifies whether to log an entry provisionally.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Provisional log entries:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>What are provisional log entries?</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Provisional log entries are those tagged with the provisional attribute in the log entry</color>
+<color=#75715e> * header. The provisional attribute can be applied to any type of log entry, and is implemented in</color>
+<color=#75715e> * com.sleepycat.je.log.LogEntryHeader as two stolen bits in the 8 bit version field.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When is the provisional attribute used?</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The provisional attribute is used only during recovery. It very simply indicates that recovery</color>
+<color=#75715e> * will ignore and skip over this log entry.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When is the provisional attribute set?</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The provisional attribute started out as a way to create atomicity among different log</color>
+<color=#75715e> * entries. Child pointers in the JE Btree are physical LSNs, so each Btree node's children must be</color>
+<color=#75715e> * logged before it in the log. On the other hand, one fundamental assumption of the JE log is that</color>
+<color=#75715e> * each Btree node found in the log can be replayed and placed in the in-memory tree. To do so, each</color>
+<color=#75715e> * Btree node must have a parent node that will house it. The grouping of multiple log entries into</color>
+<color=#75715e> * one atomic group is often used to fulfiil this requirement.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>* Atomic log entries:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ When a btree is first created, we bootstrap tree creation by logging the first BIN</color>
+<color=#75715e> * provisionally, then creating a parent IN which is the Btree root IN, which points to this first</color>
+<color=#75715e> * BIN.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ When we split a Btree node, we create a new IN, which is the sibling of the split node. We</color>
+<color=#75715e> * log the old sibling and the new sibling provisionally, and then log the parent, so that any</color>
+<color=#75715e> * crashes in the middle of this triumvirate which result in the failure to log the parent will skip</color>
+<color=#75715e> * over the orphaned siblings.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Splitting the Btree root is just a special case of a split.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Creating a duplicate subtree to hang in the middle of a btree is just a special case of a</color>
+<color=#75715e> * split and btree first creation.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>* Entries not meant to be recovered</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Temp DBs are not meant to be recovered and we log their LN and IN nodes in a very lax fashion,</color>
+<color=#75715e> * purely as a way of evicting them out of the cache temporarily. There is no guarantee that a</color>
+<color=#75715e> * consistent set has been logged to disk. We skip over them for both recovery performance and the</color>
+<color=#75715e> * "each-node-must-have-a-parent" rule.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>* Durable deferred-write entries</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Deferred-write INs are logged provisionally for the same reasons as for temp DBs (above): for</color>
+<color=#75715e> * recovery performance and the "each-node-must-have-a-parent" rule.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Deferred-write LNs are logged non-provisionally to support obsolete LSN counting. It would be</color>
+<color=#75715e> * nice to log them provisionally for recovery performance and to allow LN deletion without logging;</color>
+<color=#75715e> * however, that is not currently practical if obsolete counting is to be supported. See [#16864].</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>* Checkpoint performance</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When we flush a series of nodes, it's a waste to replay nodes which are referenced by higher</color>
+<color=#75715e> * levels. For example, if we checkpoint this btree:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>INA -> INb -> BINc (dirty)-> LNd</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>we log them in this order:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>BINc INb</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>And there's no point to replaying BINc, because it's referenced by INb. We skip over BINc,</color>
+<color=#75715e> * which we do by logging it provisionally.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In addition, BEFORE_CKPT_END is used to improve cleaner performance by keeping utilization</color>
+<color=#75715e> * information up-to-date during the checkpoint. See below for details.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>* Log cleaning - removing references to deleted files.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When we delete a file for log cleaning we guarantee that no active log entries refer to any</color>
+<color=#75715e> * log entry in the deleted file. Suppose our checkpoint looks like this:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>5/100 LNa 5/200 Ckpt start 5/300 INs ... 5/500 Ckpt end ... 5/800 last entry in log</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Because we do not delete a file until the Ckpt end after processing (cleaning) it, nothing</color>
+<color=#75715e> * from 5/500 to 5/800 can refer to a file deleted due to the Ckpt end in 5/500.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>BEFORE_CKPT_END is motivated in part (see below for a complete description) by the fact that</color>
+<color=#75715e> * while log entries between 5/100 (first active lsn) and 5/500 (ckpt end) will not in of themselves</color>
+<color=#75715e> * contain a LSN for a cleaned, deleted file, the act of processing them during recovery could</color>
+<color=#75715e> * require fetching a node from a deleted file. For example, the IN at 5/300 could have an in-memory</color>
+<color=#75715e> * parent which has a reference to an older, cleaned version of that IN. Treating the span between</color>
+<color=#75715e> * 5/200 and 5/500 as provisional is both optimal, because only the high level INs need to be</color>
+<color=#75715e> * processed, and required, in order not to fetch from a cleaned file.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The correctness issue is described in [#16037] comment 151, where we attempted to log</color>
+<color=#75715e> * non-provisionally below maxFlushLevel. It is repeated below.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>IN-A \ IN-B \ IN-C \ BIN-D</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>1/100 CkptStart 1/200 BIN-D provisional 1/300 IN-C non-provisional 2/100 IN-B non-provisional</color>
+<color=#75715e> * 2/200 IN-A non-provisional 2/300 MapLN refers to IN-A 2/400 CkptEnd 5/100 cleaner processes file</color>
+<color=#75715e> * 1 BIN-D and IN-C are dirty 5/200 CkptStart 5/300 BIN-D provisional 5/400 IN-C non-provisional</color>
+<color=#75715e> * 5/500 IN-B non-provisional (must log one extra level) IN-A is not logged MapLN still refers to</color>
+<color=#75715e> * IN-A at 2/200 5/600 CkptEnd file 1 is deleted 6/100 Start recovery</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that only the bottom level BINs are logged provisionally because we're logging level 2</color>
+<color=#75715e> * and up non-provisionally in this experiment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Recovery replays IN-C at 5/400 because it is non-provisional.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When it does the tree lookup (getParentINForChildIN) it uses the root IN-A at 2/200. This</color>
+<color=#75715e> * search fetches IN-B at 2/100 and then fails fetching IN-C at 1/300 because file 1 has been</color>
+<color=#75715e> * deleted.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In reality we log provisionally below maxFlushLevel, so that IN-C at 5/400 is not replayed.</color>
+<color=#75715e> * IN-B at 5/500 is at the maxFlushLevel and is non-provisional and is replayed. The search succeeds</color>
+<color=#75715e> * because nothing in file 1 needs to be fetched to find the parent.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>TODO: Could we instead replay INs in reverse order? Then IN-B at 5/500 would be replayed</color>
+<color=#75715e> * first. Unfortunately this would probably break something else. For example, the utilization</color>
+<color=#75715e> * tracking replay for INs currently depends on reading forward. This is worth exploring, however,</color>
+<color=#75715e> * since reducing logging during checkpoints would be extremely beneficial.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Provisional.BEFORE_CKPT_END --------------------------- This property was added to solve a</color>
+<color=#75715e> * specific problem that occurs in earlier versions of JE: When a long checkpoint runs, the BINs are</color>
+<color=#75715e> * not counted obsolete until after the entire BIN level has been logged. Specifically, they are</color>
+<color=#75715e> * counted obsolete when their ancestor is logged non-provisionally. Most INs logged by a checkpoint</color>
+<color=#75715e> * are BINs. This means that during a very long checkpoint, cleaning of the files containing those</color>
+<color=#75715e> * old BINs is delayed, and more importantly the calculated utilization is much higher than it</color>
+<color=#75715e> * actually is. The correction in utilization does not occur until the end of the checkpoint, when</color>
+<color=#75715e> * the higher level INs are logged. This manifests as a lull in cleaning during the checkpoint,</color>
+<color=#75715e> * because calculated utilization is artificially high, and a spike in cleaning at the end of the</color>
+<color=#75715e> * checkpoint. In some cases, the cleaner cannot recover from the backlog that is created by the</color>
+<color=#75715e> * spike.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The provisional property effects obsolete counting as follows:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ If an IN is logged with Provisional.YES, the old version of the IN is not counted obsolete</color>
+<color=#75715e> * immediately. Instead, the offset of the old version of the IN is added to a list in its parent</color>
+<color=#75715e> * IN. The offsets migrate upward in the tree in this manner until an ancestor IN is logged</color>
+<color=#75715e> * non-provisionally.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ If an IN is logged with Provisional.NO or BEFORE_CKPT_END, the old version of the IN is</color>
+<color=#75715e> * counted obsolete immediately (and offsets accumulated from provisional child INs are counted).</color>
+<color=#75715e> * This means that the obsolete offset is added to the UtilizationTracker, and may be flushed in a</color>
+<color=#75715e> * FileSummaryLN any time after that. At the latest, it is flushed at the end of the checkpoint.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Because subtree logging is now used for checkpoints and the parent IN of each logged sub-tree</color>
+<color=#75715e> * is logged with BEFORE_CKPT_END, the prior version of all INs in the sub-tree will be counted</color>
+<color=#75715e> * obsolete at that time. This keeps the calculated utilization accurate throughout the checkpoint,</color>
+<color=#75715e> * and prevents the large per-checkpoint lull and spike in log cleaning.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For the intermediate levels, Provisional.BEFORE_CKPT_END must be used rather than</color>
+<color=#75715e> * Provisional.NO, which is reserved for the highest level only. During recovery, the Provisional</color>
+<color=#75715e> * values are treated as follows (this is from the Provisional javadoc): + NO: The entry is</color>
+<color=#75715e> * non-provisional and is always processed by recovery. + YES: The entry is provisional and is never</color>
+<color=#75715e> * processed by recovery. + BEFORE_CKPT_END: The entry is provisional (not processed by recovery) if</color>
+<color=#75715e> * it occurs before the CkptEnd in the recovery interval, or is non-provisional (is processed) if it</color>
+<color=#75715e> * occurs after CkptEnd.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The key to BEFORE_CKPT_END is that it is treated as provisional if a CkptEnd is logged, i.e.,</color>
+<color=#75715e> * if we do not crash before completing the checkpoint. Because the checkpoint completed, we may</color>
+<color=#75715e> * have deleted log files that would be necessary to replay the IN. So we cannot safely replay it.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note the difference in the treatment of BEFORE_CKPT_END for obsolete counting and recovery: +</color>
+<color=#75715e> * For obsolete counting, BEFORE_CKPT_END is treated as non-provisional. + For recovery, when the IN</color>
+<color=#75715e> * occurs before CkptEnd, BEFORE_CKPT_END is treated as provisional. This difference is the reason</color>
+<color=#75715e> * for the existence of BEFORE_CKPT_END.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>TODO: Improvement to tracking of obsolete data. When we checkpoint INs, why can't we always</color>
+<color=#75715e> * count the previous version obsolete immediately, irrespective of whether it is logged</color>
+<color=#75715e> * provisionally? The previous version file can't be deleted until after a complete checkpoint. If</color>
+<color=#75715e> * we do not complete the next checkpoint, recovery will replay the INs logged with BEFORE_CKPT_END.</color>
+<color=#75715e> * So the previous version will be obsolete. This would avoid storing a list of obsolete child LSNs</color>
+<color=#75715e> * in each parent IN, and would make the utilization summary more up-to-date. The motivation for</color>
+<color=#75715e> * sub-tree logging was to keep the utilization info up-to-date, so we may be able to remove</color>
+<color=#75715e> * sub-tree logging as well. Additionally, I think we can remove BEFORE_CKPT_END and log</color>
+<color=#75715e> * provisionally (YES) instead, because recovery will replay the actions that dirtied the INs, and</color>
+<color=#75715e> * the ckpt at the end of recovery will flush the dirty nodes, making the previous version obsolete;</color>
+<color=#75715e> * however, this would duplicate the provisional INs, so perhaps it is best to continue to use</color>
+<color=#75715e> * BEFORE_CKPT_END.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>Provisional</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/** The entry is non-provisional and is always processed by recovery. */</color>
+  <color=#f8f8f2>NO</color><color=#f8f8f2>,</color>
+
+  <color=#75715e>/** The entry is provisional and is never processed by recovery. */</color>
+  <color=#f8f8f2>YES</color><color=#f8f8f2>,</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The entry is provisional (not processed by recovery) if it occurs before the CkptEnd in the</color>
+<color=#75715e>   * recovery interval, or is non-provisional (is processed) if it occurs after CkptEnd.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>BEFORE_CKPT_END</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Determines whether a given log entry should be processed during recovery. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isProvisional</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>logEntryLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>ckptEndLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>logEntryLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>NO</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>YES</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>BEFORE_CKPT_END</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>ckptEndLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>&&</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntryLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>ckptEndLsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>assert</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

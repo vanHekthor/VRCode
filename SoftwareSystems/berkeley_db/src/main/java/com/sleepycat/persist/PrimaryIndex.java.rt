@@ -1,0 +1,641 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntityBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntryBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.collections.StoredSortedMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.impl.PersistEntityBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.impl.PersistKeyAssigner</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.Entity</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.PrimaryKey</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.SortedMap</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The primary index for an entity class and its primary key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>{@code PrimaryIndex} objects are thread-safe. Multiple threads may safely call the methods of</color>
+<color=#75715e> * a shared {@code PrimaryIndex} object.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>{@code PrimaryIndex} implements {@link EntityIndex} to map the primary key type (PK) to the</color>
+<color=#75715e> * entity type (E).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The {@link Entity} annotation may be used to define an entity class and the {@link PrimaryKey}</color>
+<color=#75715e> * annotation may be used to define a primary key as shown in the following example.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * {@literal @Entity}</color>
+<color=#75715e> * class Employee {</color>
+<color=#75715e> *</color>
+<color=#75715e> *     {@literal @PrimaryKey}</color>
+<color=#75715e> *     long id;</color>
+<color=#75715e> *</color>
+<color=#75715e> *     String name;</color>
+<color=#75715e> *</color>
+<color=#75715e> *     Employee(long id, String name) {</color>
+<color=#75715e> *         this.id = id;</color>
+<color=#75715e> *         this.name = name;</color>
+<color=#75715e> *     }</color>
+<color=#75715e> *</color>
+<color=#75715e> *     private Employee() {} // For bindings</color>
+<color=#75715e> * }</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>To obtain the {@code PrimaryIndex} for a given entity class, call {@link</color>
+<color=#75715e> * EntityStore#getPrimaryIndex EntityStore.getPrimaryIndex}, passing the primary key class and the</color>
+<color=#75715e> * entity class. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * EntityStore store = new EntityStore(...);</color>
+<color=#75715e> *</color>
+<color=#75715e> * {@code PrimaryIndex<Long, Employee>} primaryIndex =</color>
+<color=#75715e> *     store.getPrimaryIndex(Long.class, Employee.class);</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that {@code Long.class} is passed as the primary key class, but the primary key field has</color>
+<color=#75715e> * the primitive type {@code long}. When a primitive primary key field is used, the corresponding</color>
+<color=#75715e> * primitive wrapper class is used to access the primary index. For more information on key field</color>
+<color=#75715e> * types, see {@link PrimaryKey}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The {@code PrimaryIndex} provides the primary storage and access methods for the instances of</color>
+<color=#75715e> * a particular entity class. Entities are inserted and updated in the {@code PrimaryIndex} by</color>
+<color=#75715e> * calling a method in the family of {@link #put} methods. The {@link #put} method will insert the</color>
+<color=#75715e> * entity if no entity with the same primary key already exists. If an entity with the same primary</color>
+<color=#75715e> * key does exist, it will update the entity and return the existing (old) entity. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * Employee oldEntity;</color>
+<color=#75715e> * oldEntity = primaryIndex.put(new Employee(1, "Jane Smith"));    // Inserts an entity</color>
+<color=#75715e> * assert oldEntity == null;</color>
+<color=#75715e> * oldEntity = primaryIndex.put(new Employee(2, "Joan Smith"));    // Inserts an entity</color>
+<color=#75715e> * assert oldEntity == null;</color>
+<color=#75715e> * oldEntity = primaryIndex.put(new Employee(2, "Joan M. Smith")); // Updates an entity</color>
+<color=#75715e> * assert oldEntity != null;</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The {@link #putNoReturn} method can be used to avoid the overhead of returning the existing</color>
+<color=#75715e> * entity, when the existing entity is not important to the application. The return type of {@link</color>
+<color=#75715e> * #putNoReturn} is void. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * primaryIndex.putNoReturn(new Employee(1, "Jane Smith"));    // Inserts an entity</color>
+<color=#75715e> * primaryIndex.putNoReturn(new Employee(2, "Joan Smith"));    // Inserts an entity</color>
+<color=#75715e> * primaryIndex.putNoReturn(new Employee(2, "Joan M. Smith")); // Updates an entity</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The {@link #putNoOverwrite} method can be used to ensure that an existing entity is not</color>
+<color=#75715e> * overwritten. {@link #putNoOverwrite} returns true if the entity was inserted, or false if an</color>
+<color=#75715e> * existing entity exists and no action was taken. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * boolean inserted;</color>
+<color=#75715e> * inserted = primaryIndex.putNoOverwrite(new Employee(1, "Jane Smith"));    // Inserts an entity</color>
+<color=#75715e> * assert inserted;</color>
+<color=#75715e> * inserted = primaryIndex.putNoOverwrite(new Employee(2, "Joan Smith"));    // Inserts an entity</color>
+<color=#75715e> * assert inserted;</color>
+<color=#75715e> * inserted = primaryIndex.putNoOverwrite(new Employee(2, "Joan M. Smith")); // <strong>No action was taken!</strong></color>
+<color=#75715e> * assert !inserted;</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Primary key values must be unique, in other words, each instance of a given entity class must</color>
+<color=#75715e> * have a distinct primary key value. Rather than assigning the unique primary key values yourself,</color>
+<color=#75715e> * a <em>sequence</em> can be used to assign sequential integer values automatically, starting with</color>
+<color=#75715e> * the value 1 (one). A sequence is defined using the {@link PrimaryKey#sequence} annotation</color>
+<color=#75715e> * property. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * {@literal @Entity}</color>
+<color=#75715e> * class Employee {</color>
+<color=#75715e> *</color>
+<color=#75715e> *     {@literal @PrimaryKey(sequence="ID")}</color>
+<color=#75715e> *     long id;</color>
+<color=#75715e> *</color>
+<color=#75715e> *     String name;</color>
+<color=#75715e> *</color>
+<color=#75715e> *     Employee(String name) {</color>
+<color=#75715e> *         this.name = name;</color>
+<color=#75715e> *     }</color>
+<color=#75715e> *</color>
+<color=#75715e> *     private Employee() {} // For bindings</color>
+<color=#75715e> * }</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The name of the sequence used above is "ID". Any name can be used. If the same sequence name</color>
+<color=#75715e> * is used in more than one entity class, the sequence will be shared by those classes, in other</color>
+<color=#75715e> * words, a single sequence of integers will be used for all instances of those classes. See {@link</color>
+<color=#75715e> * PrimaryKey#sequence} for more information.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Any method in the family of {@link #put} methods may be used to insert entities where the</color>
+<color=#75715e> * primary key is assigned from a sequence. When the {@link #put} method returns, the primary key</color>
+<color=#75715e> * field of the entity object will be set to the assigned key value. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * Employee employee;</color>
+<color=#75715e> * employee = new Employee("Jane Smith");</color>
+<color=#75715e> * primaryIndex.putNoReturn(employee);    // Inserts an entity</color>
+<color=#75715e> * assert employee.id == 1;</color>
+<color=#75715e> * employee = new Employee("Joan Smith");</color>
+<color=#75715e> * primaryIndex.putNoReturn(employee);    // Inserts an entity</color>
+<color=#75715e> * assert employee.id == 2;</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This begs the question: How do you update an existing entity, without assigning a new primary</color>
+<color=#75715e> * key? The answer is that the {@link #put} methods will only assign a new key from the sequence if</color>
+<color=#75715e> * the primary key field is zero or null (for reference types). If an entity with a non-zero and</color>
+<color=#75715e> * non-null key field is passed to a {@link #put} method, any existing entity with that primary key</color>
+<color=#75715e> * value will be updated. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * Employee employee;</color>
+<color=#75715e> * employee = new Employee("Jane Smith");</color>
+<color=#75715e> * primaryIndex.putNoReturn(employee);    // Inserts an entity</color>
+<color=#75715e> * assert employee.id == 1;</color>
+<color=#75715e> * employee = new Employee("Joan Smith");</color>
+<color=#75715e> * primaryIndex.putNoReturn(employee);    // Inserts an entity</color>
+<color=#75715e> * assert employee.id == 2;</color>
+<color=#75715e> * employee.name = "Joan M. Smith";</color>
+<color=#75715e> * primaryIndex.putNoReturn(employee);    // Updates an existing entity</color>
+<color=#75715e> * assert employee.id == 2;</pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Since {@code PrimaryIndex} implements the {@link EntityIndex} interface, it shares the common</color>
+<color=#75715e> * index methods for retrieving and deleting entities, opening cursors and using transactions. See</color>
+<color=#75715e> * {@link EntityIndex} for more information on these topics.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that when using an index, keys and values are stored and retrieved by value not by</color>
+<color=#75715e> * reference. In other words, if an entity object is stored and then retrieved, or retrieved twice,</color>
+<color=#75715e> * each object will be a separate instance. For example, in the code below the assertion will always</color>
+<color=#75715e> * fail.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * MyKey key = ...;</color>
+<color=#75715e> * MyEntity entity1 = new MyEntity(key, ...);</color>
+<color=#75715e> * index.put(entity1);</color>
+<color=#75715e> * MyEntity entity2 = index.get(key);</color>
+<color=#75715e> * assert entity1 == entity2; // always fails!</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>PrimaryIndex</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#66d9ef>extends</color> <color=#f8f8f2>BasicIndex</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>entityClass</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EntityBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>map</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>PersistKeyAssigner</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a primary index without using an <code>EntityStore</code>.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This constructor is not normally needed and is provided for applications that wish to use</color>
+<color=#75715e>   * custom bindings along with the Direct Persistence Layer. Normally, {@link</color>
+<color=#75715e>   * EntityStore#getPrimaryIndex getPrimaryIndex} is used instead.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that when this constructor is used directly, primary keys cannot be automatically</color>
+<color=#75715e>   * assigned from a sequence. The key assignment feature requires knowledge of the primary key</color>
+<color=#75715e>   * field, which is only available if an <code>EntityStore</code> is used. Of course, primary keys</color>
+<color=#75715e>   * may be assigned from a sequence manually before calling the <code>put</code> methods in this</color>
+<color=#75715e>   * class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database the primary database.</color>
+<color=#75715e>   * @param keyClass the class of the primary key.</color>
+<color=#75715e>   * @param keyBinding the binding to be used for primary keys.</color>
+<color=#75715e>   * @param entityClass the class of the entities stored in this index.</color>
+<color=#75715e>   * @param entityBinding the binding to be used for entities.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>PrimaryIndex</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#f8f8f2>keyClass</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntryBinding</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>entityClass</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EntityBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntityValueAdapter</color><color=#f8f8f2>(</color><color=#f8f8f2>entityClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entityClass</color> <color=#f92672>=</color> <color=#f8f8f2>entityClass</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entityBinding</color> <color=#f92672>=</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>keyAssigner</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>)</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>).</color><color=#a6e22e>getKeyAssigner</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the primary key class for this index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the key class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#a6e22e>getKeyClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>keyClass</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the primary key binding for this index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the key binding.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EntryBinding</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f92672>></color> <color=#a6e22e>getKeyBinding</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the entity class for this index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the entity class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>getEntityClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entityClass</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the entity binding for this index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the entity binding.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EntityBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>getEntityBinding</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity and returns null, or updates it if the primary key already exists and returns</color>
+<color=#75715e>   * the existing entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit is used implicitly if the store is transactional.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entity the entity to be inserted or updated.</color>
+<color=#75715e>   * @return the existing entity that was updated, or null if the entity was inserted.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>put</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity and returns null, or updates it if the primary key already exists and returns</color>
+<color=#75715e>   * the existing entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect this operation, null to use auto-commit, or null if</color>
+<color=#75715e>   *     the store is non-transactional.</color>
+<color=#75715e>   * @param entity the entity to be inserted or updated.</color>
+<color=#75715e>   * @return the existing entity that was updated, or null if the entity was inserted.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>autoCommit</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>transactional</color> <color=#f92672>&&</color> <color=#f8f8f2>txn</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getThreadTransaction</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>beginTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>getAutoCommitTransactionConfig</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>autoCommit</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>cursorConfig</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>concurrentDB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursorConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CursorConfig</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>setWriteCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursorConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>failed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>openCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>cursorConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LockMode</color> <color=#f8f8f2>lockMode</color> <color=#f92672>=</color> <color=#f8f8f2>locking</color> <color=#f92672>?</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>RMW</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>E</color> <color=#f8f8f2>existing</color> <color=#f92672>=</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>failed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>existing</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>KEYEXIST</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>failed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>autoCommit</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>failed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity, or updates it if the primary key already exists (does not return the</color>
+<color=#75715e>   * existing entity). This method may be used instead of {@link #put(Object)} to save the overhead</color>
+<color=#75715e>   * of returning the existing entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit is used implicitly if the store is transactional.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entity the entity to be inserted or updated.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>putNoReturn</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>putNoReturn</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity, or updates it if the primary key already exists (does not return the</color>
+<color=#75715e>   * existing entity). This method may be used instead of {@link #put(Transaction,Object)} to save</color>
+<color=#75715e>   * the overhead of returning the existing entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect this operation, null to use auto-commit, or null if</color>
+<color=#75715e>   *     the store is non-transactional.</color>
+<color=#75715e>   * @param entity the entity to be inserted or updated.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>putNoReturn</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* <!-- begin JE only --> */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>put</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>OVERWRITE</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* <!-- end JE only --> */</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+
+<color=#75715e>//    db.put(txn, keyEntry, dataEntry);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity and returns true, or returns false if the primary key already exists.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Auto-commit is used implicitly if the store is transactional.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entity the entity to be inserted.</color>
+<color=#75715e>   * @return true if the entity was inserted, or false if an entity with the same primary key is</color>
+<color=#75715e>   *     already present.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>putNoOverwrite</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts an entity and returns true, or returns false if the primary key already exists.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect this operation, null to use auto-commit, or null if</color>
+<color=#75715e>   *     the store is non-transactional.</color>
+<color=#75715e>   * @param entity the entity to be inserted.</color>
+<color=#75715e>   * @return true if the entity was inserted, or false if an entity with the same primary key is</color>
+<color=#75715e>   *     already present.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* <!-- begin JE only --> */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>put</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>NO_OVERWRITE</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* <!-- end JE only --> */</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#75715e>/*txn,*/</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>NO_OVERWRITE</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* <!-- begin JE only --> */</color>
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts or updates an entity, using Put type and WriteOptions parameters, and returning an</color>
+<color=#75715e>   * OperationResult.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a {@link PrimaryKey#sequence} is used and the primary key field of the given entity is</color>
+<color=#75715e>   * null or zero, this method will assign the next value from the sequence to the primary key field</color>
+<color=#75715e>   * of the given entity.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the transaction used to protect this operation, null to use auto-commit, or null if</color>
+<color=#75715e>   *     the store is non-transactional.</color>
+<color=#75715e>   * @param entity the entity to be inserted.</color>
+<color=#75715e>   * @param putType is {@link Put#OVERWRITE} or {@link Put#NO_OVERWRITE}.</color>
+<color=#75715e>   * @param options the WriteOptions, or null to use default options.</color>
+<color=#75715e>   * @return the OperationResult if the record is written, else null. If {@code Put.NO_OVERWRITE} is</color>
+<color=#75715e>   *     used, null is returned if an entity with the same primary key is already present. If {@code</color>
+<color=#75715e>   *     Put.OVERWRITE} is used, null is never returned.</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws DatabaseException the base class for all BDB exceptions.</color>
+<color=#75715e>   * @since 7.0</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationResult</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>Put</color> <color=#f8f8f2>putType</color><color=#f8f8f2>,</color> <color=#f8f8f2>WriteOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>putType</color> <color=#f92672>!=</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>OVERWRITE</color> <color=#f92672>&&</color> <color=#f8f8f2>putType</color> <color=#f92672>!=</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>NO_OVERWRITE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"putType not allowed: "</color> <color=#f92672>+</color> <color=#f8f8f2>putType</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToData</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#75715e>/*txn, */</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>putType</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+  <color=#75715e>/* <!-- end JE only --> */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If we are assigning primary keys from a sequence, assign the next key and set the primary key</color>
+<color=#75715e>   * field.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>assignKey</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>keyAssigner</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>keyAssigner</color><color=#f8f8f2>.</color><color=#a6e22e>assignPrimaryKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToKey</color><color=#f8f8f2>(</color><color=#f8f8f2>entity</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Of the EntityIndex methods only get()/map()/sortedMap() are implemented</color>
+<color=#75715e>   * here.  All other methods are implemented by BasicIndex.</color>
+<color=#75715e>   */</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>PK</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>PK</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* <!-- begin JE only --> */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>EntityResult</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getReadOptions</color><color=#f8f8f2>(</color><color=#f8f8f2>lockMode</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>value</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* <!-- end JE only --> */</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>keyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockMode</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>makeEntity</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* <!-- begin JE only --> */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EntityResult</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>PK</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color> <color=#f8f8f2>getType</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkGetType</color><color=#f8f8f2>(</color><color=#f8f8f2>getType</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>keyBinding</color><color=#f8f8f2>.</color><color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>OperationResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>getType</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntityResult</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>makeEntity</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>),</color> <color=#f8f8f2>result</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+  <color=#75715e>/* <!-- end JE only --> */</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>E</color> <color=#a6e22e>makeEntity</color><color=#f8f8f2>(</color><color=#f8f8f2>PK</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>entityBinding</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>)</color>
+        <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>((</color><color=#f8f8f2>PersistEntityBinding</color><color=#f8f8f2>)</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>).</color><color=#a6e22e>entryToObjectWithPriKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>:</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataEntry</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>map</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sortedMap</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>PK</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>sortedMap</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>map</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>map</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StoredSortedMap</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBinding</color><color=#f8f8f2>,</color> <color=#f8f8f2>entityBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>map</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   *     For internal use only.</color>
+<color=#75715e>   *     <p>Used for obtaining the auto-commit txn config from the store, which overrides this</color>
+<color=#75715e>   *     method to return it.</color>
+<color=#75715e>   */</color>
+  <color=#75715e>/* <!-- begin JE only --> */</color>
+  <color=#66d9ef>protected</color>
+  <color=#75715e>/* <!-- end JE only --> */</color>
+  <color=#f8f8f2>TransactionConfig</color> <color=#a6e22e>getAutoCommitTransactionConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isUpdateAllowed</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

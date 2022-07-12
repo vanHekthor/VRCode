@@ -1,0 +1,181 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.Array</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.Modifier</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collections</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Implements Accessor for a complex persistent class.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>EnhancedAccessor</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Accessor</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Enhanced</color><color=#f92672>></color> <color=#f8f8f2>classRegistry</color> <color=#f92672>=</color>
+      <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>synchronizedMap</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Enhanced</color><color=#f92672>></color><color=#f8f8f2>());</color>
+
+  <color=#75715e>/* Is public for unit tests. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>EXPECT_ENHANCED</color> <color=#f92672>=</color> <color=#e6db74>"true"</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#e6db74>"expectEnhanced"</color><color=#f8f8f2>));</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Enhanced</color> <color=#f8f8f2>prototype</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Format</color><color=#f92672>[]</color> <color=#f8f8f2>compositeKeyFormats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Registers a prototype instance, and should be called during initialization of the prototype</color>
+<color=#75715e>   * class. The prototype may be null for an abstract class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>registerClass</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>Enhanced</color> <color=#f8f8f2>prototype</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>classRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>prototype</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether a given class is a (registered) enhanced class. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEnhanced</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>enhanced</color> <color=#f92672>=</color> <color=#f8f8f2>classRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>enhanced</color> <color=#f92672>&&</color> <color=#f8f8f2>EXPECT_ENHANCED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Test was run with expectEnhanced=true but class "</color> <color=#f92672>+</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" is not enhanced"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>enhanced</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>EnhancedAccessor</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>type</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>prototype</color> <color=#f92672>=</color> <color=#f8f8f2>classRegistry</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>prototype</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>Modifier</color><color=#f8f8f2>.</color><color=#a6e22e>isAbstract</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getModifiers</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates an accessor for a complex type. */</color>
+  <color=#f8f8f2>EnhancedAccessor</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>ComplexFormat</color> <color=#f8f8f2>format</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Find the primary key format for this format or one of its superclass</color>
+<color=#75715e>     * formats.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>ComplexFormat</color> <color=#f8f8f2>declaringFormat</color> <color=#f92672>=</color> <color=#f8f8f2>format</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>declaringFormat</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>priKeyField</color> <color=#f92672>=</color> <color=#f8f8f2>declaringFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getPriKeyFieldInfo</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priKeyField</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>priKeyFormat</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>priKeyField</color><color=#f8f8f2>.</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>declaringFormat</color> <color=#f92672>=</color> <color=#f8f8f2>declaringFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getComplexSuper</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates an accessor for a composite key type. */</color>
+  <color=#f8f8f2>EnhancedAccessor</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldInfo</color><color=#f92672>></color> <color=#f8f8f2>fieldInfos</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nFields</color> <color=#f92672>=</color> <color=#f8f8f2>fieldInfos</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>compositeKeyFormats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Format</color><color=#f92672>[</color><color=#f8f8f2>nFields</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nFields</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>compositeKeyFormats</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>fieldInfos</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>).</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>newInstance</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prototype</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Abstract class -- internal error. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>prototype</color><color=#f8f8f2>.</color><color=#a6e22e>bdbNewInstance</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>newArray</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prototype</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Abstract class -- use reflection for now. */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Array</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>prototype</color><color=#f8f8f2>.</color><color=#a6e22e>bdbNewArray</color><color=#f8f8f2>(</color><color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isPriKeyFieldNullOrZero</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priKeyFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"No primary key: "</color> <color=#f92672>+</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbIsPriKeyFieldNullOrZero</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writePriKeyField</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priKeyFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"No primary key: "</color> <color=#f92672>+</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbWritePriKeyField</color><color=#f8f8f2>(</color><color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readPriKeyField</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priKeyFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"No primary key: "</color> <color=#f92672>+</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbReadPriKeyField</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>priKeyFormat</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeSecKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbWriteSecKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>output</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readSecKeyFields</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>startField</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>endField</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbReadSecKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>startField</color><color=#f8f8f2>,</color> <color=#f8f8f2>endField</color><color=#f8f8f2>,</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeNonKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbWriteNonKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>output</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readNonKeyFields</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>startField</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>endField</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbReadNonKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>startField</color><color=#f8f8f2>,</color> <color=#f8f8f2>endField</color><color=#f8f8f2>,</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbWriteCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#f8f8f2>compositeKeyFormats</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbReadCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>compositeKeyFormats</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>getField</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>field</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isSecField</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbGetField</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>field</color><color=#f8f8f2>,</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>,</color> <color=#f8f8f2>isSecField</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setField</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>field</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isSecField</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbSetField</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>field</color><color=#f8f8f2>,</color> <color=#f8f8f2>superLevel</color><color=#f8f8f2>,</color> <color=#f8f8f2>isSecField</color><color=#f8f8f2>,</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setPriField</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>((</color><color=#f8f8f2>Enhanced</color><color=#f8f8f2>)</color> <color=#f8f8f2>o</color><color=#f8f8f2>).</color><color=#a6e22e>bdbSetPriField</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

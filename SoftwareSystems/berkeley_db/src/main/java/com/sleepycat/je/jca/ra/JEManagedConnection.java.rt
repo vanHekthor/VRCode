@@ -1,0 +1,276 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.jca.ra</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>javax.resource.ResourceException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>javax.resource.spi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>javax.security.auth.Subject</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>javax.transaction.xa.XAResource</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.PrintWriter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>JEManagedConnection</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ManagedConnection</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>ConnectionEventListener</color><color=#f92672>></color> <color=#f8f8f2>listeners</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>JEConnection</color> <color=#f8f8f2>conn</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>XAEnvironment</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>JELocalTransaction</color> <color=#f8f8f2>savedLT</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>TransactionConfig</color> <color=#f8f8f2>savedTransConfig</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>JEManagedConnection</color><color=#f8f8f2>(</color><color=#f8f8f2>Subject</color> <color=#f8f8f2>subject</color><color=#f8f8f2>,</color> <color=#f8f8f2>JERequestInfo</color> <color=#f8f8f2>jeInfo</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ResourceException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>savedTransConfig</color> <color=#f92672>=</color> <color=#f8f8f2>jeInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactionConfig</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>env</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>XAEnvironment</color><color=#f8f8f2>(</color><color=#f8f8f2>jeInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getJERootDir</color><color=#f8f8f2>(),</color> <color=#f8f8f2>jeInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvConfig</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>DE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ResourceException</color><color=#f8f8f2>(</color><color=#f8f8f2>DE</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>listeners</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>ConnectionEventListener</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>savedLT</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>rwDatabaseHandleCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>roDatabaseHandleCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>rwSecondaryDatabaseHandleCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>roSecondaryDatabaseHandleCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>getConnection</color><color=#f8f8f2>(</color><color=#f8f8f2>Subject</color> <color=#f8f8f2>subject</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectionRequestInfo</color> <color=#f8f8f2>connectionRequestInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>conn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>conn</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JEConnection</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>conn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#f8f8f2>XAEnvironment</color> <color=#a6e22e>getEnvironment</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>LocalTransaction</color> <color=#a6e22e>getLocalTransaction</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If there is no JEConnection associated with this ManagedConnection</color>
+<color=#75715e>     * yet, then the ManagedConnection holds on to the JELocalTransaction.</color>
+<color=#75715e>     * Once a JEConnection is associated (it may not ever happen), we hand</color>
+<color=#75715e>     * off the JELocalTransaction to the JEConnection and forget about it</color>
+<color=#75715e>     * in the ManagedConnection.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>conn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>savedLT</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JELocalTransaction</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>savedTransConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>savedLT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>JELocalTransaction</color> <color=#f8f8f2>lt</color> <color=#f92672>=</color> <color=#f8f8f2>conn</color><color=#f8f8f2>.</color><color=#a6e22e>getLocalTransaction</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lt</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>savedLT</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lt</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JELocalTransaction</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>savedTransConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lt</color> <color=#f92672>=</color> <color=#f8f8f2>savedLT</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>conn</color><color=#f8f8f2>.</color><color=#a6e22e>setLocalTransaction</color><color=#f8f8f2>(</color><color=#f8f8f2>lt</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>savedLT</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lt</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>XAResource</color> <color=#a6e22e>getXAResource</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>associateConnection</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>connection</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>conn</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>JEConnection</color><color=#f8f8f2>)</color> <color=#f8f8f2>connection</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>conn</color><color=#f8f8f2>.</color><color=#a6e22e>setManagedConnection</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>savedLT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>savedLT</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addConnectionEventListener</color><color=#f8f8f2>(</color><color=#f8f8f2>ConnectionEventListener</color> <color=#f8f8f2>listener</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>listeners</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>listener</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>removeConnectionEventListener</color><color=#f8f8f2>(</color><color=#f8f8f2>ConnectionEventListener</color> <color=#f8f8f2>listener</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>listeners</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>listener</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ManagedConnectionMetaData</color> <color=#a6e22e>getMetaData</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>JEConnectionMetaData</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLogWriter</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintWriter</color> <color=#f8f8f2>out</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>PrintWriter</color> <color=#a6e22e>getLogWriter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ConnectionEvent</color> <color=#f8f8f2>connEvent</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>CONNECTION_CLOSED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>setConnectionHandle</color><color=#f8f8f2>(</color><color=#f8f8f2>conn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sendConnectionEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>sendConnectionEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>ConnectionEvent</color> <color=#f8f8f2>connEvent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>listeners</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ConnectionEventListener</color> <color=#f8f8f2>listener</color> <color=#f92672>=</color> <color=#f8f8f2>listeners</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>CONNECTION_CLOSED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>connectionClosed</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>CONNECTION_ERROR_OCCURRED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>connectionErrorOccurred</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>LOCAL_TRANSACTION_STARTED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>localTransactionStarted</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>LOCAL_TRANSACTION_COMMITTED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>localTransactionCommitted</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ConnectionEvent</color><color=#f8f8f2>.</color><color=#a6e22e>LOCAL_TRANSACTION_ROLLEDBACK</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>localTransactionRolledback</color><color=#f8f8f2>(</color><color=#f8f8f2>connEvent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>destroy</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ResourceException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cleanupDatabaseHandleCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cleanupDatabaseHandleCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cleanupDatabaseHandleCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cleanupDatabaseHandleCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>DE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ResourceException</color><color=#f8f8f2>(</color><color=#f8f8f2>DE</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>cleanup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>removeDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>removeDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>truncateDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>returnCount</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>truncateDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>returnCount</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>Database</color> <color=#a6e22e>openDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>openDatabaseInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>roDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>openDatabaseInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>rwDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>SecondaryDatabase</color> <color=#a6e22e>openSecondaryDatabase</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color> <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color> <color=#f8f8f2>SecondaryConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>openSecondaryDatabaseInternal</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>roSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>openSecondaryDatabaseInternal</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>rwSecondaryDatabaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Database</color> <color=#a6e22e>openDatabaseInternal</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getExclusiveCreate</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>openDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>openDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>validate</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getConfig</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>SecondaryDatabase</color> <color=#a6e22e>openSecondaryDatabaseInternal</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SecondaryConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>SecondaryDatabase</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getExclusiveCreate</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>openSecondaryDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryDatabase</color><color=#f8f8f2>)</color> <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>openSecondaryDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>primaryDatabase</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>databaseHandleCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>validate</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getConfig</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>removeDatabaseFromCache</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>cache</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>cache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>cache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>cache</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>dbName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>cleanupDatabaseHandleCache</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>cache</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>cache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Database</color><color=#f92672>></color> <color=#f8f8f2>iter</color> <color=#f92672>=</color> <color=#f8f8f2>cache</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,181 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.stream</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.ChecksumException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNIndex</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNIndex.BackwardVLSNScanner</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNRange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileNotFoundException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn.NULL_LSN</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The FeederSyncupReader scans the log backwards for requested log entries. It uses the vlsnIndex</color>
+<color=#75715e> * to optimize its search, repositioning when a concrete vlsn->lsn mapping is available.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The FeederSyncupReader is not thread safe, and can only be used serially. It will stop at the</color>
+<color=#75715e> * finishLsn, which should be set using the GlobalCBVLSN.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>FeederSyncupReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>VLSNReader</color> <color=#f8f8f2>{</color>
+  <color=#75715e>/* The scanner is a cursor over the VLSNIndex. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BackwardVLSNScanner</color> <color=#f8f8f2>scanner</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>FeederSyncupReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSNIndex</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>endOfLogLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If we go backwards, endOfFileLsn and startLsn must not be null.</color>
+<color=#75715e>     * Make them the same, so we always start at the same very end.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// forward</color>
+        <color=#f8f8f2>endOfLogLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>scanner</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BackwardVLSNScanner</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>initScan</color><color=#f8f8f2>(</color><color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set up the FeederSyncupReader to start scanning from this VLSN. If we find a mapping for this</color>
+<color=#75715e>   * VLSN, we'll start precisely at its LSN, else we'll have to start from an earlier location.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InterruptedException</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   * @throws DatabaseException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initScan</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>startVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"FeederSyncupReader start can't be NULL_VLSN"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>startPoint</color> <color=#f92672>=</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>startLsn</color> <color=#f92672>=</color> <color=#f8f8f2>scanner</color><color=#f8f8f2>.</color><color=#a6e22e>getStartingLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>startPoint</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>startLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Flush the log so that syncup can assume that all log entries that</color>
+<color=#75715e>     * are represented in the VLSNIndex  are safely out of the log buffers</color>
+<color=#75715e>     * and on disk. Simplifies this reader, so it can use the regular</color>
+<color=#75715e>     * ReadWindow, which only works on a file.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>flushNoSync</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>initAtFileStart</color><color=#f8f8f2>(</color><color=#f8f8f2>startLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>currentEntryPrevOffset</color> <color=#f92672>=</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>getEndOffset</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>currentEntryOffset</color> <color=#f92672>=</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>getEndOffset</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>currentVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Backward scanning for records for the feeder's part in syncup.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws ChecksumException</color>
+<color=#75715e>   * @throws FileNotFoundException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>OutputWireRecord</color> <color=#a6e22e>scanBackwards</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>())</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * The requested VLSN is before the start of our range, we don't</color>
+<color=#75715e>       * have this record.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>currentVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If repositionLsn is not NULL_LSN, the reader will seek to that</color>
+<color=#75715e>     * position when calling readNextEntry instead of scanning.</color>
+<color=#75715e>     * setPosition() is a noop if repositionLsn is null.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>repositionLsn</color> <color=#f92672>=</color> <color=#f8f8f2>scanner</color><color=#f8f8f2>.</color><color=#a6e22e>getPreciseLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>setPosition</color><color=#f8f8f2>(</color><color=#f8f8f2>repositionLsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readNextEntry</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>currentFeedRecord</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @throw an EnvironmentFailureException if we were scanning for a particular VLSN and we have</color>
+<color=#75715e>   *     passed it by.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkForPassingTarget</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>compareResult</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>compareResult</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Hey, we passed the VLSN we wanted. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"want to read "</color> <color=#f92672>+</color> <color=#f8f8f2>currentVLSN</color> <color=#f92672>+</color> <color=#e6db74>" but reader at "</color> <color=#f92672>+</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTargetEntry</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>nScanned</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Skip invisible entries. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Return true if this entry is replicated and its VLSN is currentVLSN.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryIsReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>entryVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>compareResult</color> <color=#f92672>=</color> <color=#f8f8f2>entryVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>currentVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>checkForPassingTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>compareResult</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* return true if this is the entry we want. */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>compareResult</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Instantiate a WireRecord to house this log entry. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>slice</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>currentFeedRecord</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>OutputWireRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

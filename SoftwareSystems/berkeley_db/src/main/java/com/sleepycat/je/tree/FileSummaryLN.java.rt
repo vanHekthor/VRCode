@@ -1,0 +1,438 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.PackedOffsets</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.TrackedFileSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.MemoryBudget</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.Loggable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.utilint.StringUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A FileSummaryLN represents a Leaf Node in the UtilizationProfile database.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The contents of the FileSummaryLN are not fixed until the moment at which the LN is added to</color>
+<color=#75715e> * the log. A base summary object contains the summary last added to the log. A tracked summary</color>
+<color=#75715e> * object contains live summary info being updated in real time. The tracked summary is added to the</color>
+<color=#75715e> * base summary just before logging it, and then the tracked summary is reset. This ensures that the</color>
+<color=#75715e> * logged summary will accurately reflect the totals calculated at the point in the log where the LN</color>
+<color=#75715e> * is added.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This is all done in the writeToLog method, which operates under the log write latch. All</color>
+<color=#75715e> * utilization tracking must be done under the log write latch.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In record version 1, obsolete offset tracking was added and multiple records are stored for a</color>
+<color=#75715e> * single file rather than a single record. Each record contains the offsets that were tracked since</color>
+<color=#75715e> * the last record was written.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The key is 8 bytes: 4 bytes for the file number followed by 4 bytes for the sequence number.</color>
+<color=#75715e> * The lowest valued key for a given file contains the most recent summary information, while to get</color>
+<color=#75715e> * a complete list of obsolete offsets all records for the file must be read. A range search using</color>
+<color=#75715e> * just the first 4 bytes can be used to find the most recent record -- this is possible because the</color>
+<color=#75715e> * sequence number values are decreasing over time for a given file. Here are example keys for three</color>
+<color=#75715e> * summary records in file 1:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> * (file=1, sequence=Integer.MAX_VALUE - 300)</color>
+<color=#75715e> * (file=1, sequence=Integer.MAX_VALUE - 200)</color>
+<color=#75715e> * (file=1, sequence=Integer.MAX_VALUE - 100)</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The sequence number is the number of obsolete entries counted so far, subtracted from</color>
+<color=#75715e> * Integer.MAX_VALUE to cause the latest written record to have the lowest key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <h3>Log version information</h3></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Version 0: Keys are old format strings. No obsolete detail is present.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Version 1: Keys are two 4 byte integers: {file, sequence}. Obsolete detail is present. Some</color>
+<color=#75715e> * offsets may be invalid if RMW was used.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Version 2: The RMW problem with invalid offsets was corrected. There is no data format change;</color>
+<color=#75715e> * all versions of JE 2.0.x can read version 1.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @see com.sleepycat.je.cleaner.UtilizationProfile</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>class</color> <color=#a6e22e>FileSummaryLN</color> <color=#66d9ef>extends</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BEGIN_TAG</color> <color=#f92672>=</color> <color=#e6db74>"<fileSummaryLN>"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>END_TAG</color> <color=#f92672>=</color> <color=#e6db74>"</fileSummaryLN>"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>extraMarshaledMemorySize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>baseSummary</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>PackedOffsets</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>needOffsets</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a new LN with a given base summary. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>FileSummaryLN</color><color=#f8f8f2>(</color><color=#f8f8f2>FileSummary</color> <color=#f8f8f2>baseSummary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>baseSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>baseSummary</color> <color=#f92672>=</color> <color=#f8f8f2>baseSummary</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates an empty LN to be filled in from the log. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>FileSummaryLN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>baseSummary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a deleted FileSummaryLN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param deletedMarker makes this constructor signature unique, the value passed doesn't matter.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>FileSummaryLN</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>deletedMarker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f92672>[]</color><color=#f8f8f2>)</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>baseSummary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates a deleted FileSummaryLN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>LN</color> <color=#a6e22e>makeDeletedLN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummaryLN</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*deletedMarker*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the live summary object that will be added to the base summary at the time the LN is</color>
+<color=#75715e>   * logged.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTrackedSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>trackedSummary</color> <color=#f92672>=</color> <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>needOffsets</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the tracked summary, or null if setTrackedSummary was not called. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>TrackedFileSummary</color> <color=#a6e22e>getTrackedSummary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the base summary for the file that is stored in the LN. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileSummary</color> <color=#a6e22e>getBaseSummary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>baseSummary</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the obsolete offsets for the file. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>PackedOffsets</color> <color=#a6e22e>getObsoleteOffsets</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the given key for this LN is a String file number key. For the old version of</color>
+<color=#75715e>   * the LN there will be a single record per file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If this is a version 0 log entry, the key is a string. However, such an LN may be migrated</color>
+<color=#75715e>   * by the cleaner, in which case the version will be 1 or greater [#13061]. In the latter case, we</color>
+<color=#75715e>   * can distinguish a string key by:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1) If the key is not 8 bytes long, it has to be a string key.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2) If the key is 8 bytes long, but bytes[4] is ascii "0" to "9", then it must be a string</color>
+<color=#75715e>   * key. bytes[4] to bytes[7] are a sequence number that is the number of log entries counted. For</color>
+<color=#75715e>   * this number to be greater than 0x30000000, the binary value of 4 digits starting with ascii</color>
+<color=#75715e>   * "0", over 400 million log entries would have to occur in a single file; this should never</color>
+<color=#75715e>   * happen.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that having to rely on method (2) is unlikely. A string key will only be 8 bytes if the</color>
+<color=#75715e>   * file number reach 8 decimal digits (10,000,000 to 99,999,999). This is a very large file number</color>
+<color=#75715e>   * and unlikely to have occurred using JE 1.7.1 or earlier.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In summary, the only time the algorithm here could fail is if there were more than 400</color>
+<color=#75715e>   * million log entries per file, and more than 10 million were written with JE 1.7.1 or earlier.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasStringKey</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>!=</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f92672>[</color><color=#ae81ff>4</color><color=#f92672>]</color> <color=#f92672>>=</color> <color=#e6db74>'0'</color> <color=#f92672>&&</color> <color=#f8f8f2>bytes</color><color=#f92672>[</color><color=#ae81ff>4</color><color=#f92672>]</color> <color=#f92672><=</color> <color=#e6db74>'9'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Convert a FileSummaryLN key from a byte array to a long. The file number is the first 4 bytes</color>
+<color=#75715e>   * of the key.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hasStringKey</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fromUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>)).</color><color=#a6e22e>longValue</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#ae81ff>0xFFFFFFFFL</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the sequence number from the byte array. The sequence number is the last 4 bytes of the</color>
+<color=#75715e>   * key.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getSequence</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hasStringKey</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color> <color=#f92672>-</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>))</color> <color=#f92672>&</color> <color=#ae81ff>0xFFFFFFFFL</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the first 4 bytes of the key for the given file number. This can be used to do a range</color>
+<color=#75715e>   * search to find the first LN for the file.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>makePartialKey</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>4</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the full two-part key for a given file number and unique sequence. This can be used to</color>
+<color=#75715e>   * insert a new LN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param sequence is a unique identifier for the LN for the given file, and must be greater than</color>
+<color=#75715e>   *     the last sequence.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>makeFullKey</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>sequence</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>sequence</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>8</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The sequence is subtracted from MAX_VALUE so that increasing values</color>
+<color=#75715e>     * will be sorted first.  This allows a simple range search to find the</color>
+<color=#75715e>     * most recent value.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeIntMSB</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color> <color=#f92672>-</color> <color=#f8f8f2>sequence</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initialize a node that has been faulted in from the log. If this FSLN contains version 1</color>
+<color=#75715e>   * offsets that can be incorrect when RMW was used, and if je.cleaner.rmwFix is enabled, discard</color>
+<color=#75715e>   * the offsets. [#13158]</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>==</color> <color=#ae81ff>1</color> <color=#f92672>&&</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnv</color><color=#f8f8f2>().</color><color=#a6e22e>getCleaner</color><color=#f8f8f2>().</color><color=#a6e22e>isRMWFixEnabled</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dumping</color>
+<color=#75715e>   */</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dumpString</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>beginTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>BEGIN_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>endTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>END_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Dump additional fields. Done this way so the additional info can be within the XML tags</color>
+<color=#75715e>   * defining the dumped log entry.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Logging</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the correct log type for a FileSummaryLN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note: FileSummaryLN will never be transactional.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>getLogType</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>isInsert</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>isTransactional</color> <color=#f8f8f2>:</color> <color=#e6db74>"Txnl access to UP db not allowed"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILESUMMARYLN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This log entry type is configured to perform marshaling (getLogSize and writeToLog) under the</color>
+<color=#75715e>   * write log mutex. Otherwise, the size could change in between calls to these two methods as the</color>
+<color=#75715e>   * result of utilizaton tracking.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>getOffsets</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Add the tracked (live) summary to the base summary before writing it</color>
+<color=#75715e>     * to the log, and reset the tracked summary.  When deleting the LN,</color>
+<color=#75715e>     * the tracked summary is cleared explicitly and will be null.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trackedSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>trackedSummary</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>getOffsets</color><color=#f8f8f2>();</color>
+      <color=#75715e>/* Reset the totals to zero and clear the tracked offsets. */</color>
+      <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>baseSummary</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Should never be replicated. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>Loggable</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** If tracked offsets may be present, get them so they are ready to be written to the log. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>getOffsets</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needOffsets</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color><color=#f92672>[]</color> <color=#f8f8f2>offsets</color> <color=#f92672>=</color> <color=#f8f8f2>trackedSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getObsoleteOffsets</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>offsets</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>oldSize</color> <color=#f92672>=</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>getExtraMemorySize</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>pack</color><color=#f8f8f2>(</color><color=#f8f8f2>offsets</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>newSize</color> <color=#f92672>=</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>getExtraMemorySize</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>extraMarshaledMemorySize</color> <color=#f92672>=</color> <color=#f8f8f2>newSize</color> <color=#f92672>-</color> <color=#f8f8f2>oldSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>needOffsets</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Overrides this method to add space occupied by this object's fields. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>()</color>
+        <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>FILESUMMARYLN_OVERHEAD</color> <color=#f92672>-</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>LN_OVERHEAD</color><color=#f8f8f2>)</color>
+        <color=#f92672>+</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>getExtraMemorySize</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Clear out the obsoleteOffsets to save memory when the LN is deleted. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>makeDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>makeDeleted</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Adds the extra memory used by obsoleteOffsets to the parent BIN memory size. Must be called</color>
+<color=#75715e>   * after LN is inserted into the BIN and logged, while the cursor is still positioned on the</color>
+<color=#75715e>   * inserted LN. The BIN must be latched. [#17462]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The obsoleteOffsets memory size is not intially budgeted in the usual way because</color>
+<color=#75715e>   * PackedOffsets.pack (which changes the memory size) is called during marshalling (see</color>
+<color=#75715e>   * getOffset). This amount is not counted in the parent IN size in the usual way, because LN</color>
+<color=#75715e>   * logging / marshalling occurs after the LN is inserted in the BIN and its memory size has been</color>
+<color=#75715e>   * counted (see CursorImpl.putInternal).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the tree memory usage cannot be updated directly in getOffsets because the tree</color>
+<color=#75715e>   * memory usage must always be the sum of all IN sizes, and it is reset to this sum each</color>
+<color=#75715e>   * checkpoint.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addExtraMarshaledMemorySize</color><color=#f8f8f2>(</color><color=#f8f8f2>BIN</color> <color=#f8f8f2>parentBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>extraMarshaledMemorySize</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>trackedSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color> <color=#75715e>/* Must be set during the insert. */</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>parentBIN</color><color=#f8f8f2>.</color><color=#a6e22e>isLatchExclusiveOwner</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>parentBIN</color><color=#f8f8f2>.</color><color=#a6e22e>updateMemorySize</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>extraMarshaledMemorySize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>extraMarshaledMemorySize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpKey</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<fileSummaryLNKey fileNumber=\"0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>))</color> <color=#f92672>+</color> <color=#e6db74>"\" "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"sequence=\"0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getSequence</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>))</color> <color=#f92672>+</color> <color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpKey</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

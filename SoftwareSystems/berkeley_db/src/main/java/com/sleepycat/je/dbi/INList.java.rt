@@ -1,0 +1,483 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.dbi</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.CacheMode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.evictor.Evictor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.evictor.EvictorStatDefinition</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.BIN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.IN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LongStat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.StatGroup</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.NoSuchElementException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ConcurrentHashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ConcurrentMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicLong</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The INList is a list of in-memory INs for a given environment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For an explanation of the 'enabled' mode, see RecoveryManager class comments.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>INList</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Iterable</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>enabled</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>recalcInProgress</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>recalcToggle</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>recalcConsistent</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>recalcTotal</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * We use a Map of INs because there is no ConcurrentHashSet, only a ConcurrentHashMap. But this</color>
+<color=#75715e>   * map is treated as a set of INs with the same object as the key and the value.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConcurrentMap</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color><color=#f92672>></color> <color=#f8f8f2>ins</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Stats about the composition of the INList must be kept in this class rather than the evictor</color>
+<color=#75715e>   * because a sharedEnvCache encompasses many INLists. Note that we are keeping a true StatGroup</color>
+<color=#75715e>   * instance/Stat fields. That's because these values are "instantaneous", and don't need to obey</color>
+<color=#75715e>   * the accumulate/clear semantics of stats. When stats are loaded, we'll just create a new stats</color>
+<color=#75715e>   * group to pass back.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nCachedUpperINs</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nCachedBINs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>INList</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ins</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConcurrentHashMap</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>enabled</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>environmentImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>environmentImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcInProgress</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcToggle</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcConsistent</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcTotal</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>nCachedUpperINs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>nCachedBINs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>nCachedBINDeltas</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** All stats from the INList are instantaneous -- never need to be cleared. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>loadStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>EvictorStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>EvictorStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>istat</color> <color=#f92672>=</color> <color=#f8f8f2>nCachedUpperINs</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>bstat</color> <color=#f92672>=</color> <color=#f8f8f2>nCachedBINs</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>bdstat</color> <color=#f92672>=</color> <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>EvictorStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>CACHED_UPPER_INS</color><color=#f8f8f2>,</color> <color=#f8f8f2>istat</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>EvictorStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>CACHED_BINS</color><color=#f8f8f2>,</color> <color=#f8f8f2>bstat</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>EvictorStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>CACHED_BIN_DELTAS</color><color=#f8f8f2>,</color> <color=#f8f8f2>bdstat</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>// verifyPrint(istat, bstat);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>verifyPrint</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>istat</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>bstat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>numINs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>numBINs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>theIN</color> <color=#f8f8f2>:</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>theIN</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>numBINs</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>numINs</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"size="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>getSize</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>" INcount="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>numINs</color>
+            <color=#f92672>+</color> <color=#e6db74>" BINCount="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>numBINs</color>
+            <color=#f92672>+</color> <color=#e6db74>" INstat="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>istat</color>
+            <color=#f92672>+</color> <color=#e6db74>" bstat="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>bstat</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Ok to be imprecise.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Enable the INList during recovery. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>enable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>enabled</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>enabled</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEnabled</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>enabled</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** An IN has just come into memory, add it to the list. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Ignore additions until the INList is enabled. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>enabled</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Be sure to check for BIN first, since it's a subclass of IN! */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isBIN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCachedBINs</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCachedUpperINs</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use putIfAbsent to ensure that we never overwrite an IN, since this</color>
+<color=#75715e>     * can cause Btree corruption.  Throw a fatal EFE if the IN is already</color>
+<color=#75715e>     * present to detect potential corruption bugs early. [#21686]</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>IN</color> <color=#f8f8f2>oldValue</color> <color=#f92672>=</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>putIfAbsent</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldValue</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Failed adding new IN node="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" dbIdentity="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>identityHashCode</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>())</color>
+              <color=#f92672>+</color> <color=#e6db74>" db="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>"\nExisting IN node="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>oldValue</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" dbIdentity="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>identityHashCode</color><color=#f8f8f2>(</color><color=#f8f8f2>oldValue</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>())</color>
+              <color=#f92672>+</color> <color=#e6db74>" db="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>oldValue</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getBudgetedMemorySize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>memRecalcAdd</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>().</color><color=#a6e22e>updateTreeMemoryUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>setInListResident</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** An IN is being evicted. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>enabled</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>removed</color> <color=#f92672>=</color> <color=#f8f8f2>removeInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>removed</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>delta</color> <color=#f92672>=</color> <color=#ae81ff>0</color> <color=#f92672>-</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getBudgetedMemorySize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>memRecalcRemove</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>delta</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>().</color><color=#a6e22e>updateTreeMemoryUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>delta</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Performs unconditional IN removal, but does not update memory usage.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @returns whether the IN was found in the map and removed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>removeInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Be sure to check for BIN first, since it's a subclass of IN! */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isBIN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCachedBINs</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*checkLatched*/</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCachedUpperINs</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Evictor</color> <color=#f8f8f2>evictor</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEvictor</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>latchAcquired</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isLatchOwner</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>latchAcquired</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>evictor</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>setInListResident</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getOffHeapCache</color><color=#f8f8f2>().</color><color=#a6e22e>removeINFromMain</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latchAcquired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>IN</color> <color=#f8f8f2>oldValue</color> <color=#f92672>=</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>oldValue</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>updateBINDeltaStat</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>incr</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>addAndGet</color><color=#f8f8f2>(</color><color=#f8f8f2>incr</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return an iterator over the main 'ins' set. Returned iterator may or may not show elements</color>
+<color=#75715e>   * added or removed after the iterator is created.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return an iterator over the main 'ins' set.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f92672>></color> <color=#a6e22e>iterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Iter</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A direct Iterator on the INList may return INs that have been removed, since the underlying</color>
+<color=#75715e>   * ConcurrentHashMap doesn't block changes to the list during the iteration. This Iterator</color>
+<color=#75715e>   * implementation wraps a direct Iterator and returns only those INs that are on the INList.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that this doesn't guarantee that an IN will not be removed from the INList after being</color>
+<color=#75715e>   * returned by this iterator. But filtering out the INs already removed will avoid wasting effort</color>
+<color=#75715e>   * in the evictor, checkpointer, and other places where INs are iterated and processed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>Iter</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>IN</color><color=#f92672>></color> <color=#f8f8f2>baseIter</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>next</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>lastReturned</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>Iter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>baseIter</color> <color=#f92672>=</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasNext</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>next</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>advance</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>IN</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>next</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>advance</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>NoSuchElementException</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>lastReturned</color> <color=#f92672>=</color> <color=#f8f8f2>next</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>next</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>lastReturned</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>advance</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>baseIter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>IN</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#f8f8f2>baseIter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getInListResident</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>next</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Caller must update memory usage. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastReturned</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>removeInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReturned</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>lastReturned</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Clear the entire list at shutdown and release its portion of the memory budget. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>clear</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>nCachedUpperINs</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCachedBINs</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCachedBINDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>MemoryBudget</color> <color=#f8f8f2>mb</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>mb</color><color=#f8f8f2>.</color><color=#a6e22e>refreshTreeMemoryUsage</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>mb</color><color=#f8f8f2>.</color><color=#a6e22e>refreshTreeAdminMemoryUsage</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dump</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"size="</color> <color=#f92672>+</color> <color=#f8f8f2>getSize</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>theIN</color> <color=#f8f8f2>:</color> <color=#f8f8f2>ins</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"db="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>theIN</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" nid=: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>theIN</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"/"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>theIN</color><color=#f8f8f2>.</color><color=#a6e22e>getLevel</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The following set of memRecalc methods allow an iteration over the</color>
+<color=#75715e>   * INList to recalculate the tree memory budget.  This is done during a</color>
+<color=#75715e>   * checkpoint by the DirtyINMap class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * We flip the INList toggle, recalcToggle, at the beginning of the recalc.</color>
+<color=#75715e>   * At that point, if recalcConsistent is true, all IN toggles have the</color>
+<color=#75715e>   * opposite value of recalcToggle.  As we process INs we flip their</color>
+<color=#75715e>   * toggles.  We can tell whether we have already processed an IN by</color>
+<color=#75715e>   * comparing its toggle to recalcToggle.  If they are equal, we have</color>
+<color=#75715e>   * already processed the IN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The scenarios below describe how the recalcTotal is updated for a</color>
+<color=#75715e>   * particular IN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #1: IN size is unchanged during the iteration</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   iterate -- add total IN size, mark processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #2: IN size is updated during the iteration</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   update  -- do not add delta because IN is not yet processed</color>
+<color=#75715e>   *   iterate -- add total IN size, mark processed</color>
+<color=#75715e>   *   update  -- do add delta because IN was already processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #3: IN is added during the iteration but not iterated</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   add -- add IN size, mark processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #4: IN is added during the iteration and is iterated</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   add     -- add IN size, mark processed</color>
+<color=#75715e>   *   iterate -- do not add size because IN was already processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #5: IN is removed during the iteration but not iterated</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   remove  -- do not add delta because IN is not yet processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Scenario #6: IN is removed during the iteration and is iterated</color>
+<color=#75715e>   *  begin</color>
+<color=#75715e>   *   iterate -- add total IN size, mark processed</color>
+<color=#75715e>   *   remove  -- add delta because IN was already processed</color>
+<color=#75715e>   *  end</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * If recalcConsistent is false, the last attempted recalc was not</color>
+<color=#75715e>   * compeleted.  In that case the next reset pass will simply set the toggle</color>
+<color=#75715e>   * in every IN so that they are consistent.  The pass following that will</color>
+<color=#75715e>   * then do a normal recalc.  At the end of any pass, we only update the</color>
+<color=#75715e>   * memory budget if the last recalc was consistent (or this is the first</color>
+<color=#75715e>   * recalc), and the current recalc is completed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * We do not synchronize when changing state variables.  In memRecalcBegin</color>
+<color=#75715e>   * and memRecalcEnd it is possible for an IN to be added or removed by</color>
+<color=#75715e>   * another thread in the window between settting recalcInProgress and</color>
+<color=#75715e>   * setting or getting the recalclTotal.  In memRecalcUpdate a similar thing</color>
+<color=#75715e>   * can happen in the window between checking the IN toggle and adding to</color>
+<color=#75715e>   * recalcTotal, if memRecaclcIterate is called by the checkpointer in that</color>
+<color=#75715e>   * window. If this occurs, the reset total can be inaccurate by the amount</color>
+<color=#75715e>   * that was changed in the window.  We have chosen to live with this</color>
+<color=#75715e>   * possible inaccuracy rather than synchronize these methods.  We would</color>
+<color=#75715e>   * have to synchronize every time we add/remove INs and update the size of</color>
+<color=#75715e>   * an IN, which could introduce a new point of contention.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * We are starting the iteration of the INList. Flip the INList toggle and set the total amount to</color>
+<color=#75715e>   * zero.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>After calling this method, memRecalcEnd must be called in a finally block. If it is not</color>
+<color=#75715e>   * called, internal state will be invalid.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcBegin</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>recalcTotal</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>recalcInProgress</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcToggle</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>recalcToggle</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An IN was encountered during the iteration through the entire INList. Add its size to the</color>
+<color=#75715e>   * recalc total if we have not already processed it, and mark it as processed. If it was already</color>
+<color=#75715e>   * processed, memRecalcAdd must have been called for the IN when it was added to the INList during</color>
+<color=#75715e>   * the iteration.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcIterate</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>recalcInProgress</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcConsistent</color> <color=#f92672>&&</color> <color=#f8f8f2>recalcToggle</color> <color=#f92672>!=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getRecalcToggle</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>delta</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>resetAndGetMemorySize</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>recalcTotal</color><color=#f8f8f2>.</color><color=#a6e22e>addAndGet</color><color=#f8f8f2>(</color><color=#f8f8f2>delta</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>setRecalcToggle</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcToggle</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An IN is being added to the INList. Add its size to the recalc total and mark it as processed.</color>
+<color=#75715e>   * It cannot have already been processed since it is a new IN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcAdd</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcInProgress</color> <color=#f92672>&&</color> <color=#f8f8f2>recalcConsistent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>recalcTotal</color><color=#f8f8f2>.</color><color=#a6e22e>addAndGet</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>setRecalcToggle</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcToggle</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An IN is being removed from the INList. Add the delta to the recalc total if it was already</color>
+<color=#75715e>   * processed, and mark it as processed. If we have not yet processed it, it is not included in the</color>
+<color=#75715e>   * total.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcRemove</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>memRecalcUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>delta</color><color=#f8f8f2>);</color> <color=#75715e>// Remove and update are the same</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The size of an IN is changing. Add the delta to the recalc total if it have already processed</color>
+<color=#75715e>   * the IN. If we have not yet processed it, its total size will be added by memRecalcIterate.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>delta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcInProgress</color> <color=#f92672>&&</color> <color=#f8f8f2>recalcConsistent</color> <color=#f92672>&&</color> <color=#f8f8f2>recalcToggle</color> <color=#f92672>==</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getRecalcToggle</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>recalcTotal</color><color=#f8f8f2>.</color><color=#a6e22e>addAndGet</color><color=#f8f8f2>(</color><color=#f8f8f2>delta</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The reset operation is over. Only update the tree budget if the iteration was completed and the</color>
+<color=#75715e>   * state was consistent prior to this reset operation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>memRecalcEnd</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>recalcInProgress</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>completed</color> <color=#f92672>&&</color> <color=#f8f8f2>recalcConsistent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>().</color><color=#a6e22e>refreshTreeMemoryUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcTotal</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>recalcInProgress</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recalcConsistent</color> <color=#f92672>=</color> <color=#f8f8f2>completed</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

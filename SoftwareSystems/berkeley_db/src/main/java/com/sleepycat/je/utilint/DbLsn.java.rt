@@ -1,0 +1,262 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.TreeUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Arrays</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * DbLsn is a class that operates on Log Sequence Numbers (LSNs). An LSN is a long comprised of a</color>
+<color=#75715e> * file number (32b) and offset within that file (32b) which references a unique record in the</color>
+<color=#75715e> * database environment log. While LSNs are represented as long's, we operate on them using an</color>
+<color=#75715e> * abstraction and return longs from these methods so that we don't have to worry about the lack of</color>
+<color=#75715e> * unsigned quantities.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbLsn</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>INT_MASK</color> <color=#f92672>=</color> <color=#ae81ff>0xFFFFFFFFL</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>MAX_FILE_OFFSET</color> <color=#f92672>=</color> <color=#ae81ff>0xFFFFFFFFL</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Signifies a transient LSN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>MAX_FILE_NUM</color> <color=#f92672>=</color> <color=#ae81ff>0xFFFFFFFFL</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>NULL_LSN</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>DbLsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNumber</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color> <color=#f92672>|</color> <color=#f8f8f2>((</color><color=#f8f8f2>fileNumber</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>32</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This flavor of makeLsn is used when the file offset has been stored in 32 bits, as is done in</color>
+<color=#75715e>   * the VLSNBucket.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNumber</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color> <color=#f92672>|</color> <color=#f8f8f2>((</color><color=#f8f8f2>fileNumber</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>32</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For transient LSNs we use the MAX_FILE_NUM and the ascending sequence of offsets. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>makeTransientLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_FILE_NUM</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** A transient LSN is defined as one with a file number of MAX_FILE_NUM. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTransient</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>MAX_FILE_NUM</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTransientOrNull</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lsn</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_LSN</color> <color=#f92672>||</color> <color=#f8f8f2>isTransient</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>longToLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lsn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>.</color><color=#a6e22e>longValue</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the file number for this DbLsn.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the number for this DbLsn.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>lsn</color> <color=#f92672>>></color> <color=#ae81ff>32</color><color=#f8f8f2>)</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the file offset for this DbLsn.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the offset for this DbLsn.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>lsn</color> <color=#f92672>&</color> <color=#f8f8f2>INT_MASK</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The file offset is really an unsigned int. If we are using the</color>
+<color=#75715e>   * file offset as a value, we must be careful to manipulate it as a long</color>
+<color=#75715e>   * in order not to lose the last bit of data. If we are only storing</color>
+<color=#75715e>   * the file offset, we can treat it as an Integer in order to save</color>
+<color=#75715e>   * 32 bits of space.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getFileOffsetAsInt</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>convertIntFileOffsetToLong</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>storedLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>storedLsn</color> <color=#f92672>&</color> <color=#ae81ff>0xffffffffL</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>compareLong</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>l1</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>l2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>l1</color> <color=#f92672><</color> <color=#f8f8f2>l2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>l1</color> <color=#f92672>></color> <color=#f8f8f2>l2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn1</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_LSN</color> <color=#f92672>||</color> <color=#f8f8f2>lsn2</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"NULL_LSN lsn1="</color> <color=#f92672>+</color> <color=#f8f8f2>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" lsn2="</color> <color=#f92672>+</color> <color=#f8f8f2>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn2</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileNumber1</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileNumber2</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn2</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileNumber1</color> <color=#f92672>==</color> <color=#f8f8f2>fileNumber2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>compareLong</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color><color=#f8f8f2>),</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn2</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>compareLong</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumber1</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileNumber2</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"<DbLsn val=\"0x"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color>
+        <color=#f92672>+</color> <color=#e6db74>"/0x"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color>
+        <color=#f92672>+</color> <color=#e6db74>"\"/>"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"0x"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color>
+        <color=#f92672>+</color> <color=#e6db74>"/0x"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>nSpaces</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the logsize in bytes between these two LSNs. This is an approximation; the logs might</color>
+<color=#75715e>   * actually be a little more or less in size. This assumes that no log files have been cleaned.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getNoCleaningDistance</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>thisLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* First figure out how many files lay between the two. */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>myFile</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>thisLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>otherLsn</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>otherFile</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myFile</color> <color=#f92672>==</color> <color=#f8f8f2>otherFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>abs</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>thisLsn</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myFile</color> <color=#f92672>></color> <color=#f8f8f2>otherFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>calcDiff</color><color=#f8f8f2>(</color><color=#f8f8f2>myFile</color> <color=#f92672>-</color> <color=#f8f8f2>otherFile</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>calcDiff</color><color=#f8f8f2>(</color><color=#f8f8f2>otherFile</color> <color=#f92672>-</color> <color=#f8f8f2>myFile</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diff</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the logsize in bytes between these two LSNs. This is an approximation; the logs might</color>
+<color=#75715e>   * actually be a little more or less in size. This assumes that log files might have been cleaned.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>thisLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* First figure out how many files lay between the two. */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>myFile</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>thisLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>otherLsn</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>otherFile</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myFile</color> <color=#f92672>==</color> <color=#f8f8f2>otherFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>abs</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>thisLsn</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>otherLsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Figure out how many files lie between. */</color>
+      <color=#f8f8f2>Long</color><color=#f92672>[]</color> <color=#f8f8f2>fileNums</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getAllFileNumbers</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>myFileIdx</color> <color=#f92672>=</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>binarySearch</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>myFile</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>otherFileIdx</color> <color=#f92672>=</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>binarySearch</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>otherFile</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myFileIdx</color> <color=#f92672>></color> <color=#f8f8f2>otherFileIdx</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>calcDiff</color><color=#f8f8f2>(</color><color=#f8f8f2>myFileIdx</color> <color=#f92672>-</color> <color=#f8f8f2>otherFileIdx</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>calcDiff</color><color=#f8f8f2>(</color><color=#f8f8f2>otherFileIdx</color> <color=#f92672>-</color> <color=#f8f8f2>myFileIdx</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diff</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>calcDiff</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>fileDistance</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>laterLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>earlierLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>fileDistance</color> <color=#f92672>*</color> <color=#f8f8f2>logFileSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>diff</color> <color=#f92672>+=</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>laterLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>diff</color> <color=#f92672>-=</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>earlierLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diff</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the number of bytes between two LSNs, counting the true size of each intermediate file.</color>
+<color=#75715e>   * Assumes that all files in the LSN range are currently protected from cleaner deletion, e.g.,</color>
+<color=#75715e>   * during recovery. Uses File.length and does not perturb the FileManager's file handle cache.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>long</color> <color=#a6e22e>getTrueDistance</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn2</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>thisLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lsn1</color> <color=#f92672>=</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>lsn2</color> <color=#f92672>=</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lsn1</color> <color=#f92672>=</color> <color=#f8f8f2>otherLsn</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>lsn2</color> <color=#f92672>=</color> <color=#f8f8f2>thisLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>file1</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>file2</color> <color=#f92672>=</color> <color=#f8f8f2>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn2</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>dist</color> <color=#f92672>=</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn2</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#f8f8f2>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn1</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file1</color> <color=#f92672>==</color> <color=#f8f8f2>file2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>dist</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color><color=#f92672>[]</color> <color=#f8f8f2>fileNums</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getAllFileNumbers</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx1</color> <color=#f92672>=</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>binarySearch</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f8f8f2>,</color> <color=#f8f8f2>file1</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>idx2</color> <color=#f92672>=</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>binarySearch</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f8f8f2>,</color> <color=#f8f8f2>file2</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * File2 has already been counted, and we've already subtracted the</color>
+<color=#75715e>     * offset of file1. Add lengths of file1 to file2-1.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>idx1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>idx2</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>path</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dist</color> <color=#f92672>+=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>path</color><color=#f8f8f2>).</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>dist</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

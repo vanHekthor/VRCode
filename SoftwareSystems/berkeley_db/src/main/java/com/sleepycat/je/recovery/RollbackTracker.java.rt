@@ -1,0 +1,981 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.recovery</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.RecoveryUtilizationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbTree</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LNFileReader</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.TreeLocation</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.TxnChain.RevertInfo</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * RollbackTracker is used to detect rollback periods in the log that are the result of HA replica</color>
+<color=#75715e> * syncups. These rollback periods affect how LNs should be processed at recovery. Rollbacks differ</color>
+<color=#75715e> * from aborts in that a rollback returns a LN to its previous version, whether intra or</color>
+<color=#75715e> * inter-txnal, while an abort always returns an LN to its pre-txn version.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>What is a Rollback Period? -------------------------- The rollback represents the logical</color>
+<color=#75715e> * truncation of the log. Any transactional LNs in that rollback period should be undone, even if</color>
+<color=#75715e> * they are ultimately part of a committed transaction. See the wiki page on Syncup Recovery for the</color>
+<color=#75715e> * full design. See com.sleepycat.je.rep.impl.node.Replay.rollback for the steps taken at the time</color>
+<color=#75715e> * of the rollback.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A RollbackStart record is logged at the start of any rollback, and a RollbackEnd is logged at</color>
+<color=#75715e> * the completion of a rollback. RollbackStarts refer to a matchpoint and the area between the</color>
+<color=#75715e> * matchpoint and the RollbackStart is the rollback period.The RollbackTracker peruses</color>
+<color=#75715e> * RollbackStarts and Ends and generates a map of the rollback periods.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>RollbackStarts and their starting Matchpoints can be nested or can be distinct, but several</color>
+<color=#75715e> * invariants are in place and can be enforced. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>LSN --- 100 txnA commit</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>200 txnB abort 250 LN for txnC 300 txnC abort .. 400 RollbackStart A (starting matchpoint =</color>
+<color=#75715e> * 200) 500 RollbackEnd A ... 600 RollbackStart B (starting matchpoint = 200) 700 RollbackStart C</color>
+<color=#75715e> * (starting matchpoint = 100) 800 RollbackEnd C 900 txnD abort 1000 RollbackStart D (starting</color>
+<color=#75715e> * matchpoint = 900)</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This log creates four rollback periods 1) LSN 100 -> 700 (defined by RollbackStart C). This</color>
+<color=#75715e> * has two rollback periods nested within. 2) LSN 200 -> 400, (defined by RollbackStart A) nested</color>
+<color=#75715e> * within B 3) LSN 200 -> 600, (defined by RollbackStart B) nested within C 4) LSN 1000 -> 900</color>
+<color=#75715e> * (defined by RolbackStart D)</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- There can be no commits or aborts within a rollback period, because we shouldn't have</color>
+<color=#75715e> * executed a soft recovery that undid a commit or abort. in the rollback period.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- There can be no LN_TXs between a RollbackStart and its matching RollbackEnd (should be no LN</color>
+<color=#75715e> * write operations happening during the syncup.) However, there might be INs written by a</color>
+<color=#75715e> * checkpoint, and eviction.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The recovery period should never see a RollbackEnd without its matching RollbackStart</color>
+<color=#75715e> * record, though it is possible to see a RollbackStart that has no RollbackEnd.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- There can never be any overlapping, or intersection of periods, because a rollback period is</color>
+<color=#75715e> * supposed to be like a truncation of the log. Since that log is "gone", a subsequent rollback</color>
+<color=#75715e> * shouldn't find a matchpoint inside another rollback period.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- A child period must be wholly contained between the parent's matchpoint and RollbackStart.</color>
+<color=#75715e> * This is simply due to the way rollbacks occur. A parent rollback has a Matchpoint <= the child's</color>
+<color=#75715e> * Matchpoint or it wouldn't be nested. The parent's RollbackStart > the child's RollbackEnd, since</color>
+<color=#75715e> * the parent occurs after the child in time.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The Rollback tracker keeps a list of all the rollback periods. Some are distinct, some are</color>
+<color=#75715e> * nested.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Recovery processing and rollback periods ---------------------------------------- The actions</color>
+<color=#75715e> * taken at a rollback may not have been made persistent to the log, so at recovery, we literally</color>
+<color=#75715e> * mimic and replay these two steps: (a) make sure invisible log entries have their invisible bit on</color>
+<color=#75715e> * and (b) make sure all INs reflect the correct LNs. All use of the rollback periods and tracker</color>
+<color=#75715e> * take place on the backwards scans. The RollbackStart and End entries are read during the first</color>
+<color=#75715e> * recovery undo pass When a rollback period is found, a transaction chain is constructed for each</color>
+<color=#75715e> * transaction that was active in the period, to support a repeat of the actions taken originally.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The first undo pass, for the mapping tree, has to construct a map of recovery periods. Since</color>
+<color=#75715e> * the mapping tree only has MapLNs, and we never write any txnal MapLNs, that first pass does not</color>
+<color=#75715e> * encounter any txnal LNs. The next two undo passes consult the rollback period map to determine if</color>
+<color=#75715e> * an LN needs to be rolledback, or just treated like other LNs.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Rollback periods that precede the checkpoint start can be ignored, because we can be assured</color>
+<color=#75715e> * that all the INs and LNs modified by that rollback were made persistent by the checkpoint.</color>
+<color=#75715e> * Ignoring such periods is required, and is not just an optimization, because it guarantees that we</color>
+<color=#75715e> * will not need to create a transaction chain that needs to traverse the log beyond the first</color>
+<color=#75715e> * active lsn. A rollback period precedes the checkpoint if its RollbackEnd is before the checkpoint</color>
+<color=#75715e> * start.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When a rollback period overlaps CkptStart and we recover, we are guaranteed that the undo</color>
+<color=#75715e> * passes will process all LNs in the rollback period, because they are >= to the firstActiveLEnd of</color>
+<color=#75715e> * the checkpoint.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The lastActiveLSN for the checkpoint will be <= the LSN of the first LN of any transaction</color>
+<color=#75715e> * that is being rolled back at the time of CkptStart, since these transactions were still active at</color>
+<color=#75715e> * that time.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>No file containing a transaction rolled back in the recovery interval, or a file containing</color>
+<color=#75715e> * the abortLSN of such a transaction, will be deleted by the cleaner. An active transaction</color>
+<color=#75715e> * prevents cleaning of its first logged entry and beyond. The LN of the abortLSN will be locked,</color>
+<color=#75715e> * which prevents it from being cleaned.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>All the work lies on the undo side. Recovery redo only needs to ignore invisible log entries,</color>
+<color=#75715e> * because we know that the undo pass applied the invisible bit where needed. Note that the undo</color>
+<color=#75715e> * pass must be sure to write the invisible bits after the pass, before redo attempts to read the</color>
+<color=#75715e> * log.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Each rollback LN_TX belongs to a single rollback period. When periods are nested, the LN_TX</color>
+<color=#75715e> * belongs to the closest rollback period that encompasses it. Using the example above, a LN at lsn</color>
+<color=#75715e> * 350 belongs to rollback period A a LN at lsn 550 belongs to rollback period B a LN at lsn 650</color>
+<color=#75715e> * belongs to rollback period C It uses its rollback period's txn chain to find its previous</color>
+<color=#75715e> * version.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RollbackTracker</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* for assertions. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>firstUndoPass</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * List of lsns that were made invisible and need to be fsynced, from</color>
+<color=#75715e>   * this recovery.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * singlePassLsns are collected for a single recovery pass. After that</color>
+<color=#75715e>   * pass, the lsns must be written to the log, so that the next redo</color>
+<color=#75715e>   * recovery pass properly skips over invisible lsns, but it need not</color>
+<color=#75715e>   * do a fsync. After each pass, the file numbers involved are added to</color>
+<color=#75715e>   * recoveryFilesToSync.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * After recovery is finished, all file that have re-flipped invisible bits</color>
+<color=#75715e>   * are fsynced. Hopefully, the OS may have fsynced some, and waiting until</color>
+<color=#75715e>   * the end to fsync will be an optimization.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>recoveryFilesToSync</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>singlePassInvisibleLsns</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used only for the first construction pass. This is the rollback</color>
+<color=#75715e>   * period that we have just found.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Top level list of rollback periods */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color> <color=#f8f8f2>periodList</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>RollbackTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>periodList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checkpointStart</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>recoveryFilesToSync</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>singlePassInvisibleLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Construction Pass: A RollbackEnd is seen, make new period. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertFirstPass</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>makeNestedPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>periodList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Construction Pass: A RollbackStart is seen. Might be the matching one for the current period,</color>
+<color=#75715e>   * or it might be a new period.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertFirstPass</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* There's no rollback period going on, start a new one. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>makeNestedPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>periodList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A TxnCommit showed up on the construction pass. If it's a replicated txn, check if it's in a</color>
+<color=#75715e>   * valid place. It should not be within the rollback period.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Omit commits for internal, non-replicated transactions from this check.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>checkCommit</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>commitLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertFirstPass</color><color=#f8f8f2>(</color><color=#f8f8f2>commitLSN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>TxnManager</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicatedTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>commitLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>fail</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Commit at "</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>commitLSN</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" is within rollback period."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Set the checkpoint start before we begin marking rollback periods, so we</color>
+<color=#75715e>   * know that we can ignore periods that are before the checkpoint start.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setCheckpointStart</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>checkpointStart</color> <color=#f92672>=</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>getCheckpointStart</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>EnvironmentImpl</color> <color=#a6e22e>getEnvImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit tests */</color>
+  <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color> <color=#a6e22e>getPeriodList</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>periodList</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>setFirstPass</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>firstUndoPass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>firstUndoPass</color> <color=#f92672>=</color> <color=#f8f8f2>firstUndoPass</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** A Scanner is a cursor over the tracker's rollback periods. */</color>
+  <color=#f8f8f2>Scanner</color> <color=#a6e22e>getScanner</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstUndoPass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The RollbackTracker is being built, and we need a special</color>
+<color=#75715e>       * scanner that can use the rollback period map while it is in an</color>
+<color=#75715e>       * incomplete state. This is only needed for JE log versions that</color>
+<color=#75715e>       * use MapLN_TXNAL, which are 2.0 and earlier.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnderConstructionScanner</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>BackwardScanner</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flip the invisible bit for each lsn in rollbackLsns. Collect the corresponding unique set of</color>
+<color=#75715e>   * file numbers and add them to fileNums.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setInvisible</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>,</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>filesToFsync</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Sort so that the entries are made invisible in disk order for better</color>
+<color=#75715e>     * efficiency.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>sort</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>perFileLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>currentFileNum</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>lsn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* See if we have moved to a new file. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#f8f8f2>currentFileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * We've moved on to a new file. Make the previous set of</color>
+<color=#75715e>         * lsns invisible.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>makeInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>perFileLsns</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>currentFileNum</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>filesToFsync</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFileNum</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* make a new set to house the lsns for the next file. */</color>
+        <color=#f8f8f2>perFileLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>perFileLsns</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Take care of the last set. */</color>
+    <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>makeInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>perFileLsns</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Flip the invisible bit for the rollback set of lsns, in lsn order.</color>
+<color=#75715e>   * Fsync the set of files represented in this collection of lsns. Used by</color>
+<color=#75715e>   * syncup rollback.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>makeInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>targetEnvImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>fsyncFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>setInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>targetEnvImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>,</color> <color=#f8f8f2>fsyncFiles</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>targetEnvImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>force</color><color=#f8f8f2>(</color><color=#f8f8f2>fsyncFiles</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * At the end of a recovery pass, write out all invisible bits, save a set of file numbers to</color>
+<color=#75715e>   * fsync, and reinitialize the per-pass list for the next round.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>singlePassSetInvisible</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>setInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>singlePassInvisibleLsns</color><color=#f8f8f2>,</color> <color=#f8f8f2>recoveryFilesToSync</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>singlePassInvisibleLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>recoveryEndFsyncInvisible</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>force</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryFilesToSync</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Count an LN obsolete that is being made invisble by rollback.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Use inexact counting. Since invisible entries are not processed by the cleaner, recording</color>
+<color=#75715e>   * the obsolete offset would be a waste of resources. Since we don't count offsets, we don't need</color>
+<color=#75715e>   * to worry about duplicate offsets.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Some entries may be double counted if they were previously counted obsolete, for example,</color>
+<color=#75715e>   * when multiple versions of an LN were logged. This is tolerated for an exceptional situation</color>
+<color=#75715e>   * like rollback.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsolete</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>UndoReader</color> <color=#f8f8f2>undo</color><color=#f8f8f2>,</color> <color=#f8f8f2>RecoveryUtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteUnconditional</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*type*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>undo</color><color=#f8f8f2>.</color><color=#a6e22e>logEntrySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>undo</color><color=#f8f8f2>.</color><color=#a6e22e>db</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>(),</color> <color=#66d9ef>false</color> <color=#75715e>/*countExact*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>period</color> <color=#f8f8f2>:</color> <color=#f8f8f2>periodList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>period</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>assertFirstPass</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>logLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstUndoPass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Saw entry at "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>logLSN</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>"Should only be building the tracker on the first pass"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A Scanner is to process LNs during a recovery pass. It determines whether this log entry is</color>
+<color=#75715e>   * within the rollback period, and should be accordingly undone or ignored. It serves as a sort of</color>
+<color=#75715e>   * cursor or iterator that works with the rollback tracker.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Scanner</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The target period is the one which houses the LNs that will be</color>
+<color=#75715e>     * rolled back.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Return true if this transactional log entry is something that should be rolled back in this</color>
+<color=#75715e>     * rollback period. The Scanner's position can be changed by this call. Update the target field</color>
+<color=#75715e>     * if necessary.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>positionAndCheck</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Rollback the filereader's current LN_TX. This assumes that the the caller has ascertained</color>
+<color=#75715e>     * that the LN is contained within this rollback period.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>rollback</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNFileReader</color> <color=#f8f8f2>reader</color><color=#f8f8f2>,</color> <color=#f8f8f2>RecoveryUtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If this period is before the checkpoint start, we need not</color>
+<color=#75715e>       * repeat the partial rollback.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>beforeCheckpointStart</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>undoLsn</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLsn</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbTree</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>UndoReader</color> <color=#f8f8f2>undo</color> <color=#f92672>=</color> <color=#f8f8f2>UndoReader</color><color=#f8f8f2>.</color><color=#a6e22e>createForRecovery</color><color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>undo</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Database of LN has been deleted. [#22052] */</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Get the TxnChain for this log entry. */</color>
+      <color=#f8f8f2>TxnChain</color> <color=#f8f8f2>chain</color> <color=#f92672>=</color> <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getChain</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>RevertInfo</color> <color=#f8f8f2>revertTo</color> <color=#f92672>=</color> <color=#f8f8f2>chain</color><color=#f8f8f2>.</color><color=#a6e22e>pop</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * When we undo this log entry, we've logically truncated it</color>
+<color=#75715e>         * from the log. Remove it from the btree and mark it obsolete.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>RecoveryManager</color><color=#f8f8f2>.</color><color=#a6e22e>rollbackUndo</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINER</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>TreeLocation</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>undo</color><color=#f8f8f2>.</color><color=#a6e22e>db</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>undo</color><color=#f8f8f2>.</color><color=#a6e22e>logEntry</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>revertTo</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>hasRollbackEnd</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * We're not positive that the fsync of the invisible log</color>
+<color=#75715e>           * entries happened. Make it invisible again.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>singlePassInvisibleLsns</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>undoLsn</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>undo</color><color=#f8f8f2>.</color><color=#a6e22e>db</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>countObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>undo</color><color=#f8f8f2>,</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* For unit tests */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>needsRollback</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f92672>!</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>beforeCheckpointStart</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>class</color> <color=#a6e22e>UnderConstructionScanner</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Scanner</color> <color=#f8f8f2>{</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>positionAndCheck</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>underConstructionPeriod</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>notInRollbackStartAndEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>:</color> <color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>bracketFailure</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>underConstructionPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>getScannerTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>containsLN</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * In a backward scanner, the currentPeriod field is always pointing to the period that contains</color>
+<color=#75715e>   * this lsn. If the lsn is not in a period, the currentPeriod is the period that is just before</color>
+<color=#75715e>   * this lsn. If there is no period before this lsn, the currentPeriod field is null.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>class</color> <color=#a6e22e>BackwardScanner</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Scanner</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color> <color=#f8f8f2>iter</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The current period is the period where the scanner is currently</color>
+<color=#75715e>     * posed. It is one of the top level periods in the scanner.  When</color>
+<color=#75715e>     * rollback periods are nested, currentPeriod may not equal target.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>BackwardScanner</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>iter</color> <color=#f92672>=</color> <color=#f8f8f2>periodList</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>currentPeriod</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>initChildIter</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>currentPeriod</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>positionAndCheck</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentPeriod</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * We've passed out of the currentPeriod. Look for a new one</color>
+<color=#75715e>         * that might cover this lsn.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>currentPeriod</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>initChildIter</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>currentPeriod</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>notInRollbackStartAndEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>bracketFailure</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Make the stack of periods point to the one that contains</color>
+<color=#75715e>         * this lsn, or which precedes this lsn.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>positionChildren</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * See if any period contains this lsn. There might not be a</color>
+<color=#75715e>         * target if the lsn was aborted or committed already at the</color>
+<color=#75715e>         * time of rollback.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>currentPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>findTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** A RollbackPeriod describes a section of the log that is logically truncated. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>RollbackPeriod</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RollbackTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>;</color> <color=#75715e>// start of period</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>;</color> <color=#75715e>// end of period</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>;</color> <color=#75715e>// for debugging and sanity checks</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * lsn of the checkpoint start, to  determine if this rollback period</color>
+<color=#75715e>     * needs to be used.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>beforeCheckpointStart</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The transactions that were rolled back for this rollback period,</color>
+<color=#75715e>     * which were logged in the RollbackStart entry.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeTxnIds</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The txn chain constructed to support rollback to an earlier version.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TxnChain</color><color=#f92672>></color> <color=#f8f8f2>txnChainMap</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Nested rollbacks. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color> <color=#f8f8f2>children</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color> <color=#f8f8f2>childIter</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpoint</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>rollbackEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getRollbackStart</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>getCheckpointStart</color><color=#f8f8f2>(),</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>);</color> <color=#75715e>// activeTxnIds</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpoint</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color> <color=#75715e>// rollbackendLSN;</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>getCheckpointStart</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveTxnIds</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* For unit testing only. */</color>
+    <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color> <color=#75715e>/*activeTxnIds*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>RollbackPeriod</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>RollbackTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeTxnIds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>matchpointLSN</color> <color=#f92672>=</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rollbackStartLSN</color> <color=#f92672>=</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rollbackEndLSN</color> <color=#f92672>=</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>beforeCheckpointStart</color> <color=#f92672>=</color> <color=#f8f8f2>calcBeforeCheckpoint</color><color=#f8f8f2>(</color><color=#f8f8f2>checkpointStart</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>txnChainMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TxnChain</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>children</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>RollbackPeriod</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>activeTxnIds</color> <color=#f92672>=</color> <color=#f8f8f2>activeTxnIds</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>calcBeforeCheckpoint</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>checkpointStart</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkpointStart</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * A new RollbackEnd has been seen.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return true if the RollbackEnd belongs to a period nested within the current period. Return</color>
+<color=#75715e>     *     false if the RollbackEnd belongs to new, distinct, different period, and the current</color>
+<color=#75715e>     *     period is closed.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>makeNestedPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>makeChild</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * A new RollbackStart has been seen.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return true if the RollbackStart belongs to a period nested within the current period, or if</color>
+<color=#75715e>     *     it is the current period. Return false if the RollbackStart belongs to new, distinct,</color>
+<color=#75715e>     *     different period, and this current period is closed.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>makeNestedPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>isMatchingRollbackStart</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>assert</color> <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>activeTxnIds</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>activeTxnIds</color> <color=#f92672>=</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveTxnIds</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>makeChild</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Retrun true to let the caller know that it doesn't have to</color>
+<color=#75715e>         * make a new Rollback period. Either the RBStart did not</color>
+<color=#75715e>         * initiate a new period, or we made a nested child.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* This period is closed. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contained</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * This RollbackEnd must either</color>
+<color=#75715e>       * 1 - precede this period, in which case this period is closed, or</color>
+<color=#75715e>       * 2 - be wholly contained within this period.</color>
+<color=#75715e>       */</color>
+
+      <color=#75715e>/* case 1 */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* The found rollback end precedes this period. */</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fail</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Should not be two RollbackEnds in a row. "</color>
+                <color=#f92672>+</color> <color=#e6db74>"New RollbackEnd at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Check for compliance to the rule that this RollbackEnd does not</color>
+<color=#75715e>       * intersect this rollback period.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>((</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpoint</color><color=#f8f8f2>(),</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getRollbackStart</color><color=#f8f8f2>(),</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fail</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"RollbackEnd intersects current rollback period "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>foundRBEnd</color>
+                <color=#f92672>+</color> <color=#e6db74>" at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* case 2 */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if the current rollback period is still open */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contained</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * This RollbackStart must:</color>
+<color=#75715e>       *  1 - precede the current period, indicating the end of this</color>
+<color=#75715e>       *      period.</color>
+<color=#75715e>       *  2 - is the rolblack start that belongs to this period.</color>
+<color=#75715e>       *  3 - be wholly contained within this period.</color>
+<color=#75715e>       */</color>
+
+      <color=#75715e>/* case 1 */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* The found rollback start precedes this period. */</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isMatchingRollbackStart</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Check for compliance with case 3. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>((</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBStart</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpoint</color><color=#f8f8f2>(),</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fail</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"RollbackStart intersects current rollback period "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>foundRBStart</color>
+                <color=#f92672>+</color> <color=#e6db74>" at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* case 3. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * @return true if this RollbackStart entry is the one that is the RollbackStart for this open</color>
+<color=#75715e>     *     period.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isMatchingRollbackStart</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>foundLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>makeChild</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>tracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>children</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>makeChild</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>(</color><color=#f8f8f2>tracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>children</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Return the period that should own this foundRBEnd. That may be either a nested period, or</color>
+<color=#75715e>     * this period.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>RollbackPeriod</color> <color=#a6e22e>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackEnd</color> <color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>contained</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Return the period that should own this foundRBStart. That may be either a nested period, or</color>
+<color=#75715e>     * this period.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>RollbackPeriod</color> <color=#a6e22e>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>RollbackStart</color> <color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>getNewPeriodTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>contained</color><color=#f8f8f2>(</color><color=#f8f8f2>foundRBStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>foundLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>RollbackPeriod</color> <color=#a6e22e>getScannerTarget</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>getScannerTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>initChildIter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>childIter</color> <color=#f92672>=</color> <color=#f8f8f2>children</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>childIter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#f8f8f2>childIter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>initChildIter</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>fail</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvImpl</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INTEGRITY</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>errorMessage</color> <color=#f92672>+</color> <color=#e6db74>"\ntracker contents="</color> <color=#f92672>+</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * This log entry belongs to this rollback period if it lies between the matchpoint and the</color>
+<color=#75715e>     * RollbackStart. We don't use RollbackEnd, because there may not be a RollbackEnd. Also, by</color>
+<color=#75715e>     * definition, anything whose rollback fate is define by this period must have happened before</color>
+<color=#75715e>     * the RollbackStart.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>containsLN</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>activeTxnIds</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>positionChildren</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>childIter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#f8f8f2>childIter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>initChildIter</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>currentChild</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>positionChildren</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>RollbackPeriod</color> <color=#a6e22e>findTarget</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentChild</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>candidate</color> <color=#f92672>=</color> <color=#f8f8f2>currentChild</color><color=#f8f8f2>.</color><color=#a6e22e>findTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>candidate</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>candidate</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>containsLN</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** There should not be any txnal LNs between a rollback start and rollback end log entry. */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>notInRollbackStartAndEnd</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>TxnManager</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicatedTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Don't bother checking a non-replicated txn. */</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>((</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#a6e22e>bracketFailure</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>lsn</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"] should not be within rollbackStart "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rollbackStartLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"] and rollbackEnd "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rollbackEndLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if this rollback period is after, and does not contain the lsn. */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return true if this rollback period is before, and does not contain the lsn. */</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>precedes</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>TxnChain</color> <color=#a6e22e>getChain</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>TxnChain</color> <color=#f8f8f2>chain</color> <color=#f92672>=</color> <color=#f8f8f2>txnChainMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>chain</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>chain</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TxnChain</color><color=#f8f8f2>(</color><color=#f8f8f2>undoLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>txnChainMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>chain</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>chain</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>hasRollbackEnd</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>rollbackEndLSN</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"matchpoint="</color>
+          <color=#f92672>+</color> <color=#f8f8f2>matchpointLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"] rollbackStart="</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rollbackStartLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"] rollbackEnd="</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rollbackEndLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" ["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>RollbackPeriod</color> <color=#f8f8f2>otherPeriod</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RollbackPeriod</color><color=#f8f8f2>)</color> <color=#f8f8f2>other</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>matchpointLSN</color> <color=#f92672>==</color> <color=#f8f8f2>otherPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>matchpointLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackStartLSN</color> <color=#f92672>==</color> <color=#f8f8f2>otherPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>rollbackStartLSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackEndLSN</color> <color=#f92672>==</color> <color=#f8f8f2>otherPeriod</color><color=#f8f8f2>.</color><color=#a6e22e>rollbackEndLSN</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>beforeCheckpointStart</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>beforeCheckpointStart</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>prime</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>*</color> <color=#f8f8f2>prime</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>rollbackStartLSN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>*</color> <color=#f8f8f2>prime</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>rollbackEndLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

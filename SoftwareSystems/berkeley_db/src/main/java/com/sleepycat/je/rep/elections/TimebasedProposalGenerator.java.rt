@@ -1,0 +1,249 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.elections</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Proposer.Proposal</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Proposer.ProposalParser</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.math.BigInteger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.NetworkInterface</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.SocketException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.UnknownHostException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.security.SecureRandom</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Enumeration</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicInteger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Generates a unique sequence of ascending proposal numbers that is unique across all machines.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Each proposal number is built as the catenation of the following components:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>ms time (8 bytes) | machineId (16 bytes) | locally unique Id (4 bytes)</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The ms time supplies the increasing number and the IP address is a number unique across</color>
+<color=#75715e> * machines.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The machineId is generated as described below.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The locally unique Id is used to allow for multiple unique proposal generators in a single</color>
+<color=#75715e> * process.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>TimebasedProposalGenerator</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A number that is unique for all instances of the TimeBasedGenerator on</color>
+<color=#75715e>   * this machine.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>locallyUniqueId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>uniqueIdGenerator</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Tracks the time (in ms) used to generate the previous proposal</color>
+<color=#75715e>   * preventing the creation of duplicate proposals.  Synchronize on this</color>
+<color=#75715e>   * instance when accessing this field.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevProposalTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A unique ID for this JVM, using a hex representation of the IP address</color>
+<color=#75715e>   * XOR'ed with a random value. If the IP address cannot be determined,</color>
+<color=#75715e>   * a secure random number is generated and used instead. The risk of</color>
+<color=#75715e>   * collision is very low since the number of machines in a replication</color>
+<color=#75715e>   * group is typically small, in the 10s at most.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>machineId</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Width of each field in the Proposal number in hex characters. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>TIME_WIDTH</color> <color=#f92672>=</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Allow for 16 byte ipv6 addresses. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ADDRESS_WIDTH</color> <color=#f92672>=</color> <color=#ae81ff>32</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>UID_WIDTH</color> <color=#f92672>=</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Initialize machineId, do it just once to minimize latencies in the face</color>
+<color=#75715e>   * of misbehaving networks that slow down calls to getLocalHost()</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>InetAddress</color> <color=#f8f8f2>localHost</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>localHost</color> <color=#f92672>=</color> <color=#f8f8f2>InetAddress</color><color=#f8f8f2>.</color><color=#a6e22e>getLocalHost</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>UnknownHostException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Likely a misconfigured machine if it could not determine</color>
+<color=#75715e>       * localhost.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>localHost</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>localAddress</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>localHost</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>localAddress</color> <color=#f92672>=</color> <color=#f8f8f2>localHost</color><color=#f8f8f2>.</color><color=#a6e22e>getAddress</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>localHost</color><color=#f8f8f2>.</color><color=#a6e22e>isLoopbackAddress</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Linux platforms return a loopback address, examine the</color>
+<color=#75715e>         * interfaces individually for a suitable address.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>localAddress</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Enumeration</color><color=#f92672><</color><color=#f8f8f2>NetworkInterface</color><color=#f92672>></color> <color=#f8f8f2>interfaces</color> <color=#f92672>=</color> <color=#f8f8f2>NetworkInterface</color><color=#f8f8f2>.</color><color=#a6e22e>getNetworkInterfaces</color><color=#f8f8f2>();</color>
+              <color=#f8f8f2>interfaces</color><color=#f8f8f2>.</color><color=#a6e22e>hasMoreElements</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Enumeration</color><color=#f92672><</color><color=#f8f8f2>InetAddress</color><color=#f92672>></color> <color=#f8f8f2>addresses</color> <color=#f92672>=</color> <color=#f8f8f2>interfaces</color><color=#f8f8f2>.</color><color=#a6e22e>nextElement</color><color=#f8f8f2>().</color><color=#a6e22e>getInetAddresses</color><color=#f8f8f2>();</color>
+                <color=#f8f8f2>addresses</color><color=#f8f8f2>.</color><color=#a6e22e>hasMoreElements</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>InetAddress</color> <color=#f8f8f2>ia</color> <color=#f92672>=</color> <color=#f8f8f2>addresses</color><color=#f8f8f2>.</color><color=#a6e22e>nextElement</color><color=#f8f8f2>();</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>ia</color><color=#f8f8f2>.</color><color=#a6e22e>isLoopbackAddress</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>ia</color><color=#f8f8f2>.</color><color=#a6e22e>isAnyLocalAddress</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>ia</color><color=#f8f8f2>.</color><color=#a6e22e>isMulticastAddress</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+                <color=#75715e>/* Found one, any one of these will do. */</color>
+                <color=#f8f8f2>localAddress</color> <color=#f92672>=</color> <color=#f8f8f2>ia</color><color=#f8f8f2>.</color><color=#a6e22e>getAddress</color><color=#f8f8f2>();</color>
+                <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SocketException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Could not get the network interfaces, give up */</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>localAddress</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Convert the address to a positive integer, XOR it with a</color>
+<color=#75715e>       * random value of the right size, and format in hex</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>BigInteger</color> <color=#f8f8f2>addrVal</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>localAddress</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>BigInteger</color> <color=#f8f8f2>randVal</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#f8f8f2>ADDRESS_WIDTH</color> <color=#f92672>*</color> <color=#ae81ff>4</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>SecureRandom</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>machineId</color> <color=#f92672>=</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%0"</color> <color=#f92672>+</color> <color=#f8f8f2>ADDRESS_WIDTH</color> <color=#f92672>+</color> <color=#e6db74>"x"</color><color=#f8f8f2>,</color> <color=#f8f8f2>addrVal</color><color=#f8f8f2>.</color><color=#a6e22e>xor</color><color=#f8f8f2>(</color><color=#f8f8f2>randVal</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the localAddress is null, this host is likely disconnected,</color>
+<color=#75715e>       * or localHost is misconfigured, fall back to using just a secure</color>
+<color=#75715e>       * random number.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>BigInteger</color> <color=#f8f8f2>randVal</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#f8f8f2>ADDRESS_WIDTH</color> <color=#f92672>*</color> <color=#ae81ff>4</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>SecureRandom</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>machineId</color> <color=#f92672>=</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%0"</color> <color=#f92672>+</color> <color=#f8f8f2>ADDRESS_WIDTH</color> <color=#f92672>+</color> <color=#e6db74>"x"</color><color=#f8f8f2>,</color> <color=#f8f8f2>randVal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an instance with an application-specified locally (machine wide) unique id, e.g. a port</color>
+<color=#75715e>   * number, or a combination of a pid and some other number.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param locallyUniqueId the machine wide unique id</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>TimebasedProposalGenerator</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>locallyUniqueId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>locallyUniqueId</color> <color=#f92672>=</color> <color=#f8f8f2>locallyUniqueId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Constructor defaulting the unique id so it's merely unique within the process. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>TimebasedProposalGenerator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>uniqueIdGenerator</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the next Proposal greater than all previous proposals returned on this machine.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the next unique proposal</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Proposal</color> <color=#a6e22e>nextProposal</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>proposalTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposalTime</color> <color=#f92672><=</color> <color=#f8f8f2>prevProposalTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Proposals are moving faster than the clock. */</color>
+        <color=#f8f8f2>proposalTime</color> <color=#f92672>=</color> <color=#f92672>++</color><color=#f8f8f2>prevProposalTime</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>prevProposalTime</color> <color=#f92672>=</color> <color=#f8f8f2>proposalTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringProposal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%016x%s%08x"</color><color=#f8f8f2>,</color> <color=#f8f8f2>proposalTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>machineId</color><color=#f8f8f2>,</color> <color=#f8f8f2>locallyUniqueId</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the parser used to convert wire representations into Proposal instances.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a ProposalParser</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>ProposalParser</color> <color=#a6e22e>getParser</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>StringProposal</color><color=#f8f8f2>.</color><color=#a6e22e>getParser</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Implements the Proposal interface for a string based proposal. The string is a hex</color>
+<color=#75715e>   * representation of the Proposal.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>StringProposal</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Proposal</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The canonical proposal parser. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ProposalParser</color> <color=#f8f8f2>theParser</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ProposalParser</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+          <color=#a6e22e>@Override</color>
+          <color=#66d9ef>public</color> <color=#f8f8f2>Proposal</color> <color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>wireFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>wireFormat</color><color=#f8f8f2>)))</color>
+                <color=#f92672>?</color> <color=#66d9ef>null</color>
+                <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringProposal</color><color=#f8f8f2>(</color><color=#f8f8f2>wireFormat</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>};</color>
+
+    <color=#f8f8f2>StringProposal</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposal</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>otherProposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(((</color><color=#f8f8f2>StringProposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>otherProposal</color><color=#f8f8f2>).</color><color=#a6e22e>proposal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Proposal("</color>
+          <color=#f92672>+</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>TIME_WIDTH</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>":"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>TIME_WIDTH</color><color=#f8f8f2>,</color> <color=#f8f8f2>TIME_WIDTH</color> <color=#f92672>+</color> <color=#f8f8f2>ADDRESS_WIDTH</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>":"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>TIME_WIDTH</color> <color=#f92672>+</color> <color=#f8f8f2>ADDRESS_WIDTH</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>")"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>ProposalParser</color> <color=#a6e22e>getParser</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>theParser</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>StringProposal</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>StringProposal</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>StringProposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

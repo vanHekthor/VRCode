@@ -1,0 +1,693 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.elections</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.JEVersion</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Acceptor.SuggestionGenerator.Ranking</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Proposer.Proposal</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Proposer.ProposalParser</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.TextProtocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.ELECTIONS_OPEN_TIMEOUT</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.ELECTIONS_READ_TIMEOUT</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Defines the request/response messages used in the implementation of elections.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>From Proposer to Acceptor: Propose -> Promise | Reject Accept -> Accepted | Reject</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>From Proposer initiator to Learners: Result -> none</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The following exchange is not part of the elections process, but is used by the Monitor to</color>
+<color=#75715e> * query a Learner for the latest election result it's aware of, when the Monitor first starts up.</color>
+<color=#75715e> * It is also used by nodes and utilities that are attempting to find the master.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>From Monitor to Learner MasterQuery -> MasterQueryResponse | None</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Protocol</color> <color=#66d9ef>extends</color> <color=#f8f8f2>TextProtocol</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* Protocol version string. Format: <major version>.<minor version> */</color>
+  <color=#75715e>/* It's used to ensure compatibility across versions. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>VERSION</color> <color=#f92672>=</color> <color=#e6db74>"2.0"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* An instance of ProposalParser used to de-serialize proposals */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ProposalParser</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* An instance of ValueParser used to de-serialize values */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ValueParser</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Request Operations */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>PROPOSE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>ACCEPT</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>RESULT</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>MASTER_QUERY</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>SHUTDOWN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Response operations */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>REJECT</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>PROMISE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>ACCEPTED</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>MASTER_QUERY_RESPONSE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an instance of the Protocol.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param proposalParser parses a string into a Proposal object.</color>
+<color=#75715e>   * @param valueParser parses a string into a Value object.</color>
+<color=#75715e>   * @parameter groupName the name of the group running the election process.</color>
+<color=#75715e>   * @param nameIdPair a unique identifier for this election participant.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>Protocol</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>ProposalParser</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ValueParser</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Request operations */</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>VERSION</color><color=#f8f8f2>,</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>PROPOSE</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"P"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Propose</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ACCEPT</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"A"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Accept</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>RESULT</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"RE"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Result</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>MASTER_QUERY</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"MQ"</color><color=#f8f8f2>,</color> <color=#f8f8f2>MasterQuery</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>SHUTDOWN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"X"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>REJECT</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"R"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Reject</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>PROMISE</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"PR"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Promise</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ACCEPTED</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"AD"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Accepted</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>MASTER_QUERY_RESPONSE</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"MQR"</color><color=#f8f8f2>,</color> <color=#f8f8f2>MasterQueryResponse</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>initializeMessageOps</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f92672>[]</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>PROPOSE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ACCEPT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>RESULT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>MASTER_QUERY</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SHUTDOWN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>REJECT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>PROMISE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ACCEPTED</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>MASTER_QUERY_RESPONSE</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>});</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proposalParser</color> <color=#f92672>=</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>valueParser</color> <color=#f92672>=</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>setTimeouts</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>ELECTIONS_OPEN_TIMEOUT</color><color=#f8f8f2>,</color> <color=#f8f8f2>ELECTIONS_READ_TIMEOUT</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Promise response message. It's sent in response to a Propose message.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the "minor" part of the suggestion ranking is always tagged on to the end of the</color>
+<color=#75715e>   * promise request payload. Older pre 7.1.3 nodes will ignore extra tokens at the end, since they</color>
+<color=#75715e>   * do not know about the minor component of the ranking. This node will use it if it's present and</color>
+<color=#75715e>   * otherwise use a value of zero for the minor (VLSN) component.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>So when comparing rankings across old and new nodes, we are effectively comparing a</color>
+<color=#75715e>   * Ranking(VLSN, Long.MIN_VALUE) with a Ranking(DTVLSN, VLSN), resulting in suboptimal election</color>
+<color=#75715e>   * results (from a dtvlsn perspective) while an upgrade is in progress, that is, it will tend to</color>
+<color=#75715e>   * favor the older node. But this inaccuracy will vanish once all nodes have been upgraded.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Promise</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Proposal</color> <color=#f8f8f2>highestProposal</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>acceptedValue</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>suggestion</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The major and minor components of the Ranking represent the DTVLSN and the latest VLSN</color>
+<color=#75715e>     * respectively.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Ranking</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>priority</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>JEVersion</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Promise</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>Proposal</color> <color=#f8f8f2>highestProposal</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Value</color> <color=#f8f8f2>suggestion</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Ranking</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>priority</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>JEVersion</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>highestProposal</color> <color=#f92672>=</color> <color=#f8f8f2>highestProposal</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>acceptedValue</color> <color=#f92672>=</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>suggestion</color> <color=#f92672>=</color> <color=#f8f8f2>suggestion</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>suggestionRanking</color> <color=#f92672>=</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>priority</color> <color=#f92672>=</color> <color=#f8f8f2>priority</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logVersion</color> <color=#f92672>=</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>jeVersion</color> <color=#f92672>=</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Promise</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>highestProposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>acceptedValue</color> <color=#f92672>=</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>suggestion</color> <color=#f92672>=</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>weight</color> <color=#f92672>=</color> <color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>majorRanking</color> <color=#f92672>=</color> <color=#e6db74>""</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>weight</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>Ranking</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED</color><color=#f8f8f2>.</color><color=#a6e22e>major</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>parseLong</color><color=#f8f8f2>(</color><color=#f8f8f2>weight</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>minorRanking</color> <color=#f92672>=</color> <color=#f8f8f2>Ranking</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED</color><color=#f8f8f2>.</color><color=#a6e22e>major</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>priority</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getMajorVersionNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>sendVersion</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logVersion</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>jeVersion</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JEVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hasMoreTokens</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * The tie breaker is appended to the end by newer versions</color>
+<color=#75715e>           * of JE nodes >= version 7.1.3</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>minorRanking</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>parseLong</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>suggestionRanking</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Ranking</color><color=#f8f8f2>(</color><color=#f8f8f2>majorRanking</color><color=#f8f8f2>,</color> <color=#f8f8f2>minorRanking</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>PROMISE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>getOuterType</color><color=#f8f8f2>().</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>acceptedValue</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>acceptedValue</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>highestProposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>highestProposal</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>priority</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>suggestion</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>suggestion</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getMajorVersionNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>sendVersion</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>+=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>logVersion</color> <color=#f92672>+</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>obj</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>Promise</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Promise</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>getOuterType</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getOuterType</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>acceptedValue</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>acceptedValue</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>acceptedValue</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>acceptedValue</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>highestProposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>highestProposal</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>highestProposal</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>highestProposal</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>priority</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>priority</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getMajorVersionNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>sendVersion</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color> <color=#f92672>!=</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>logVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>jeVersion</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>jeVersion</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>suggestion</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>suggestion</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>suggestion</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>suggestion</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>suggestionRanking</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>line</color> <color=#f92672>=</color>
+          <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+              <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>highestProposal</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>highestProposal</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#e6db74>""</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+              <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>acceptedValue</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>acceptedValue</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#e6db74>""</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+              <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>suggestion</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>suggestion</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#e6db74>""</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+              <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>.</color><color=#a6e22e>major</color> <color=#f92672>==</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color><color=#f8f8f2>)</color>
+                  <color=#f92672>?</color> <color=#e6db74>""</color>
+                  <color=#f8f8f2>:</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>.</color><color=#a6e22e>major</color><color=#f8f8f2>))</color>
+              <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+              <color=#f92672>+</color> <color=#f8f8f2>priority</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getMajorVersionNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>sendVersion</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>line</color> <color=#f92672>+=</color>
+            <color=#f8f8f2>SEPARATOR</color>
+                <color=#f92672>+</color> <color=#f8f8f2>logVersion</color>
+                <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+                <color=#f92672>+</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+                <color=#f92672>+</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>.</color><color=#a6e22e>minor</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>line</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Proposal</color> <color=#a6e22e>getHighestProposal</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>highestProposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Value</color> <color=#a6e22e>getAcceptedValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>acceptedValue</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Value</color> <color=#a6e22e>getSuggestion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>suggestion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Ranking</color> <color=#a6e22e>getSuggestionRanking</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>suggestionRanking</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>getPriority</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>priority</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>getLogVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>JEVersion</color> <color=#a6e22e>getJEVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>jeVersion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#a6e22e>getOuterType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Response to a successful Accept message. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Accepted</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Accepted</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposal</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>value</color> <color=#f92672>=</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Accepted</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>proposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Accepted</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Accepted</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Accepted</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ACCEPTED</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color>
+          <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+          <color=#f92672>+</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color>
+          <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color>
+          <color=#f92672>+</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Value</color> <color=#a6e22e>getValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Proposal</color> <color=#a6e22e>getProposal</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The response to a Master Query request. It simply repackages the Accepted response. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>MasterQueryResponse</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Accepted</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>MasterQueryResponse</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MasterQueryResponse</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MASTER_QUERY_RESPONSE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messagePrefixNocheck</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Reject response to a message. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Reject</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Proposal</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Reject</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>higherProposal</color> <color=#f92672>=</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Reject</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>higherProposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>higherProposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Reject</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Reject</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Reject</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>higherProposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>higherProposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>higherProposal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>REJECT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Proposal</color> <color=#a6e22e>getHigherProposal</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>higherProposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Propose request used in Phase 1 of Paxos */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Propose</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Propose</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Propose</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>proposal</color> <color=#f92672>=</color> <color=#f8f8f2>proposalParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Propose</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Propose</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Propose</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>proposal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>PROPOSE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Proposal</color> <color=#a6e22e>getProposal</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Shutdown</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Shutdown</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>SHUTDOWN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Accept request issued in Phase 2 of paxos. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Accept</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Propose</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Accept</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>proposal</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>value</color> <color=#f92672>=</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Accept</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>valueParser</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Accept</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Accept</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Accept</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ACCEPT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Value</color> <color=#a6e22e>getValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to inform Learners of a "chosen value". */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Result</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Accept</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Result</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Result</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>RESULT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to query the Learner for a current master */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>MasterQuery</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MasterQuery</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MasterQuery</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MASTER_QUERY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messagePrefixNocheck</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Represents a Value in Paxos. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>interface</color> <color=#a6e22e>Value</color> <color=#66d9ef>extends</color> <color=#f8f8f2>WireFormatable</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>interface</color> <color=#a6e22e>ValueParser</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/**</color>
+<color=#75715e>     * Converts the wire format back into a Value</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param wireFormat String representation of a Value</color>
+<color=#75715e>     * @return the de-serialized Value</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Value</color> <color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** A String based value implementation used as the "default" Value */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>StringValue</color> <color=#66d9ef>extends</color> <color=#f8f8f2>StringFormatable</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>StringValue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>StringValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Value:"</color> <color=#f92672>+</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

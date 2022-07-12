@@ -1,0 +1,173 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * This is a debugging utility which implements the unadvertised DbPrintLog -vd option, which</color>
+<color=#75715e> * displays VLSN distribution in a log. Here's a sample of the output. This is used to analyze log</color>
+<color=#75715e> * cleaner barrier behavior.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>... 3 files file 0xb6 numRepRecords = 9 firstVLSN = 1,093,392 lastVLSN = 1,093,400 file 0xb7</color>
+<color=#75715e> * numRepRecords = 4 firstVLSN = 1,093,401 lastVLSN = 1,093,404 ... 3 files file 0xbb numRepRecords</color>
+<color=#75715e> * = 1 firstVLSN = 1,093,405 lastVLSN = 1,093,405 file 0xbc numRepRecords = 1 firstVLSN = 1,093,406</color>
+<color=#75715e> * lastVLSN = 1,093,406 ... 1 files file 0xbe numRepRecords = 1 firstVLSN = 1,093,407 lastVLSN =</color>
+<color=#75715e> * 1,093,407 file 0xbf numRepRecords = 2 firstVLSN = 1,093,408 lastVLSN = 1,093,409 file 0xc0</color>
+<color=#75715e> * numRepRecords = 7 firstVLSN = 1,093,410 lastVLSN = 1,093,416 ... 0 files at end First file: 0x0</color>
+<color=#75715e> * Last file: 0xc0</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>VLSNDistributionReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DumpFileReader</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>PerFileInfo</color><color=#f92672>></color> <color=#f8f8f2>countByFile</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>PerFileInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Long</color><color=#f92672>[]</color> <color=#f8f8f2>allFileNums</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>fileNumIndex</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Create this reader to start at a given LSN. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>VLSNDistributionReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>forwards</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/* all entryTypes */</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/* all dbIds */</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/* all txnIds */</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>verbose</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>/*repEntriesOnly*/</color>
+        <color=#f8f8f2>forwards</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>countByFile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>PerFileInfo</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>allFileNums</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getAllFileNumbers</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>fileNumIndex</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Count the number of vlsns in the file, along with the first and last vlsn. Display this when</color>
+<color=#75715e>   * the log reader moves to a new file. .</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>currentVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>currentFile</color> <color=#f92672>=</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>currentFileNum</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PerFileInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFile</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>countByFile</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFile</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>isFileSame</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFile</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * We've flipped to a new file. We'd like to print the number</color>
+<color=#75715e>       * of files between the one targeted by this info to give a sense</color>
+<color=#75715e>       * for how many are inbetween. For example, if the log has file</color>
+<color=#75715e>       * 4, 5, 6, and only 6 has a vlsn, we should print</color>
+<color=#75715e>       *  ... 2 files</color>
+<color=#75715e>       *  file 0x6: ...</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>display</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Set up a new file. */</color>
+      <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PerFileInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFile</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>countByFile</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>currentFile</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>(</color><color=#f8f8f2>currentVLSN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>nextEntryPosition</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>nextEntryPosition</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>summarize</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>csvFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>display</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"... "</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>allFileNums</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>fileNumIndex</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" files at end"</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"First file: 0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFirstFileNum</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Last file: 0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getLastFileNum</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Tracks per-file statistics. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>PerFileInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstVLSNInFile</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSNInFile</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>count</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>PerFileInfo</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isFileSame</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>currentFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>fileNum</color> <color=#f92672>==</color> <color=#f8f8f2>currentFile</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>increment</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>currentVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>count</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstVLSNInFile</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>firstVLSNInFile</color> <color=#f92672>=</color> <color=#f8f8f2>currentVLSN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>lastVLSNInFile</color> <color=#f92672>=</color> <color=#f8f8f2>currentVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"file 0x"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>" numRepRecords = "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>count</color>
+          <color=#f92672>+</color> <color=#e6db74>" firstVLSN = "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>firstVLSNInFile</color>
+          <color=#f92672>+</color> <color=#e6db74>" lastVLSN = "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>lastVLSNInFile</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>display</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>inbetweenCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileNumIndex</color> <color=#f92672><</color> <color=#f8f8f2>allFileNums</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>whichFile</color> <color=#f92672>=</color> <color=#f8f8f2>allFileNums</color><color=#f92672>[</color><color=#f8f8f2>fileNumIndex</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>whichFile</color> <color=#f92672>></color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>fileNumIndex</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>inbetweenCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>inbetweenCount</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"... "</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>inbetweenCount</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" files"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

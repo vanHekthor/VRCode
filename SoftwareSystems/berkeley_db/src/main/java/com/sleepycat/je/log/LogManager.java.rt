@@ -1,0 +1,1409 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.StatsConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.RestoreRequired</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.WriteLockInfo</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.util.verify.VerifierUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileNotFoundException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.RandomAccessFile</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collection</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Queue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ConcurrentLinkedQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.CountDownLatch</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicLong</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.log.LogStatDefinition.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The LogManager supports reading and writing to the JE log. The writing of data to the log is</color>
+<color=#75715e> * serialized via the logWriteMutex. Typically space is allocated under the LWL. The client computes</color>
+<color=#75715e> * the checksum and copies the data into the log buffer (not holding the LWL).</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LogManager</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>COUNT_LOG</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* No-op loggable object. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>=</color> <color=#f8f8f2>LogManager</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogBufferPool</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>;</color> <color=#75715e>// log buffers</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>;</color> <color=#75715e>// synchronizes log writes</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>doChecksumOnRead</color><color=#f8f8f2>;</color> <color=#75715e>// if true, do checksum on read</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>;</color> <color=#75715e>// access to files</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FSyncManager</color> <color=#f8f8f2>grpManager</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* How many bytes to read when faulting in. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The last LSN in the log during recovery. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastLsnAtRecovery</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Stats */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of times we have to repeat a read when we fault in an object</color>
+<color=#75715e>   * because the initial read was too small.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nRepeatFaultReads</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of times we have to use the temporary marshalling buffer to</color>
+<color=#75715e>   * write to the log.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nTempBufferWrites</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The location of the next entry to be written to the log. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LSNStat</color> <color=#f8f8f2>endOfLog</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used to determine if we switched log buffers. For</color>
+<color=#75715e>   * NOSYNC durability, if we switched log buffers,</color>
+<color=#75715e>   * the thread will write the previous dirty buffers.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogBuffer</color> <color=#f8f8f2>prevLogBuffer</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For unit tests */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color> <color=#f8f8f2>readHook</color><color=#f8f8f2>;</color> <color=#75715e>// used for generating exceptions on log reads</color>
+
+  <color=#75715e>/* For unit tests. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>delayVLSNRegisterHook</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>CountDownLatch</color><color=#f92672>></color> <color=#f8f8f2>flushHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* A queue to hold log entries which are to be logged lazily. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Queue</color><color=#f92672><</color><color=#f8f8f2>LazyQueueEntry</color><color=#f92672>></color> <color=#f8f8f2>lazyLogQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConcurrentLinkedQueue</color><color=#f92672><</color><color=#f8f8f2>LazyQueueEntry</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used for tracking the current file. Is null if no tracking should occur.</color>
+<color=#75715e>   * Read/write of this field is protected by the LWL, but the tracking</color>
+<color=#75715e>   * actually occurs outside the LWL.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expirationTracker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * An entry in the lazyLogQueue. A struct to hold the entry and repContext.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>LazyQueueEntry</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>LazyQueueEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** There is a single log manager per database environment. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LogManager</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Set up log buffers. */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>grpManager</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FSyncManager</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>readOnly</color> <color=#f92672>=</color> <color=#f8f8f2>readOnly</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logBufferPool</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogBufferPool</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* See if we're configured to do a checksum when reading in objects. */</color>
+    <color=#f8f8f2>doChecksumOnRead</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CHECKSUM_READ</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>logWriteMutex</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Object</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FAULT_READ_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Do the stats definitions. */</color>
+    <color=#f8f8f2>stats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nRepeatFaultReads</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>LOGMGR_REPEAT_FAULT_READS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nTempBufferWrites</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>LOGMGR_TEMP_BUFFER_WRITES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>endOfLog</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LSNStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>LOGMGR_END_OF_LOG</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getChecksumOnRead</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>doChecksumOnRead</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getLastLsnAtRecovery</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastLsnAtRecovery</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLastLsnAtRecovery</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lastLsnAtRecovery</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastLsnAtRecovery</color> <color=#f92672>=</color> <color=#f8f8f2>lastLsnAtRecovery</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called at the end of recovery to begin expiration tracking using the given tracker. During</color>
+<color=#75715e>   * recovery we are single threaded, so we can set the field without taking the LWL.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>initExpirationTracker</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>expirationTracker</color> <color=#f92672>=</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Reset the pool when the cache is resized. This method is called after the memory budget has</color>
+<color=#75715e>   * been calculated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetPool</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>(</color><color=#f8f8f2>configManager</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Writing to the log</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Log this single object and force a write of the log files.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entry object to be logged</color>
+<color=#75715e>   * @param fsyncRequired if true, log files should also be fsynced.</color>
+<color=#75715e>   * @return LSN of the new log entry</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>logForceFlush</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>fsyncRequired</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>log</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entry</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// flush required</color>
+        <color=#f8f8f2>fsyncRequired</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// forceNewLogFile</color>
+        <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color> <color=#75715e>// repContext</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Log this single object and force a flip of the log files.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entry object to be logged</color>
+<color=#75715e>   * @return LSN of the new log entry</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>logForceFlip</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>log</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entry</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// flush required</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// fsync required</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// forceNewLogFile</color>
+        <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>NO_REPLICATE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write a log entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entry object to be logged</color>
+<color=#75715e>   * @return LSN of the new log entry</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>log</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>log</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entry</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// flush required</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// fsync required</color>
+        <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// forceNewLogFile</color>
+        <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write a log entry lazily.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entry object to be logged</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>logLazily</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>lazyLogQueue</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>LazyQueueEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Translates individual log params to LogItem and LogContext fields. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>log</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Provisional</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>flushRequired</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>fsyncRequired</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forceNewLogFile</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogParams</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>flushRequired</color> <color=#f92672>=</color> <color=#f8f8f2>flushRequired</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>fsyncRequired</color> <color=#f92672>=</color> <color=#f8f8f2>fsyncRequired</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>forceNewLogFile</color> <color=#f92672>=</color> <color=#f8f8f2>forceNewLogFile</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color> <color=#f92672>=</color> <color=#f8f8f2>log</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Log an item, first logging any items on the lazyLogQueue, and finally flushing and sync'ing (if</color>
+<color=#75715e>   * requested).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogItem</color> <color=#a6e22e>log</color><color=#f8f8f2>(</color><color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>COUNT_LOG</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogItem</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * In a read-only env we return NULL_LSN (the default value for</color>
+<color=#75715e>     * LogItem.lsn) for all entries.  We allow this to proceed, rather</color>
+<color=#75715e>     * than throwing an exception, to support logging INs for splits that</color>
+<color=#75715e>     * occur during recovery, for one reason.  Logging LNs in a read-only</color>
+<color=#75715e>     * env is not allowed, and this is checked in the LN class.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>item</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Flush any pending lazy entries. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>LazyQueueEntry</color> <color=#f8f8f2>lqe</color> <color=#f92672>=</color> <color=#f8f8f2>lazyLogQueue</color><color=#f8f8f2>.</color><color=#a6e22e>poll</color><color=#f8f8f2>();</color> <color=#f8f8f2>lqe</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color> <color=#f8f8f2>lqe</color> <color=#f92672>=</color> <color=#f8f8f2>lazyLogQueue</color><color=#f8f8f2>.</color><color=#a6e22e>poll</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>LogParams</color> <color=#f8f8f2>lqeParams</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogParams</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>lqeParams</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color> <color=#f92672>=</color> <color=#f8f8f2>lqe</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>lqeParams</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>lqeParams</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color> <color=#f92672>=</color> <color=#f8f8f2>lqe</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>logItem</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>LogItem</color><color=#f8f8f2>(),</color> <color=#f8f8f2>lqeParams</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If possible, marshall this entry outside the log write latch to</color>
+<color=#75715e>       * allow greater concurrency by shortening the write critical</color>
+<color=#75715e>       * section.  Note that the header may only be created during</color>
+<color=#75715e>       * marshalling because it calls entry.getSize().</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>().</color><color=#a6e22e>marshallOutsideLatch</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>marshallIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>logItem</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>fsyncRequired</color> <color=#f92672>||</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>flushRequired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Flush log buffers and write queue, and optionally fsync. */</color>
+        <color=#f8f8f2>grpManager</color><color=#f8f8f2>.</color><color=#a6e22e>flushAndSync</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>fsyncRequired</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>switchedLogBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * The operation does not require writing to the log file, but</color>
+<color=#75715e>         * since we switched log buffers, this thread will write the</color>
+<color=#75715e>         * previously dirty log buffers (not this thread's log entry</color>
+<color=#75715e>         * though). This is done for NOSYNC durability so those types</color>
+<color=#75715e>         * of transactions won't fill all the log buffers thus forcing</color>
+<color=#75715e>         * to have to write the buffers under the log write latch.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>writeDirty</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*flushWriteQueue*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>flushHook</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * We've logged this log entry from the replication stream. Let the</color>
+<color=#75715e>       * Replicator know, so this node can create a VLSN->LSN mapping. Do</color>
+<color=#75715e>       * this before the ckpt so we have a better chance of writing this</color>
+<color=#75715e>       * mapping to disk.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>inReplicationStream</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+            <color=#f8f8f2>:</color> <color=#e6db74>"Unexpected null vlsn: "</color> <color=#f92672>+</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/* Block the VLSN registration, used by unit tests. */</color>
+        <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>delayVLSNRegisterHook</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>registerVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Final checks are below for unexpected exceptions during the</color>
+<color=#75715e>       * critical write path.  Most should be caught by</color>
+<color=#75715e>       * serialLogInternal, but the catches here account for other</color>
+<color=#75715e>       * exceptions above.  Note that Errors must be caught here as well</color>
+<color=#75715e>       * as Exceptions.  [#21929]</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * If we've already invalidated the environment, rethrow so as not</color>
+<color=#75715e>       * to excessively wrap the exception.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Periodically, as a function of how much data is written, ask the</color>
+<color=#75715e>     * checkpointer or the cleaner to wake up.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCheckpointer</color><color=#f8f8f2>().</color><color=#a6e22e>wakeupAfterWrite</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCleaner</color><color=#f8f8f2>().</color><color=#a6e22e>wakeupAfterWrite</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Update background writes. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>backgroundIO</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>updateBackgroundWrites</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getLogBufferSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>item</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>logItem</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogWriteInfo</color> <color=#f8f8f2>lwi</color> <color=#f92672>=</color> <color=#f8f8f2>serialLog</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lwi</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Add checksum, prev offset, and VLSN to the entry.</color>
+<color=#75715e>       * Copy data into the log buffer.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>addPostMarshallingInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>lwi</color><color=#f8f8f2>.</color><color=#a6e22e>fileOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>lwi</color><color=#f8f8f2>.</color><color=#a6e22e>vlsn</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>lwi</color><color=#f8f8f2>.</color><color=#a6e22e>lbs</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Update obsolete info under the LWL */</color>
+    <color=#f8f8f2>updateObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Expiration tracking is protected by the Btree latch, not the LWL. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerToUse</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerToUse</color><color=#f8f8f2>.</color><color=#a6e22e>track</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Queue flushing of expiration tracker after a file flip. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerCompleted</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>addCompletedTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerCompleted</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method handles exceptions to be certain that the Environment is invalidated when any</color>
+<color=#75715e>   * exception occurs in the critical write path, and it checks for an invalid environment to be</color>
+<color=#75715e>   * sure that no subsequent write is allowed. [#21929]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Invalidation is necessary because a logging operation does not ensure that the internal</color>
+<color=#75715e>   * state -- correspondence of LSN pointer, log buffer position and file position, and the</color>
+<color=#75715e>   * integrity of the VLSN index [#20919] -- is maintained correctly when an exception occurs.</color>
+<color=#75715e>   * Allowing a subsequent write can cause log corruption.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogWriteInfo</color> <color=#a6e22e>serialLog</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Do not attempt to write with an invalid environment. */</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>checkIfInvalid</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>serialLogWork</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * If we've already invalidated the environment, rethrow so</color>
+<color=#75715e>         * as not to excessively wrap the exception.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Otherwise, invalidate the environment. */</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Errors must be caught here as well as Exceptions.[#21929] */</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method is used as part of writing data to the log. Called under the LogWriteLatch. Data is</color>
+<color=#75715e>   * either written to the LogBuffer or allocates space in the LogBuffer. The LogWriteInfo object is</color>
+<color=#75715e>   * used to save information about the space allocate in the LogBuffer. The caller uses the object</color>
+<color=#75715e>   * to copy data into the underlying LogBuffer. A null value returned indicates that the item was</color>
+<color=#75715e>   * written to the log. This occurs when the data item is too big to fit into an empty LogBuffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param params log params.</color>
+<color=#75715e>   * @param tracker utilization.</color>
+<color=#75715e>   * @return a LogWriteInfo object used to access allocated LogBuffer space. If null, the data was</color>
+<color=#75715e>   *     written to the log.</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogWriteInfo</color> <color=#a6e22e>serialLogWork</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Do obsolete tracking before marshalling a FileSummaryLN into the</color>
+<color=#75715e>     * log buffer so that a FileSummaryLN counts itself.</color>
+<color=#75715e>     * countObsoleteNode must be called before computing the entry</color>
+<color=#75715e>     * size, since it can change the size of a FileSummaryLN entry that</color>
+<color=#75715e>     * we're logging</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>isTransientOrNull</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldLsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteDupsAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeDupsAllowed</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNode</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Count auxOldLsn for same database; no specified size. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>isTransientOrNull</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>auxOldLsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteDupsAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeDupsAllowed</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>auxOldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNode</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>auxOldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Compute the VLSNs and modify the DTVLSN in commit/abort entries</color>
+<color=#75715e>     * before the entry is marshalled or its size is required. At that</color>
+<color=#75715e>     * at this point we are committed to writing a log entry with  the</color>
+<color=#75715e>     * computed VLSN.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getClientVLSN</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>mustGenerateVLSN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>mustGenerateVLSN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>assignVLSNs</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getClientVLSN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If an entry must be protected within the log write latch for</color>
+<color=#75715e>     * marshalling, take care to also calculate its size in the</color>
+<color=#75715e>     * protected section. Note that we have to get the size *before*</color>
+<color=#75715e>     * marshalling so that the currentLsn and size are correct for</color>
+<color=#75715e>     * utilization tracking.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>marshallOutsideLatch</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>entrySize</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entrySize</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>entrySize</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>getEntrySize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Get the next free slot in the log, under the log write latch.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>forceNewLogFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>forceNewLogFile</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>flippedFile</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>shouldFlipFile</color><color=#f8f8f2>(</color><color=#f8f8f2>entrySize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>currentLsn</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>calculateNextLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>flippedFile</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * TODO: Count file header, since it is not logged via LogManager.</color>
+<color=#75715e>     * Some tests (e.g., INUtilizationTest) will need to be adjusted.</color>
+<color=#75715e>     *</color>
+<color=#75715e>    final int fileHeaderSize = FileManager.firstLogEntryOffset();</color>
+<color=#75715e>    if (DbLsn.getFileOffset(currentLsn) == fileHeaderSize) {</color>
+<color=#75715e>        final long fileNum = DbLsn.getFileNumber(currentLsn);</color>
+
+<color=#75715e>        tracker.countNewLogEntry(</color>
+<color=#75715e>            DbLsn.makeLsn(fileNum, 0), LogEntryType.LOG_FILE_HEADER,</color>
+<color=#75715e>            fileHeaderSize, null);</color>
+<color=#75715e>    }</color>
+<color=#75715e>    */</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * countNewLogEntry and countObsoleteNodeInexact cannot change</color>
+<color=#75715e>     * a FileSummaryLN size, so they are safe to call after</color>
+<color=#75715e>     * getSizeForWrite.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countNewLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>entrySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * LN deletions and dup DB LNs are obsolete immediately.  Inexact</color>
+<color=#75715e>     * counting is used to save resources because the cleaner knows</color>
+<color=#75715e>     * that all such LNs are obsolete.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>.</color><color=#a6e22e>isImmediatelyObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>entrySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This entry must be marshalled within the log write latch.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>marshallIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Sanity check */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entrySize</color> <color=#f92672>!=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Logged entry entrySize= "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entrySize</color>
+              <color=#f92672>+</color> <color=#e6db74>" but marshalledSize="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" type="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryType</color>
+              <color=#f92672>+</color> <color=#e6db74>" currentLsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Ask for a log buffer suitable for holding this new entry. If</color>
+<color=#75715e>     * entrySize is larger than the LogBuffer capacity, this will flush</color>
+<color=#75715e>     * all dirty buffers and return the next empty (but too small) buffer.</color>
+<color=#75715e>     * The returned buffer is not latched.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogBuffer</color> <color=#f8f8f2>lastLogBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>entrySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>flippedFile</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Bump the LSN values, which gives us a valid previous pointer,</color>
+<color=#75715e>     * which is part of the log entry header. This must be done:</color>
+<color=#75715e>     *  - before logging the currentLsn.</color>
+<color=#75715e>     *  - after calling getWriteBuffer, to flush the prior file when</color>
+<color=#75715e>     *    flippedFile is true.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevOffset</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>advanceLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entrySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>flippedFile</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastLogBuffer</color> <color=#f92672>!=</color> <color=#f8f8f2>prevLogBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>switchedLogBuffer</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>prevLogBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogBufferSegment</color> <color=#f8f8f2>useBuffer</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>latchForWrite</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>useBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>entrySize</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useBuffer</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Register the lsn while holding the buffer latch. */</color>
+        <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>registerLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * The item buffer is larger than the LogBuffer capacity, so</color>
+<color=#75715e>         * write the item buffer to the file directly. Note that</color>
+<color=#75715e>         * getWriteBuffer has flushed all dirty buffers.</color>
+<color=#75715e>         *</color>
+<color=#75715e>         * First add checksum, prev offset, and VLSN to the entry.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>addPostMarshallingInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>flushWriteQueue</color> <color=#f92672>=</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>flushRequired</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>fsyncRequired</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>writeLogBuffer</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentLsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>flushWriteQueue</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>getDataBuffer</color><color=#f8f8f2>().</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/* Leave a clue that the buffer size needs to be increased. */</color>
+        <color=#f8f8f2>nTempBufferWrites</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastLogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If the txn is not null, the first entry is an LN. Update the txn</color>
+<color=#75715e>     * with info about the latest LSN. Note that this has to happen</color>
+<color=#75715e>     * within the log write latch.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>.</color><color=#a6e22e>postLogWork</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color> <color=#f92672>=</color> <color=#f8f8f2>currentLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>size</color> <color=#f92672>=</color> <color=#f8f8f2>entrySize</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* If the expirationTracker field is null, no tracking should occur. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expirationTracker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * When logging to a new file, also flip the expirationTracker</color>
+<color=#75715e>       * under the LWL and return expirationTrackerCompleted so it will</color>
+<color=#75715e>       * be queued for flushing.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>newFile</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>flippedFile</color> <color=#f92672>&&</color> <color=#f8f8f2>newFile</color> <color=#f92672>!=</color> <color=#f8f8f2>expirationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerCompleted</color> <color=#f92672>=</color> <color=#f8f8f2>expirationTracker</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>expirationTracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExpirationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>newFile</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Increment the pending calls under the LWL, so we can determine</color>
+<color=#75715e>       * when we're finished.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>expirationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>incrementPendingTrackCalls</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>expirationTrackerToUse</color> <color=#f92672>=</color> <color=#f8f8f2>expirationTracker</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>useBuffer</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogWriteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>useBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevOffset</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Serialize a loggable object into this buffer. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>marshallIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryHeader</color> <color=#f8f8f2>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>entrySize</color> <color=#f92672>=</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>destBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>entrySize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>destBuffer</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Put the entry in. */</color>
+    <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>writeEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>destBuffer</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Set the limit so it can be used as the size of the entry. */</color>
+    <color=#f8f8f2>destBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>destBuffer</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Serialize a log entry into this buffer with proper entry header. Return it ready for a copy.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>putIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevLogEntryOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LogEntryHeader</color> <color=#f8f8f2>header</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>NO_REPLICATE</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Currently this method is only used for serializing the FileHeader.</color>
+<color=#75715e>     * Assert that we do not need the Txn mutex in case this method is used</color>
+<color=#75715e>     * in the future for other log entries. See LN.log. [#17204]</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>().</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>destBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>marshallIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>entry</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>addPostMarshallingInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>destBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevLogEntryOffset</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Reading from the log.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Instantiate all the objects in the log entry at this LSN. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getLogEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>).</color><color=#a6e22e>getEntry</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getWholeLogEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Instantiate all the objects in the log entry at this LSN. Allow the fetch of invisible log</color>
+<color=#75715e>   * entries if we are in recovery.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getLogEntryAllowInvisibleAtRecovery</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isInInit</color><color=#f8f8f2>()</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Instantiate all the objects in the log entry at this LSN. The entry may be marked invisible.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getLogEntryAllowInvisible</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Instantiate all the objects in the log entry at this LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn location of entry in log.</color>
+<color=#75715e>   * @param invisibleReadAllowed true if it's expected that the target log entry might be invisible.</color>
+<color=#75715e>   *     Correct the known-to-be-bad checksum before proceeding.</color>
+<color=#75715e>   * @return log entry that embodies all the objects in the log entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getLogEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>lastLoggedSize</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>invisibleReadAllowed</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Fail loudly if the environment is invalid. */</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>checkIfInvalid</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>LogSource</color> <color=#f8f8f2>logSource</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Get a log source for the log entry which provides an abstraction</color>
+<color=#75715e>       * that hides whether the entry is in a buffer or on disk. Will</color>
+<color=#75715e>       * register as a reader for the buffer or the file, which will take</color>
+<color=#75715e>       * a latch if necessary. Latch is released in finally block.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>logSource</color> <color=#f92672>=</color> <color=#f8f8f2>getLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntryFromLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLoggedSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>,</color> <color=#f8f8f2>invisibleReadAllowed</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>ce</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * When using a FileSource, a checksum error indicates a</color>
+<color=#75715e>         * persistent corruption. An EFE with LOG_CHECKSUM is created</color>
+<color=#75715e>         * in the catch below and EFE.isCorrupted will return true.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>logSource</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>assert</color> <color=#f8f8f2>logSource</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>FileSource</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>ce</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * When using a LogBuffer source, we must try to read the entry</color>
+<color=#75715e>         * from disk to see if the corruption is persistent.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>LogBuffer</color> <color=#f8f8f2>logBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>FileHandle</color> <color=#f8f8f2>fileHandle</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>fileLength</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileHandle</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHandle</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+          <color=#f8f8f2>fileLength</color> <color=#f92672>=</color> <color=#f8f8f2>fileHandle</color><color=#f8f8f2>.</color><color=#a6e22e>getFile</color><color=#f8f8f2>().</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* FileNotFound or another IOException was thrown. */</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * If the file does not exist (FileNotFoundException is thrown</color>
+<color=#75715e>         * above) or the firstLsn in the buffer does not appear in the</color>
+<color=#75715e>         * file (the buffer was not flushed), then the corruption is</color>
+<color=#75715e>         * not persistent and we throw a EFE for which isCorrupted</color>
+<color=#75715e>         * will return false.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileHandle</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>fileLength</color> <color=#f92672><=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>getFirstLsn</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Corruption detected in log buffer, "</color> <color=#f92672>+</color> <color=#e6db74>"but was not written to disk."</color><color=#f8f8f2>,</color> <color=#f8f8f2>ce</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The log entry should have been written to the file. Try</color>
+<color=#75715e>         * getting the log entry from the FileSource. If a</color>
+<color=#75715e>         * ChecksumException is thrown, the corruption is persistent</color>
+<color=#75715e>         * and an EFE with LOG_CHECKSUM is thrown below.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>FileSource</color> <color=#f8f8f2>fileSource</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileHandleSource</color><color=#f8f8f2>(</color><color=#f8f8f2>fileHandle</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntryFromLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLoggedSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileSource</color><color=#f8f8f2>,</color> <color=#f8f8f2>invisibleReadAllowed</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * WARNING: EFE with LOG_CHECKSUM indicates a persistent corruption</color>
+<color=#75715e>       * and therefore LogSource.release must not be called until after</color>
+<color=#75715e>       * invalidating the environment (in the finally below). The buffer</color>
+<color=#75715e>       * latch prevents the corrupt buffer from being logged by another</color>
+<color=#75715e>       * thread.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>VerifierUtils</color><color=#f8f8f2>.</color><color=#a6e22e>createMarkerFileFromException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>.</color><color=#a6e22e>FailureType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CHECKSUM</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>e</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CHECKSUM</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Error</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logSource</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getLogEntryHandleFileNotFound</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_NOT_FOUND</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getWholeLogEntryHandleFileNotFound</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getWholeLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_NOT_FOUND</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Throws ChecksumException rather than translating it to EnvironmentFailureException and</color>
+<color=#75715e>   * invalidating the environment. Used instead of getLogEntry when a ChecksumException is handled</color>
+<color=#75715e>   * specially.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getLogEntryAllowChecksumException</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogSource</color> <color=#f8f8f2>logSource</color> <color=#f92672>=</color> <color=#f8f8f2>getLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntryFromLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>).</color><color=#a6e22e>getEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getLogEntryAllowChecksumException</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>RandomAccessFile</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogSource</color> <color=#f8f8f2>logSource</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>FileSource</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntryFromLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>).</color><color=#a6e22e>getEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Gets log entry from the given source; the caller is responsible for calling logSource.release</color>
+<color=#75715e>   * and handling ChecksumException.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Is non-private for unit testing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn location of entry in log</color>
+<color=#75715e>   * @param lastLoggedSize is the entry size if known, or zero if unknown.</color>
+<color=#75715e>   * @param invisibleReadAllowed if true, we will permit the read of invisible log entries, and we</color>
+<color=#75715e>   *     will adjust the invisible bit so that the checksum will validate</color>
+<color=#75715e>   * @return log entry that embodies all the objects in the log entry</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getLogEntryFromLogSource</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>lastLoggedSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogSource</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>invisibleReadAllowed</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Read the log entry header into a byte buffer. If the</color>
+<color=#75715e>     * lastLoggedSize is available (non-zero), we can use it to avoid a</color>
+<color=#75715e>     * repeat-read further below. Otherwise we use the configured</color>
+<color=#75715e>     * LOG_FAULT_READ_SIZE, and a repeat-read may occur if the log</color>
+<color=#75715e>     * entry is larger than the buffer.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Even when lastLoggedSize is non-zero, we do not assume that it</color>
+<color=#75715e>     * is always accurate, because this is not currently guaranteed</color>
+<color=#75715e>     * in corner cases such as transaction aborts. We do the initial</color>
+<color=#75715e>     * read with lastLoggedSize. If lastLoggedSize is larger than the</color>
+<color=#75715e>     * actual size, we will simply read more bytes than needed. If</color>
+<color=#75715e>     * lastLoggedSize is smaller than the actual size, we will do a</color>
+<color=#75715e>     * repeat-read further below.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>lastLoggedSize</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+            <color=#f92672>?</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLoggedSize</color><color=#f8f8f2>)</color>
+            <color=#f8f8f2>:</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_HEADER_SIZE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Incomplete log entry header in "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>logSource</color>
+              <color=#f92672>+</color> <color=#e6db74>" needed="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_HEADER_SIZE</color>
+              <color=#f92672>+</color> <color=#e6db74>" remaining="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Read the fixed length portion of the header. */</color>
+    <color=#f8f8f2>LogEntryHeader</color> <color=#f8f8f2>header</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>getLogVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Read the variable length portion of the header. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>isVariableLength</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVariablePortionSize</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Incomplete log entry header in "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>logSource</color>
+                <color=#f92672>+</color> <color=#e6db74>" needed="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVariablePortionSize</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" remaining="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>readVariablePortion</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>ChecksumValidator</color> <color=#f8f8f2>validator</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doChecksumOnRead</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>itemStart</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * We're about to read an invisible log entry, which has knowingly</color>
+<color=#75715e>       * been left on disk with a bad checksum. Flip the invisible bit in</color>
+<color=#75715e>       * the backing byte buffer now, so the checksum will be valid. The</color>
+<color=#75715e>       * LogEntryHeader object itself still has the invisible bit set,</color>
+<color=#75715e>       * which is useful for debugging.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>turnOffInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>itemStart</color> <color=#f92672>-</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Add header to checksum bytes */</color>
+      <color=#f8f8f2>validator</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumValidator</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>headerSizeMinusChecksum</color> <color=#f92672>=</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getSizeMinusChecksum</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>itemStart</color> <color=#f92672>-</color> <color=#f8f8f2>headerSizeMinusChecksum</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>validator</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>headerSizeMinusChecksum</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>itemStart</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now that we know the size, read the rest of the entry if the first</color>
+<color=#75715e>     * read didn't get enough.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>itemSize</color> <color=#f92672>=</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entryBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color> <color=#f92672>+</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>(),</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Incomplete log entry item in "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>logSource</color>
+                <color=#f92672>+</color> <color=#e6db74>" needed="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>itemSize</color>
+                <color=#f92672>+</color> <color=#e6db74>" remaining="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>nRepeatFaultReads</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Do entry validation. Run checksum before checking the entry type, it</color>
+<color=#75715e>     * will be the more encompassing error.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doChecksumOnRead</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Check the checksum first. */</color>
+      <color=#f8f8f2>validator</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>validator</color><color=#f8f8f2>.</color><color=#a6e22e>validate</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getChecksum</color><color=#f8f8f2>(),</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If invisibleReadAllowed == false, we should not be fetching an</color>
+<color=#75715e>     * invisible log entry.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>invisibleReadAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INTEGRITY</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Read invisible log entry at "</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>header</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>isValidType</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>())</color>
+        <color=#f8f8f2>:</color> <color=#e6db74>"Read non-valid log entry type: "</color> <color=#f92672>+</color> <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Read the entry. */</color>
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()).</color><color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* For testing only; generate a read io exception. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readHook</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>readHook</color><color=#f8f8f2>.</color><color=#a6e22e>doIOHook</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Simulate what the FileManager would do. */</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_READ</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>WholeEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>,</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Fault in the first object in the log entry log entry at this LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn location of object in log</color>
+<color=#75715e>   * @return the object in the log</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>getEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>getLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>getEntryHandleFileNotFound</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>getLogEntryHandleFileNotFound</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Find the LSN, whether in a file or still in the log buffers. Is public for unit testing. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogSource</color> <color=#a6e22e>getLogSource</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>FileNotFoundException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * First look in log to see if this LSN is still in memory.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>LogBuffer</color> <color=#f8f8f2>logBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getReadBufferByLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Not in the in-memory log -- read it off disk. */</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileHandleSource</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHandle</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>),</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Add LSN to exception message. */</color>
+        <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>addErrorMessage</color><color=#f8f8f2>(</color><color=#e6db74>"lsn= "</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Reads a log entry using a FileSource, and returns null (rather than throwing a</color>
+<color=#75715e>   * ChecksumException) if the entry exists in a log buffer that was not flushed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Used to check whether an in-memory corruption is persistent.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return WholeEntry null means that this lsn does not exist in the file</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WholeEntry</color> <color=#a6e22e>getLogEntryDirectFromFile</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogSource</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logSource</color> <color=#f92672>=</color> <color=#f8f8f2>getLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>fnfe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileSource</color> <color=#f8f8f2>fileSource</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logSource</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>FileHandle</color> <color=#f8f8f2>fileHandle</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>LogBuffer</color> <color=#f8f8f2>logBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileLength</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileHandle</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHandle</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+          <color=#f8f8f2>fileLength</color> <color=#f92672>=</color> <color=#f8f8f2>fileHandle</color><color=#f8f8f2>.</color><color=#a6e22e>getFile</color><color=#f8f8f2>().</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* FileNotFound or another IOException was thrown. */</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * If the file does not exist (FileNotFoundException is thrown</color>
+<color=#75715e>         * above) or the firstLsn in the buffer does not appear in the</color>
+<color=#75715e>         * file (the buffer was not flushed), then the corruption is</color>
+<color=#75715e>         * not persistent and later we will throw a EFE for which</color>
+<color=#75715e>         * isCorrupted will return false.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileLength</color> <color=#f92672><=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>getFirstLsn</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The log entry should have been written to the file. Try</color>
+<color=#75715e>       * getting the log entry from the FileSource. If the log entry is</color>
+<color=#75715e>       * incomplete, ChecksumException is thrown below and later we will</color>
+<color=#75715e>       * throw an EFE with LOG_CHECKSUM.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>fileSource</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileHandleSource</color><color=#f8f8f2>(</color><color=#f8f8f2>fileHandle</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSource</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileSource</color><color=#f8f8f2>)</color> <color=#f8f8f2>logSource</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLogEntryFromLogSource</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileSource</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*invisibleReadAllowed*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSource</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Return a log buffer locked for reading, or null if no log buffer holds this LSN location. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogBuffer</color> <color=#a6e22e>getReadBufferByLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color>
+        <color=#f8f8f2>:</color> <color=#e6db74>"Read of lsn "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>" is illegal because file header entry is not in the log buffer"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getReadBufferByLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Flush all log entries, fsync the log file. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>flushSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* The write queue is flushed by syncLogEnd. */</color>
+    <color=#f8f8f2>flushInternal</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*flushWriteQueue*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>syncLogEnd</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Flush all log entries and write to the log but do not fsync. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>flushNoSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>flushInternal</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*flushWriteQueue*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flush log buffers, but do not flush the write queue. This is used only by FsyncManager, just</color>
+<color=#75715e>   * prior to an fsync. When FsyncManager performs the fsync, the write queue will be flushed by</color>
+<color=#75715e>   * FileManager.fsyncLogEnd.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>flushBeforeSync</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>flushInternal</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*flushWriteQueue*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flush the dirty log buffers, and optionally the write queue as well.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Flushing logically means flushing all write buffers to the file system, so flushWriteQueue</color>
+<color=#75715e>   * should be false only when this method is called just before an fsync (FileManager.syncLogEnd</color>
+<color=#75715e>   * will flush the write queue).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>flushInternal</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>flushWriteQueue</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>readOnly</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If we cannot bump the current buffer because there are no</color>
+<color=#75715e>     * free buffers, the only recourse is to write all buffers</color>
+<color=#75715e>     * under the LWL.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>bumpCurrent</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>bumpAndWriteDirty</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>flushWriteQueue</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We bumped the current buffer but did not write any buffers above.</color>
+<color=#75715e>     * Write the dirty buffers now.  Hopefully this is the common case.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>writeDirty</color><color=#f8f8f2>(</color><color=#f8f8f2>flushWriteQueue</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>endOfLog</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getLastUsedLsn</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>copyStats</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>copyStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>copyStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>copyStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>grpManager</color><color=#f8f8f2>.</color><color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>copyStats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the current number of cache misses in a lightweight fashion, without incurring the cost</color>
+<color=#75715e>   * of loading all the stats, and without clearing any stats.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNCacheMiss</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getNCacheMiss</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit testing. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getBufferPoolLatchStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logBufferPool</color><color=#f8f8f2>.</color><color=#a6e22e>getBufferPoolLatchStats</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a tracked summary for the given file which will not be flushed. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>TrackedFileSummary</color> <color=#a6e22e>getUnflushableTrackedSummary</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>().</color><color=#a6e22e>getUnflushableTrackedSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Removes the tracked summary for the given file. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>removeTrackedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>tfs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>tfs</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>packedObsoleteInfo</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteWriteLockInfo</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Count other obsolete info under the log write latch. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>packedObsoleteInfo</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>packedObsoleteInfo</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>tracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteWriteLockInfo</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>info</color> <color=#f8f8f2>:</color> <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteWriteLockInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNode</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortLsn</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color> <color=#75715e>/*type*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortLogSize</color><color=#f8f8f2>(),</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Count node as obsolete under the log write latch. This is done here because the log write latch</color>
+<color=#75715e>   * is managed here, and all utilization counting must be performed under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsoleteNode</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>nodeDb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>countExact</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countExact</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNode</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeDb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A flavor of countObsoleteNode which does not fire an assert if the offset has already been</color>
+<color=#75715e>   * counted. Called through the LogManager so that this incidence of all utilization counting can</color>
+<color=#75715e>   * be performed under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsoleteNodeDupsAllowed</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>nodeDb</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeDupsAllowed</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeDb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see LocalUtilizationTracker#transferToUtilizationTracker */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>transferToUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>LocalUtilizationTracker</color> <color=#f8f8f2>localTracker</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>localTracker</color><color=#f8f8f2>.</color><color=#a6e22e>transferToUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DatabaseImpl#countObsoleteDb */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsoleteDb</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteDb</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationTracker</color><color=#f8f8f2>(),</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#75715e>/*mapLnLsn*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>removeDbFileSummaries</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>fileNums</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>removeDbFileSummaries</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNums</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see DatabaseImpl#cloneDbFileSummaries */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummary</color><color=#f92672>></color> <color=#a6e22e>cloneDbFileSummaries</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>logWriteMutex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>cloneDbFileSummariesInternal</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit testing only. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setReadHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>readHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit testing only. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDelayVLSNRegisterHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>delayVLSNRegisterHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit testing only. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setFlushLogHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>CountDownLatch</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>flushHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>grpManager</color><color=#f8f8f2>.</color><color=#a6e22e>setFlushLogHook</color><color=#f8f8f2>(</color><color=#f8f8f2>hook</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>LogWriteInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogBufferSegment</color> <color=#f8f8f2>lbs</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LogWriteInfo</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>LogBufferSegment</color> <color=#f8f8f2>bs</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lbs</color> <color=#f92672>=</color> <color=#f8f8f2>bs</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileOffset</color> <color=#f92672>=</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

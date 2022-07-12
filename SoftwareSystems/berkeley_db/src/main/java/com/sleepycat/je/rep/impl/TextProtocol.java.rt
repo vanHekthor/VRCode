@@ -1,0 +1,1157 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.DurationConfigParam</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Utils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory.ConnectOptions</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ReplicationFormatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.TestHook</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.Constructor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.InvocationTargetException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.Method</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.SocketException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.Channels</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map.Entry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Formatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * TextProtocol provides the support for implementing simple low performance protocols involving</color>
+<color=#75715e> * replication nodes. The protocol is primarily text based, and checks group membership and version</color>
+<color=#75715e> * matches with every message favoring flexibility over performance.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The base class is primarily responsible for the message formatting and message envelope</color>
+<color=#75715e> * validation. The subclasses define the specific messages that constitute the protocol and the</color>
+<color=#75715e> * request/response semantics.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Every message has the format: <version>|<name>|<id>|<op>|<op-specific payload></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p><version> is the version of the protocol in use. <name> identifies a group participating in an</color>
+<color=#75715e> * election. It avoids accidental cross-talk across groups holding concurrent elections. <id></color>
+<color=#75715e> * identifies the originator of the message within the group. <op> the operation identified by the</color>
+<color=#75715e> * specific message. <op-specific payload> the payload associated with the particular operation.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>TextProtocol</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The name of the class associated with this protocol. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Protocol version string. Format: <major version>.<minor version></color>
+<color=#75715e>   * It's used to ensure compatibility across versions.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>VERSION</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The name of the group executing this protocol. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The set of ids of nodes that are permitted to communicate via this</color>
+<color=#75715e>   * protocol, or null if not restricted. It's updated as nodes enter and</color>
+<color=#75715e>   * leave the dynamic group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Integer</color><color=#f92672>></color> <color=#f8f8f2>memberIds</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The id associated with this protocol participant. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The suffix of message prefix constituting the "fixed" part of the</color>
+<color=#75715e>   * message for this group and node, it does not include the version</color>
+<color=#75715e>   * information, which goes in front of this prefix.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>messageNocheckSuffix</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Timeouts used for network communications. Use setTimeouts() to override</color>
+<color=#75715e>   * the defaults.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>openTimeoutMs</color> <color=#f92672>=</color> <color=#ae81ff>10000</color><color=#f8f8f2>;</color> <color=#75715e>// Default to 10 sec</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>readTimeoutMs</color> <color=#f92672>=</color> <color=#ae81ff>10000</color><color=#f8f8f2>;</color> <color=#75715e>// Default to 10 sec</color>
+
+  <color=#75715e>/* The token separator in messages */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>=</color> <color=#e6db74>"|"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SEPARATOR_REGEXP</color> <color=#f92672>=</color> <color=#e6db74>"\\"</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* A message defined by the base class to deal with all errors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>PROTOCOL_ERROR</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"PE"</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolError</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>OK_RESP</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"OK"</color><color=#f8f8f2>,</color> <color=#f8f8f2>OK</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>FAIL_RESP</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>(</color><color=#e6db74>"FAIL"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Fail</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* The number of message types defined by the subclass. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nonDefaultMessageCount</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Maps request Ops to the corresponding enumerator. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>MessageOp</color><color=#f92672>></color> <color=#f8f8f2>ops</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>Formatter</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Hook used to modify messages in the serialized form. The hook is invoked on a serialized</color>
+<color=#75715e>   * Request immediately before it's written to the network and immediately after a response is</color>
+<color=#75715e>   * received and before it's deserialized. The hook implementation must be re-entrant.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>serDeHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an instance of the Protocol.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @parameter version the protocol version number</color>
+<color=#75715e>   * @parameter groupName the name of the group executing this protocol</color>
+<color=#75715e>   * @param nameIdPair a unique identifier for this node</color>
+<color=#75715e>   * @param repImpl for logging, may be null</color>
+<color=#75715e>   * @param channelFactory the factory for channel creation</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>TextProtocol</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>version</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>VERSION</color> <color=#f92672>=</color> <color=#f8f8f2>version</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>channelFactory</color> <color=#f92672>=</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>messageNocheckSuffix</color> <color=#f92672>=</color> <color=#f8f8f2>groupName</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NOCHECK_NODE_ID</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLoggerFormatterNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>formatter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationFormatter</color><color=#f8f8f2>(</color><color=#f8f8f2>nameIdPair</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the hook that is invoked post serialization on request messages and pre deserialization on</color>
+<color=#75715e>   * response messages.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The hook implementation must be re-entrant.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setSerDeHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>serDeHook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>TextProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>serDeHook</color> <color=#f92672>=</color> <color=#f8f8f2>serDeHook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Set the network timeouts associated with uses of this protocol instance. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>setTimeouts</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>openTimeoutConfig</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>readTimeoutConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>openTimeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>openTimeoutConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>readTimeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>readTimeoutConfig</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The messages as defined by the subclass. Note that PROTOCOL_ERROR is a pre-defined message that</color>
+<color=#75715e>   * is defined by this class. The initialization is not considered until this method after been</color>
+<color=#75715e>   * invoked typically in the constructor itself. This two-step is unfortunately necessary since the</color>
+<color=#75715e>   * creation of MessageOps instances requires that this class be completely initialized, otherwise</color>
+<color=#75715e>   * the MessageOp list could have been passed in as a constructor argument.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param protocolOps the message ops defined by the subclass.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeMessageOps</color><color=#f8f8f2>(</color><color=#f8f8f2>MessageOp</color><color=#f92672>[]</color> <color=#f8f8f2>protocolOps</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>MessageOp</color> <color=#f8f8f2>op</color> <color=#f8f8f2>:</color> <color=#f8f8f2>protocolOps</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>op</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>nonDefaultMessageCount</color> <color=#f92672>=</color> <color=#f8f8f2>protocolOps</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>OK_RESP</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>OK_RESP</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>FAIL_RESP</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>FAIL_RESP</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For testing only. */</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>replaceOp</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>op</color><color=#f8f8f2>,</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>op</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the messages, of the specified type, used by the protocol */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getOps</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>messageType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>reqOps</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>MessageOp</color><color=#f92672>></color> <color=#f8f8f2>e</color> <color=#f8f8f2>:</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageType</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>().</color><color=#a6e22e>getMessageClass</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>reqOps</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>reqOps</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getOpenTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>openTimeoutMs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getReadTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>readTimeoutMs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* The total number of nonDefault messages defined by the protocol. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>messageCount</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nonDefaultMessageCount</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Updates the current set of nodes that are permitted to communicate via this protocol, or null</color>
+<color=#75715e>   * for unrestricted.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param newMemberIds</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>updateNodeIds</color><color=#f8f8f2>(</color><color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Integer</color><color=#f92672>></color> <color=#f8f8f2>newMemberIds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>memberIds</color> <color=#f92672>=</color> <color=#f8f8f2>newMemberIds</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the Integer number which represents a Protocol version. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getMajorVersionNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>version</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>Double</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>version</color><color=#f8f8f2>).</color><color=#a6e22e>intValue</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The Operations that are part of the protocol. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>MessageOp</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* The string denoting the operation for the request message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The class used to represent the message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MessageOp</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color> <color=#f92672>=</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>messageClass</color> <color=#f92672>=</color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#a6e22e>getOpId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#a6e22e>getMessageClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Represents the tokens on a message line. The order of the enumerators represents the order of</color>
+<color=#75715e>   * the tokens in the wire format.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>TOKENS</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>VERSION_TOKEN</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>NAME_TOKEN</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>ID_TOKEN</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>OP_TOKEN</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>FIRST_PAYLOAD_TOKEN</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Used to indicate that an entity is formatable and can be serialized and</color>
+<color=#75715e>   * de-serialized.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>interface</color> <color=#a6e22e>WireFormatable</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Returns the string representation suitable for use in a network</color>
+<color=#75715e>     * request.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Parses a line into a Request/Response message.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param line containing the message</color>
+<color=#75715e>   * @return a message instance</color>
+<color=#75715e>   * @throws InvalidMessageException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Message</color> <color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color> <color=#f92672>=</color> <color=#f8f8f2>line</color><color=#f8f8f2>.</color><color=#a6e22e>split</color><color=#f8f8f2>(</color><color=#f8f8f2>SEPARATOR_REGEXP</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>OP_TOKEN</color><color=#f8f8f2>.</color><color=#a6e22e>ordinal</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>index</color> <color=#f92672>>=</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>BAD_FORMAT</color><color=#f8f8f2>,</color> <color=#e6db74>"Missing message op in message: "</color> <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>op</color> <color=#f92672>=</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>tokens</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>op</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>BAD_FORMAT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Text Protocol"</color> <color=#f92672>+</color> <color=#e6db74>" unknown op:"</color> <color=#f92672>+</color> <color=#f8f8f2>tokens</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color> <color=#f92672>+</color> <color=#e6db74>" in message: "</color> <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>getMessageClass</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>Constructor</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>cons</color> <color=#f92672>=</color>
+          <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>getConstructor</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>getEnclosingClass</color><color=#f8f8f2>(),</color> <color=#f8f8f2>line</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>(),</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>cons</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InstantiationException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalAccessException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecurityException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchMethodException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InvocationTargetException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Unwrap the exception. */</color>
+      <color=#f8f8f2>Throwable</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getTargetException</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color> <color=#f92672>=</color>
+            <color=#e6db74>"message: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>line</color>
+                <color=#f92672>+</color> <color=#e6db74>" exception:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" exception message:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color><color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>BAD_FORMAT</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>(</color><color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>)</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Base message class for all messages exchanged in the protocol. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Message</color> <color=#66d9ef>implements</color> <color=#f8f8f2>WireFormatable</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* The sender of the message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>senderId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The version of this message, as it's deserialized and sent across</color>
+<color=#75715e>     * the network. The default is that messages are sent in the VERSION of</color>
+<color=#75715e>     * the current protocol, but in cases of mixed-version upgrades, the</color>
+<color=#75715e>     * message may be sent in an earlier version format.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * When this message is a RequestMessage, the sender will always</color>
+<color=#75715e>     * initially send it out its own native version, but may resend it in</color>
+<color=#75715e>     * an earlier version, if the recipient can't understand the native</color>
+<color=#75715e>     * version. When the message is a ResponseMessage, the sender can reply</color>
+<color=#75715e>     * either in its native version, or in an earlier version if the</color>
+<color=#75715e>     * requester is an older version of JE.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#f8f8f2>sendVersion</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The line representing the message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The tokenized form of the above line. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The current variable arg token */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>currToken</color> <color=#f92672>=</color> <color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>FIRST_PAYLOAD_TOKEN</color><color=#f8f8f2>.</color><color=#a6e22e>ordinal</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#f8f8f2>messagePrefixNocheck</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The constructor used for the original non-serialized instance of the message, which does not</color>
+<color=#75715e>     * use the line or tokens.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#a6e22e>Message</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>line</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>tokens</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>setSendVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>VERSION</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Every message must define a constructor of this form so that it can be de-serialized. The</color>
+<color=#75715e>     * constructor is invoked using reflection by the parse() method.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param line the line constituting the message</color>
+<color=#75715e>     * @param tokens the line in token form</color>
+<color=#75715e>     * @throws InvalidMessageException</color>
+<color=#75715e>     * @throws EnvironmentFailureException on format errors</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#a6e22e>Message</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>line</color> <color=#f92672>=</color> <color=#f8f8f2>line</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>tokens</color> <color=#f92672>=</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Validate the leading fixed fields. */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>version</color> <color=#f92672>=</color> <color=#f8f8f2>getTokenString</color><color=#f8f8f2>(</color><color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>VERSION_TOKEN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Double</color><color=#f8f8f2>(</color><color=#f8f8f2>VERSION</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#66d9ef>new</color> <color=#f8f8f2>Double</color><color=#f8f8f2>(</color><color=#f8f8f2>version</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>VERSION_MISMATCH</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Version argument mismatch."</color>
+                <color=#f92672>+</color> <color=#e6db74>" Expected: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>VERSION</color>
+                <color=#f92672>+</color> <color=#e6db74>", found: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>version</color>
+                <color=#f92672>+</color> <color=#e6db74>", in message: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Set the sender version of a request message. This version</color>
+<color=#75715e>       * information will be used by the receiver to determine what</color>
+<color=#75715e>       * version should be used for the response message.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>setSendVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>version</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>messageGroupName</color> <color=#f92672>=</color> <color=#f8f8f2>getTokenString</color><color=#f8f8f2>(</color><color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>NAME_TOKEN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>groupName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>messageGroupName</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_MISMATCH</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Group name mismatch; this group name: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>groupName</color>
+                <color=#f92672>+</color> <color=#e6db74>", message group name: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>messageGroupName</color>
+                <color=#f92672>+</color> <color=#e6db74>", in message: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>senderId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>(</color><color=#f8f8f2>getTokenString</color><color=#f8f8f2>(</color><color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>ID_TOKEN</color><color=#f8f8f2>)).</color><color=#a6e22e>intValue</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>memberIds</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>memberIds</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NOCHECK_NODE_ID</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>senderId</color> <color=#f92672>!=</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NOCHECK_NODE_ID</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>senderId</color> <color=#f92672>!=</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>())</color>
+          <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>memberIds</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>senderId</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>NOT_A_MEMBER</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Sender's member id: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>senderId</color>
+                <color=#f92672>+</color> <color=#e6db74>", message op: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>getTokenString</color><color=#f8f8f2>(</color><color=#f8f8f2>TOKENS</color><color=#f8f8f2>.</color><color=#a6e22e>OP_TOKEN</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>", was not a member of the group: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>memberIds</color>
+                <color=#f92672>+</color> <color=#e6db74>", in message: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getSenderId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>senderId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set the version of the message that we have just received. This</color>
+<color=#75715e>     * version information will be used by the receiver to determine what</color>
+<color=#75715e>     * version should be used for the response message.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSendVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>version</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Double</color><color=#f8f8f2>(</color><color=#f8f8f2>VERSION</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#66d9ef>new</color> <color=#f8f8f2>Double</color><color=#f8f8f2>(</color><color=#f8f8f2>version</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Send version: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>version</color>
+                <color=#f92672>+</color> <color=#e6db74>" shouldn't be larger "</color>
+                <color=#f92672>+</color> <color=#e6db74>"than the current version: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>VERSION</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>version</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>sendVersion</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sendVersion</color> <color=#f92672>=</color> <color=#f8f8f2>version</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>messagePrefixNocheck</color> <color=#f92672>=</color> <color=#f8f8f2>sendVersion</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>messageNocheckSuffix</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Get the send version of a message. */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSendVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sendVersion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sendVersion</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>groupName</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/** Returns the protocol associated with this message */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>TextProtocol</color> <color=#a6e22e>getProtocol</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>TextProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the token value associated with the token type.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param tokenType identifies the token in the message</color>
+<color=#75715e>     * @return the associated token value</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>getTokenString</color><color=#f8f8f2>(</color><color=#f8f8f2>TOKENS</color> <color=#f8f8f2>tokenType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>tokenType</color><color=#f8f8f2>.</color><color=#a6e22e>ordinal</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>index</color> <color=#f92672>>=</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Bad format; missing token: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>tokenType</color>
+                <color=#f92672>+</color> <color=#e6db74>"at position: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>index</color>
+                <color=#f92672>+</color> <color=#e6db74>"in message: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>tokens</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the next token in the payload.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the next payload token</color>
+<color=#75715e>     * @throws InvalidMessageException</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>nextPayloadToken</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currToken</color> <color=#f92672>>=</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InvalidMessageException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>BAD_FORMAT</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Bad format; missing token at position: "</color> <color=#f92672>+</color> <color=#f8f8f2>currToken</color> <color=#f92672>+</color> <color=#e6db74>", in message: "</color> <color=#f92672>+</color> <color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>tokens</color><color=#f92672>[</color><color=#f8f8f2>currToken</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasMoreTokens</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>currToken</color> <color=#f92672><</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the current token position in the payload.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the current token position</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#a6e22e>getCurrentTokenPosition</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>currToken</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Base classes for response messages. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>ResponseMessage</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>ResponseMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Create an instance with the send version specified by the request.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param request the request</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#a6e22e>ResponseMessage</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>request</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setSendVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>request</color><color=#f8f8f2>.</color><color=#a6e22e>getSendVersion</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>ResponseMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Returns the version id and Op concatenation that starts every message. */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>opId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ResponseMessage</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(((</color><color=#f8f8f2>ResponseMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>getOp</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>getOpId</color><color=#f8f8f2>().</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtocolError</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageError</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>messageException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>messageException</color><color=#f8f8f2>.</color><color=#a6e22e>getErrorType</color><color=#f8f8f2>(),</color> <color=#f8f8f2>messageException</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>MessageError</color> <color=#f8f8f2>messageError</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>message</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>errorType</color> <color=#f92672>=</color> <color=#f8f8f2>messageError</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>errorType</color> <color=#f92672>=</color> <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ProtocolError</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ProtocolError</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>ProtocolError</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageError</color> <color=#a6e22e>getErrorType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>OK</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Create an instance with the send version specified by the request.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param request the request</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>OK</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>request</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>request</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>OK</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OK_RESP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messagePrefixNocheck</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Fail</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Fail</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>message</color> <color=#f92672>=</color> <color=#f8f8f2>sanitize</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Create an instance with the send version specified by the request.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param request the request</color>
+<color=#75715e>     * @param message the failure message</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>Fail</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>request</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>request</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>message</color> <color=#f92672>=</color> <color=#f8f8f2>sanitize</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Fail</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>nextPayloadToken</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>prime</color> <color=#f92672>=</color> <color=#ae81ff>31</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>getOuterType</color><color=#f8f8f2>().</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>prime</color> <color=#f92672>*</color> <color=#f8f8f2>result</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Fail</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>Fail</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Fail</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>getOuterType</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getOuterType</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>FAIL_RESP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messagePrefixNocheck</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>TextProtocol</color> <color=#a6e22e>getOuterType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>TextProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes any newline characters. Embedded newlines are not supported by {@code TextProtocol},</color>
+<color=#75715e>     * but exception messages sometimes have them, and the payload of a {@code Fail} response often</color>
+<color=#75715e>     * comes from an exception message.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>sanitize</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>msg</color><color=#f8f8f2>.</color><color=#a6e22e>replace</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>,</color> <color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Base class for all Request messages */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>RequestMessage</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>RequestMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>RequestMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>,</color> <color=#f8f8f2>tokens</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Returns the version id and Op concatenation that form the prefix for every message. */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormatPrefix</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getMessagePrefix</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>SEPARATOR</color> <color=#f92672>+</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>opId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RequestMessage</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(((</color><color=#f8f8f2>RequestMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>getOp</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>getOpId</color><color=#f8f8f2>().</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts a response line into a ResponseMessage.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param responseLine</color>
+<color=#75715e>   * @return the response message</color>
+<color=#75715e>   * @throws InvalidMessageException</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>ResponseMessage</color> <color=#a6e22e>parseResponse</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>responseLine</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>ResponseMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>responseLine</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts a request line into a requestMessage.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param requestLine</color>
+<color=#75715e>   * @return the request message</color>
+<color=#75715e>   * @throws InvalidMessageException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>RequestMessage</color> <color=#a6e22e>parseRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>requestLine</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>RequestMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Reads the channel and returns a read request. If the message format was bad, it sends a</color>
+<color=#75715e>   * ProtocolError response back over the channel and no further action is needed by the caller.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel delivering the request</color>
+<color=#75715e>   * @return null if EOF was reached or the message format was bad</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>RequestMessage</color> <color=#a6e22e>getRequestMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>DataChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>BufferedReader</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BufferedReader</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>InputStreamReader</color><color=#f8f8f2>(</color><color=#f8f8f2>Channels</color><color=#f8f8f2>.</color><color=#a6e22e>newInputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>)));</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>requestLine</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>readLine</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* EOF */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>parseRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>requestLine</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>processIME</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process an IME encountered during request processing by writing a ProtocolError message as a</color>
+<color=#75715e>   * response and logging it.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel used to write the ProtocolError message</color>
+<color=#75715e>   * @param ime the exception</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>processIME</color><color=#f8f8f2>(</color><color=#f8f8f2>DataChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>ime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>WARNING</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" format error:"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionTypeAndMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>ime</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>PrintWriter</color> <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PrintWriter</color><color=#f8f8f2>(</color><color=#f8f8f2>Channels</color><color=#f8f8f2>.</color><color=#a6e22e>newOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>),</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>ime</color><color=#f8f8f2>).</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ResponseMessage</color> <color=#a6e22e>process</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>requestProcessor</color><color=#f8f8f2>,</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>cl</color> <color=#f92672>=</color> <color=#f8f8f2>requestProcessor</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Method</color> <color=#f8f8f2>method</color> <color=#f92672>=</color> <color=#f8f8f2>cl</color><color=#f8f8f2>.</color><color=#a6e22e>getMethod</color><color=#f8f8f2>(</color><color=#e6db74>"process"</color><color=#f8f8f2>,</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>ResponseMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>method</color><color=#f8f8f2>.</color><color=#a6e22e>invoke</color><color=#f8f8f2>(</color><color=#f8f8f2>requestProcessor</color><color=#f8f8f2>,</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchMethodException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Method: process("</color> <color=#f92672>+</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>") was missing"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Unexpected exception: "</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionTypeAndMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A single request/response interaction, targetted at a given service running at a particular</color>
+<color=#75715e>   * remote socket address. Since it implements {@code Runnable} it can be used with thread pools,</color>
+<color=#75715e>   * {@code Future}s, etc. But its {@code run()} method can also simply be called directly.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>MessageExchange</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Runnable</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>serviceName</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>exception</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MessageExchange</color><color=#f8f8f2>(</color><color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>target</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>serviceName</color><color=#f8f8f2>,</color> <color=#f8f8f2>RequestMessage</color> <color=#f8f8f2>request</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>target</color> <color=#f92672>=</color> <color=#f8f8f2>target</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>serviceName</color> <color=#f92672>=</color> <color=#f8f8f2>serviceName</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>requestMessage</color> <color=#f92672>=</color> <color=#f8f8f2>request</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Get the response message for a request message.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * If the response message is a ProtocolError message which caused by</color>
+<color=#75715e>     * protocol version mismatch, it resets the request message's</color>
+<color=#75715e>     * sendVersion as the ResponseMessage ProtocolError's version and send</color>
+<color=#75715e>     * again.</color>
+<color=#75715e>     */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>messageExchange</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>responseMessage</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ProtocolError</color> <color=#f8f8f2>error</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>ProtocolError</color><color=#f8f8f2>)</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>error</color><color=#f8f8f2>.</color><color=#a6e22e>getErrorType</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>VERSION_MISMATCH</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>setSendVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>error</color><color=#f8f8f2>.</color><color=#a6e22e>getSendVersion</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>messageExchange</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>name</color>
+                  <color=#f92672>+</color> <color=#e6db74>" Resend message: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>requestMessage</color>
+                  <color=#f92672>+</color> <color=#e6db74>" in version: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getSendVersion</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" while protocol version is: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>VERSION</color>
+                  <color=#f92672>+</color> <color=#e6db74>" because of the version mismatch, the returned"</color>
+                  <color=#f92672>+</color> <color=#e6db74>" response message is: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Run a message exchange. A successful exchange results in a response message being set. All</color>
+<color=#75715e>     * failures result in the response message being null and an exception being set.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>messageExchange</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>DataChannel</color> <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>BufferedReader</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>PrintWriter</color> <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color>
+            <color=#f8f8f2>channelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>connect</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>target</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>new</color> <color=#f8f8f2>ConnectOptions</color><color=#f8f8f2>()</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>setTcpNoDelay</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>setOpenTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>openTimeoutMs</color><color=#f8f8f2>)</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>setReadTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>readTimeoutMs</color><color=#f8f8f2>)</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>setBlocking</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>setReuseAddr</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>));</color>
+
+        <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>doServiceHandshake</color><color=#f8f8f2>(</color><color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>serviceName</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>OutputStream</color> <color=#f8f8f2>ostream</color> <color=#f92672>=</color> <color=#f8f8f2>Channels</color><color=#f8f8f2>.</color><color=#a6e22e>newOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>dataChannel</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PrintWriter</color><color=#f8f8f2>(</color><color=#f8f8f2>ostream</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>wireFormat</color> <color=#f92672>=</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>serDeHook</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>serDeHook</color><color=#f8f8f2>.</color><color=#a6e22e>doHook</color><color=#f8f8f2>(</color><color=#f8f8f2>wireFormat</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>wireFormat</color> <color=#f92672>=</color> <color=#f8f8f2>serDeHook</color><color=#f8f8f2>.</color><color=#a6e22e>getHookValue</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" request: "</color> <color=#f92672>+</color> <color=#f8f8f2>wireFormat</color> <color=#f92672>+</color> <color=#e6db74>" to "</color> <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>wireFormat</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>flush</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BufferedReader</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>InputStreamReader</color><color=#f8f8f2>(</color><color=#f8f8f2>Channels</color><color=#f8f8f2>.</color><color=#a6e22e>newInputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>dataChannel</color><color=#f8f8f2>)));</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>line</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>readLine</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>serDeHook</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>serDeHook</color><color=#f8f8f2>.</color><color=#a6e22e>doHook</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>line</color> <color=#f92672>=</color> <color=#f8f8f2>serDeHook</color><color=#f8f8f2>.</color><color=#a6e22e>getHookValue</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" response: "</color> <color=#f92672>+</color> <color=#f8f8f2>line</color> <color=#f92672>+</color> <color=#e6db74>" from "</color> <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>line</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>setResponseMessage</color><color=#f8f8f2>(</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>ProtocolError</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>MessageError</color><color=#f8f8f2>.</color><color=#a6e22e>BAD_FORMAT</color><color=#f8f8f2>,</color> <color=#e6db74>"Premature EOF for request: "</color> <color=#f92672>+</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>setResponseMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>parseResponse</color><color=#f8f8f2>(</color><color=#f8f8f2>line</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>java</color><color=#f8f8f2>.</color><color=#a6e22e>net</color><color=#f8f8f2>.</color><color=#a6e22e>SocketTimeoutException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SocketException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InvalidMessageException</color> <color=#f8f8f2>ime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>WARNING</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>name</color>
+                <color=#f92672>+</color> <color=#e6db74>" response format error:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionTypeAndMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>ime</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" from:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>ime</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ServiceConnectFailedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Unexpected exception:"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionTypeAndMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Service: "</color> <color=#f92672>+</color> <color=#f8f8f2>serviceName</color> <color=#f92672>+</color> <color=#e6db74>" failed; attempting request: "</color> <color=#f92672>+</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Utils</color><color=#f8f8f2>.</color><color=#a6e22e>cleanup</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>out</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setResponseMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>responseMessage</color> <color=#f92672>=</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the response message. The null may be returned as part of the protocol exchange, or</color>
+<color=#75715e>     * it may be null if an exception was encountered say because of some IO problem. It's the</color>
+<color=#75715e>     * caller's responsibility to check for an exception in that circumstance.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * <p>Note: there may be some protocols (e.g., Monitor) that define null to be a proper,</color>
+<color=#75715e>     * expected response upon success. It might be preferable to redefine them to return an explicit</color>
+<color=#75715e>     * OK response, if possible.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return the response</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>ResponseMessage</color> <color=#a6e22e>getResponseMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>responseMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>RequestMessage</color> <color=#a6e22e>getRequestMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>requestMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Exception</color> <color=#a6e22e>getException</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>exception</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>StringFormatable</color> <color=#66d9ef>implements</color> <color=#f8f8f2>WireFormatable</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>StringFormatable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>StringFormatable</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>s</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>s</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>StringFormatable</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>StringFormatable</color> <color=#f8f8f2>other</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>StringFormatable</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>s</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>s</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The type associated with an invalid Message. It's used by the exception</color>
+<color=#75715e>   * below and by ProtocolError.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>MessageError</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>BAD_FORMAT</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>VERSION_MISMATCH</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>GROUP_MISMATCH</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>NOT_A_MEMBER</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to indicate a message format or invalid content exception. */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>InvalidMessageException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageError</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>InvalidMessageException</color><color=#f8f8f2>(</color><color=#f8f8f2>MessageError</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>errorType</color> <color=#f92672>=</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageError</color> <color=#a6e22e>getErrorType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>errorType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

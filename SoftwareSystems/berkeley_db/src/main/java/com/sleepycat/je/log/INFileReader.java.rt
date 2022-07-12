@@ -1,0 +1,580 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.RecoveryUtilizationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseId</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbTree</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.INContainingEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.INLogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LNLogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.recovery.VLSNRecoveryProxy</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.FileSummaryLN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.IN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.MapLN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.Node</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicBoolean</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * INFileReader supports recovery by scanning log files during the IN rebuild pass. It looks for</color>
+<color=#75715e> * internal nodes (all types), segregated by whether they belong to the main tree or the duplicate</color>
+<color=#75715e> * trees.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This file reader can also be run in tracking mode to keep track of the maximum node ID,</color>
+<color=#75715e> * database ID and txn ID seen so those sequences can be updated properly at recovery. In this mode</color>
+<color=#75715e> * it also performs utilization counting. It is only run once in tracking mode per recovery, in the</color>
+<color=#75715e> * first phase of recovery.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>INFileReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>FileReader</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* Information about the last entry seen. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>lastEntryWasDelete</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>lastEntryWasDupDelete</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isProvisional</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * targetEntryMap maps DbLogEntryTypes to log entries. We use this</color>
+<color=#75715e>   * collection to find the right LogEntry instance to read in the current</color>
+<color=#75715e>   * entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntry</color><color=#f92672>></color> <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Set of non-target log entry types for ID tracking. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color> <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* Cache of non-target log entries for ID tracking. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntry</color><color=#f92672>></color> <color=#f8f8f2>idTrackingMap</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>trackIds</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>minReplicatedNodeId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxNodeId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>minReplicatedDbId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxDbId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>minReplicatedTxnId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxTxnId</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Used for utilization tracking. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RecoveryUtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Used for replication. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSNRecoveryProxy</color> <color=#f8f8f2>vlsnProxy</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** DBs that may violate the rule for upgrading to log version 8. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color> <color=#f8f8f2>logVersion8UpgradeDbs</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicBoolean</color> <color=#f8f8f2>logVersion8UpgradeDeltas</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Create this reader to start at a given LSN. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>INFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>trackIds</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RecoveryUtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>trackIds</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/*logVersion8UpgradeDbs*/</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color> <color=#75715e>/*logVersion8UpgradeDeltas*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Create with logVersion8UpgradeDbs and logVersion8UpgradeDeltas params. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>INFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>trackIds</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RecoveryUtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color> <color=#f8f8f2>logVersion8UpgradeDbs</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>AtomicBoolean</color> <color=#f8f8f2>logVersion8UpgradeDeltas</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>trackIds</color> <color=#f92672>=</color> <color=#f8f8f2>trackIds</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>ckptEnd</color> <color=#f92672>=</color> <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>targetEntryMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntry</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trackIds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxNodeId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>maxDbId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>maxTxnId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>minReplicatedNodeId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>minReplicatedDbId</color> <color=#f92672>=</color> <color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>NEG_DB_ID_START</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>minReplicatedTxnId</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>tracker</color> <color=#f92672>=</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>partialCkptStart</color> <color=#f92672>=</color> <color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>idTrackingSet</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>idTrackingMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntry</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Need all nodes for tracking:</color>
+<color=#75715e>       * - Need all INs for node ID tracking.</color>
+<color=#75715e>       * - Need all LNs for obsolete tracking.</color>
+<color=#75715e>       * - Need txnal LNs for txn ID tracking.</color>
+<color=#75715e>       * - Need FileSummaryLN for obsolete tracking.</color>
+<color=#75715e>       * - Need MapLN for obsolete and DB ID tracking.</color>
+<color=#75715e>       * - Need BIN-delta for obsolete tracking.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>getAllTypes</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>isNodeType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* For tracking VLSNs. */</color>
+      <color=#f8f8f2>vlsnProxy</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNProxy</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ROLLBACK_START</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* For checking for log version 8 upgrade errors. */</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logVersion8UpgradeDbs</color> <color=#f92672>=</color> <color=#f8f8f2>logVersion8UpgradeDbs</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logVersion8UpgradeDeltas</color> <color=#f92672>=</color> <color=#f8f8f2>logVersion8UpgradeDeltas</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Configure this reader to target this kind of entry. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Utilization Tracking</color>
+<color=#75715e>   * --------------------</color>
+<color=#75715e>   * This class counts all new log entries and obsolete INs.  Obsolete LNs,</color>
+<color=#75715e>   * on the other hand, are counted by RecoveryManager undo/redo.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Utilization counting is done in the first recovery pass where IDs are</color>
+<color=#75715e>   * tracked (trackIds=true).  Processing is split between isTargetEntry</color>
+<color=#75715e>   * and processEntry as follows.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * isTargetEntry counts only new non-node entries; this can be done very</color>
+<color=#75715e>   * efficiently using only the LSN and entry type, without reading and</color>
+<color=#75715e>   * unmarshalling the entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * processEntry counts new node entries and obsolete INs.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * processEntry also resets (sets all counters to zero and clears obsolete</color>
+<color=#75715e>   * offsets) the tracked summary for a file or database when a FileSummaryLN</color>
+<color=#75715e>   * or MapLN is encountered.  This clears the totals that have accumulated</color>
+<color=#75715e>   * during this recovery pass for entries prior to that point.  We only want</color>
+<color=#75715e>   * to count utilization for entries after that point.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * In addition, when processEntry encounters a FileSummaryLN or MapLN, its</color>
+<color=#75715e>   * LSN is recorded in the tracker.  This information is used during IN and</color>
+<color=#75715e>   * LN utilization counting.  For each file, knowing the LSN of the last</color>
+<color=#75715e>   * logged FileSummaryLN for that file allows the undo/redo code to know</color>
+<color=#75715e>   * whether to perform obsolete countng.  If the LSN of the FileSummaryLN is</color>
+<color=#75715e>   * less than (to the left of) the LN's LSN, obsolete counting should be</color>
+<color=#75715e>   * performed.  If it is greater, obsolete counting is already included in</color>
+<color=#75715e>   * the logged FileSummaryLN and should not be repeated to prevent double</color>
+<color=#75715e>   * counting.  The same thing is true of counting per-database utilization</color>
+<color=#75715e>   * relative to the LSN of the last logged MapLN.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If we're tracking node, database and txn IDs, we want to see all node log entries. If not, we</color>
+<color=#75715e>   * only want to see IN entries.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTargetEntry</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>lastEntryWasDelete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>lastEntryWasDupDelete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>targetLogEntry</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>isProvisional</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getProvisional</color><color=#f8f8f2>().</color><color=#a6e22e>isProvisional</color><color=#f8f8f2>(</color><color=#f8f8f2>getLastLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>ckptEnd</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Get the log entry type instance we need to read the entry. */</color>
+    <color=#f8f8f2>fromLogType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>possibleTarget</color> <color=#f92672>=</color> <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Always select a non-provisional target entry. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isProvisional</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>targetLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>possibleTarget</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Recognize IN deletion. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_IN_DELETE_INFO</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastEntryWasDelete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_IN_DUPDELETE_INFO</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastEntryWasDupDelete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* If we're not tracking IDs, select only the targeted entry. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>trackIds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Count all non-node non-delta entries except for the file header as</color>
+<color=#75715e>     * new.  UtilizationTracker does not count the file header.  Node/delta</color>
+<color=#75715e>     * entries will be counted in processEntry.  Null is passed for the</color>
+<color=#75715e>     * database ID; it is only needed for node entries.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isNodeType</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countNewLogEntry</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>(),</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>);</color> <color=#75715e>// DatabaseId</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * When we encouter a DbTree log entry, reset the tracked summary for</color>
+<color=#75715e>     * the ID and Name mapping DBs.  This clears what we accumulated</color>
+<color=#75715e>     * previously for these databases during this recovery pass. Save the</color>
+<color=#75715e>     * LSN for these databases for use by undo/redo.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DBTREE</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>saveLastLoggedMapLN</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>ID_DB_ID</color><color=#f8f8f2>,</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>saveLastLoggedMapLN</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>NAME_DB_ID</color><color=#f8f8f2>,</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>resetDbInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>ID_DB_ID</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>resetDbInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>NAME_DB_ID</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Track VLSNs in the log entry header of all replicated entries. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>vlsnProxy</color><color=#f8f8f2>.</color><color=#a6e22e>trackMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>getLastLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*targetLogEntry*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Return true if this logrec should be passed on to processEntry. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This reader returns non-provisional INs and IN delete entries. In tracking mode, it may also</color>
+<color=#75715e>   * scan log entries that aren't returned: -to set the sequences for txn, node, and database ID.</color>
+<color=#75715e>   * -to update utilization and obsolete offset information. -for VLSN mappings for recovery</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>useEntry</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Read targeted entry. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>useEntry</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* If we're not tracking IDs, we're done. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>trackIds</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>useEntry</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Read non-target entry. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>idTrackingSet</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>targetLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>idTrackingMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>targetLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>idTrackingMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Count node and delta entries as new.  Non-node/delta entries are</color>
+<color=#75715e>     * counted in isTargetEntry.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isNodeType</color><color=#f8f8f2>()</color>
+        <color=#f92672>||</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color>
+        <color=#f92672>||</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countNewLogEntry</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Track VLSNs in RollbackStart. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ROLLBACK_START</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>vlsnProxy</color><color=#f8f8f2>.</color><color=#a6e22e>trackMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>getLastLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Process LN types. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isLNType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * When a MapLN is encountered, reset the tracked info for that</color>
+<color=#75715e>       * DB. This clears what we have accummulated so far for the DB</color>
+<color=#75715e>       * during this recovery pass. This is important to eliminate</color>
+<color=#75715e>       * potential double counting of obsolete logrecs done earlier</color>
+<color=#75715e>       * in this recovery pass.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Also, save the LSN of the MapLN for use in utilization counting</color>
+<color=#75715e>       * during LN undo/redo.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_MAPLN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>MapLN</color> <color=#f8f8f2>mapLN</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>MapLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>mapLN</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/* Track latest DB ID. */</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>dbIdVal</color> <color=#f92672>=</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>maxDbId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbIdVal</color> <color=#f92672>></color> <color=#f8f8f2>maxDbId</color> <color=#f92672>?</color> <color=#f8f8f2>dbIdVal</color> <color=#f8f8f2>:</color> <color=#f8f8f2>maxDbId</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>minReplicatedDbId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbIdVal</color> <color=#f92672><</color> <color=#f8f8f2>minReplicatedDbId</color> <color=#f92672>?</color> <color=#f8f8f2>dbIdVal</color> <color=#f8f8f2>:</color> <color=#f8f8f2>minReplicatedDbId</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>resetDbInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>saveLastLoggedMapLN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Track latest txn ID. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnId</color><color=#f8f8f2>().</color><color=#a6e22e>longValue</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>maxTxnId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnId</color> <color=#f92672>></color> <color=#f8f8f2>maxTxnId</color> <color=#f92672>?</color> <color=#f8f8f2>txnId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>maxTxnId</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>minReplicatedTxnId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnId</color> <color=#f92672><</color> <color=#f8f8f2>minReplicatedTxnId</color> <color=#f92672>?</color> <color=#f8f8f2>txnId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>minReplicatedTxnId</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * When a FSLN is encountered, reset the tracked summary info for</color>
+<color=#75715e>       * that file. This clears what we have accummulated so far for the</color>
+<color=#75715e>       * file during this recovery pass. This is important to eliminate</color>
+<color=#75715e>       * potential double counting of obsolete logrecs done earlier</color>
+<color=#75715e>       * in this recovery pass.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Also, save the LSN of the FSLN for use in utilization counting</color>
+<color=#75715e>       * during LN undo/redo.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILESUMMARYLN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*isDupDb*/</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>FileSummaryLN</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>());</color>
+
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>resetFileInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>saveLastLoggedFileSummaryLN</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>());</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Do not cache the file summary in the UtilizationProfile here,</color>
+<color=#75715e>         * since it may be for a deleted log file. [#10395]</color>
+<color=#75715e>         */</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Process IN types. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isINType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>INLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>inEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>INLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Keep track of the largest node ID seen. */</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>nodeId</color> <color=#f92672>=</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeId</color> <color=#f92672>!=</color> <color=#f8f8f2>Node</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_NODE_ID</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>maxNodeId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeId</color> <color=#f92672>></color> <color=#f8f8f2>maxNodeId</color> <color=#f92672>?</color> <color=#f8f8f2>nodeId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>maxNodeId</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>minReplicatedNodeId</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeId</color> <color=#f92672><</color> <color=#f8f8f2>minReplicatedNodeId</color> <color=#f92672>?</color> <color=#f8f8f2>nodeId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>minReplicatedNodeId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Process INContainingEntry types. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isINType</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>INContainingEntry</color> <color=#f8f8f2>inEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>INContainingEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>newLsn</color> <color=#f92672>=</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Count the previous version of this IN as obsolete. If lsn</color>
+<color=#75715e>       * (i.e. the current version) is non-provisional, then oldLsn is</color>
+<color=#75715e>       * indeed obsolete. However, if lsn is provisional, oldLsn is</color>
+<color=#75715e>       * obsolete only if an ancestor of this IN has been logged non-</color>
+<color=#75715e>       * provisionally later in the log, and unless lsn < CKPT_END</color>
+<color=#75715e>       * we cannot know if this is true or not. For this reason, we</color>
+<color=#75715e>       * conservatively assume that oldLsn is indeed obsolete, but we</color>
+<color=#75715e>       * use inexact counting, so that the oldLsn value will not be</color>
+<color=#75715e>       * recorded by the tracker. (another reason is that earlier log</color>
+<color=#75715e>       * versions did not have a full LSN in oldLsn; they had only the</color>
+<color=#75715e>       * file number).</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Notice also that there may be an FSLN logrec after lsn that</color>
+<color=#75715e>       * includes oldLsn as an obsolete IN. If so, we are double counting</color>
+<color=#75715e>       * here, but the double counting will go away when we later process</color>
+<color=#75715e>       * that FSLN and as a result wipe-out the utilization info we have</color>
+<color=#75715e>       * collected so far about the log file containing oldLsn.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>oldLsn</color> <color=#f92672>=</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevFullLsn</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteUnconditional</color><color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*countExact*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>oldLsn</color> <color=#f92672>=</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevDeltaLsn</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteUnconditional</color><color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*countExact*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Count the current IN version as obsolete if lsn is</color>
+<color=#75715e>       * provisional and is after partialCkptStart. In this case, the</color>
+<color=#75715e>       * crash occurred during a ckpt and it the crash event itself</color>
+<color=#75715e>       * that may make the current logrec be obsolete. Again, whether</color>
+<color=#75715e>       * the lsn is indeed obsolete or not depends on whether an</color>
+<color=#75715e>       * ancestor of this IN has been logged non-provisionally later</color>
+<color=#75715e>       * in the log. At this point we cannot know if this is true or</color>
+<color=#75715e>       * not. For this reason, we conservatively assume that lsn</color>
+<color=#75715e>       * is indeed obsolete, but we use inexact counting, so that the</color>
+<color=#75715e>       * lsn value will not be recorded by the tracker. As explained</color>
+<color=#75715e>       * above, we may be double counting here, but this will be fixed</color>
+<color=#75715e>       * if we later find an FSLN for the same log file as lsn.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * We are too conservative here in assuming that lsn is</color>
+<color=#75715e>       * obsolete. This is because of the "grouping" behaviour of the</color>
+<color=#75715e>       * checpointer. Specifically:</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Most of the provisional IN logrecs in this region of the log</color>
+<color=#75715e>       * (i.e., after the start of an incomplete ckpt) are for BINs</color>
+<color=#75715e>       * logged by the checkpointer (eviction during a ckpt logs dirty</color>
+<color=#75715e>       * BINs and UINs provisionally as well). The checkpointer logs</color>
+<color=#75715e>       * all the dirty BIN siblings and then logs their parent non-</color>
+<color=#75715e>       * provisionally, before logging any other BINs. So, not taking</color>
+<color=#75715e>       * eviction into account, there can be at most 128 BIN logrecs</color>
+<color=#75715e>       * after the partialCkptStart that are trully obsolete.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Note that older versions of the checkpointer did not use to</color>
+<color=#75715e>       * group together the logging of siblings BINs and their parent.</color>
+<color=#75715e>       * Without this grouping, the assumption done here that most</color>
+<color=#75715e>       * provisional logrecs after partialCkptStart are obsolete is</color>
+<color=#75715e>       * much more accurate.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * A potential solution: instead of counting these logrecs as</color>
+<color=#75715e>       * obsolete here, save their LSNs on-the-side inside the tracker.</color>
+<color=#75715e>       * When, later, a UIN N is replayed and attached to the tree,</color>
+<color=#75715e>       * remove from the saved LSN set any LSNs that appear in the slots</color>
+<color=#75715e>       * of N. After all REDO-INs passes are done, count as obsolete any</color>
+<color=#75715e>       * LSNs remaining in the saved set.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isProvisional</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>partialCkptStart</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>partialCkptStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteUnconditional</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>inEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>(),</color> <color=#66d9ef>false</color> <color=#75715e>/*countExact*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Add candidate DB IDs and note deltas for possible log version 8</color>
+<color=#75715e>     * upgrade violations.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion8UpgradeDbs</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>isNodeType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logVersion8UpgradeDbs</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion8UpgradeDeltas</color> <color=#f92672>!=</color> <color=#66d9ef>null</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>fromLogType</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_DUP_BIN_DELTA</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>logVersion8UpgradeDeltas</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Return true if this is a targeted entry. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>useEntry</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the last IN seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>IN</color> <color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>INContainingEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>).</color><color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the last databaseId seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseId</color> <color=#a6e22e>getDatabaseId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>INContainingEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>).</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the maximum node ID seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMaxNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>maxNodeId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMinReplicatedNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>minReplicatedNodeId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the maximum DB ID seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMaxDbId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>maxDbId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMinReplicatedDbId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>minReplicatedDbId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the maximum txn ID seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMaxTxnId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>maxTxnId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMinReplicatedTxnId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>minReplicatedTxnId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a delete info entry. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDeleteInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastEntryWasDelete</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a dup delete info entry. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDupDeleteInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastEntryWasDupDelete</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a BIN-delta. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isBINDelta</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color>
+        <color=#f92672>||</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSNRecoveryProxy</color> <color=#a6e22e>getVLSNProxy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>vlsnProxy</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,151 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.util</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CmdUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * DbTruncateLog is a utility that lets the user truncate JE log starting at a specified file and</color>
+<color=#75715e> * offset to the last log file, inclusive. Generally used in replication systems for handling</color>
+<color=#75715e> * com.sleepycat.je.rep.RollbackProhibitedException, to permit the application to interject</color>
+<color=#75715e> * application specific handling. Should be used with caution.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The parameters for DbTruncateLog are provided through the RollbackProhibitedException</color>
+<color=#75715e> * instance, and the exception message. The goal is to truncate the JE log after a specified file</color>
+<color=#75715e> * number and file offset. DbTruncateLog will automatically delete all log entries after that</color>
+<color=#75715e> * specified log entry.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>For example, suppose the JE log consists of these files:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> *    00000002.jdb</color>
+<color=#75715e> *    0000000e.jdb</color>
+<color=#75715e> *    0000000f.jdb</color>
+<color=#75715e> *    00000010.jdb</color>
+<color=#75715e> *    00000012.jdb</color>
+<color=#75715e> *    0000001d.jdb</color>
+<color=#75715e> *    0000001e.jdb</color>
+<color=#75715e> *    0000001f.jdb</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * And the log must be truncated at file 0x1d, offset 0x34567, users should use the following</color>
+<color=#75715e> * command:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ol></color>
+<color=#75715e> *   <li>DbTruncateLog -h &lt;envDir&gt; -f 0x1d -o 0x34567</color>
+<color=#75715e> * </ol></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbTruncateLog</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>truncateFileNum</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>truncateOffset</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Usage:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre></color>
+<color=#75715e>   *  -h environmentDirectory</color>
+<color=#75715e>   *  -f file number. If hex, prefix with "0x"</color>
+<color=#75715e>   *  -o file offset byte. If hex, prefix with "0x"</color>
+<color=#75715e>   * </pre></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * For example, to truncate a log to file 0xa, offset 0x1223:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre></color>
+<color=#75715e>   * DbTruncateLog -h &lt;environmentDir&gt; -f 0xa -o 0x1223</color>
+<color=#75715e>   * </pre></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbTruncateLog</color> <color=#f8f8f2>truncator</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbTruncateLog</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>truncator</color><color=#f8f8f2>.</color><color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>truncator</color><color=#f8f8f2>.</color><color=#a6e22e>truncateLog</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>usage</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>DbTruncateLog</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>whichArg</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>seenFile</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>seenOffset</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>whichArg</color> <color=#f92672><</color> <color=#f8f8f2>argv</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>nextArg</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>whichArg</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-h"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>whichArg</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getArg</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>,</color> <color=#f8f8f2>whichArg</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-f"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>whichArg</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>truncateFileNum</color> <color=#f92672>=</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>readLongNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getArg</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>,</color> <color=#f8f8f2>whichArg</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>seenFile</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-o"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>whichArg</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>truncateOffset</color> <color=#f92672>=</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>readLongNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getArg</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>,</color> <color=#f8f8f2>whichArg</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>seenOffset</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>nextArg</color> <color=#f92672>+</color> <color=#e6db74>" is not a supported option."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>whichArg</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envHome</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>usage</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f92672>!</color><color=#f8f8f2>seenFile</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>seenOffset</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>usage</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>truncateLog</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>truncateLog</color><color=#f8f8f2>(</color><color=#f8f8f2>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>truncateFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>truncateOffset</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden Truncate the JE log to the given file and offset. For unit tests. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>truncateLog</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>truncFileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>truncOffset</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Make a read/write environment */</color>
+    <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>makeUtilityEnvironment</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Go through the file manager to get the JE file. Truncate. */</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>truncateLog</color><color=#f8f8f2>(</color><color=#f8f8f2>truncFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>truncOffset</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>usage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Usage: "</color> <color=#f92672>+</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getJavaCommand</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTruncateLog</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"                 -h <environment home>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"                 -f <file number, in hex>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"                 -o <offset, in hex>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"JE log will be deleted starting from the "</color>
+            <color=#f92672>+</color> <color=#e6db74>"position presented by the file number and "</color>
+            <color=#f92672>+</color> <color=#e6db74>"offset to the end, inclusive."</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

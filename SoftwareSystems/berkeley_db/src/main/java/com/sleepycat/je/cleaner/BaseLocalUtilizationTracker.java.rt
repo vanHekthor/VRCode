@@ -1,0 +1,152 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Shared implementation for all local utilization trackers. Per-database utilization info is</color>
+<color=#75715e> * tracked in a local map rather than in the live DatabaseImpl objects. The</color>
+<color=#75715e> * transferToUtilizationTracker method is called to transfer per-file and per-database info to the</color>
+<color=#75715e> * (global) UtilizationTracker.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>BaseLocalUtilizationTracker</color> <color=#66d9ef>extends</color> <color=#f8f8f2>BaseUtilizationTracker</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Map of per-database utilization info.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In LocalUtilizationTracker: IdentityHashMap of DatabaseImpl to DbFileSummaryMap</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In RecoveryUtilizationTracker: HashMap of DatabaseId to DbFileSummaryMap</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummaryMap</color><color=#f92672>></color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a local tracker with a map keyed by DatabaseId or DatabaseImpl.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When used by this class dbMap is an IdentityHashMap keyed by DatabaseImpl. When used by</color>
+<color=#75715e>   * RecoveryUtilizationTracker dbMap is a HashMap keyed by DatabaseId.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>BaseLocalUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummaryMap</color><color=#f92672>></color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getCleaner</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dbMap</color> <color=#f92672>=</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the map of databases; for use by subclasses. */</color>
+  <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummaryMap</color><color=#f92672>></color> <color=#a6e22e>getDatabaseMap</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Transfers counts and offsets from this local tracker to the given (global) UtilizationTracker</color>
+<color=#75715e>   * and to the live DatabaseImpl objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When called after recovery has finished, must be called under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>transferToUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>UtilizationTracker</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Add file summary information, including obsolete offsets. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>localSummary</color> <color=#f8f8f2>:</color> <color=#f8f8f2>getTrackedFiles</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>fileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>.</color><color=#a6e22e>getFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>localSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>addTrackedSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>localSummary</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Add DbFileSummary information. */</color>
+    <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>dbMapKeys</color> <color=#f92672>=</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbMapKeys</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>dbMapKeys</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>databaseKeyToDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+      <color=#75715e>/* If db is null, it was deleted. */</color>
+      <color=#f8f8f2>DbFileSummaryMap</color> <color=#f8f8f2>fileMap</color> <color=#f92672>=</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummary</color><color=#f92672>>></color> <color=#f8f8f2>fileEntries</color> <color=#f92672>=</color> <color=#f8f8f2>fileMap</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileEntries</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummary</color><color=#f92672>></color> <color=#f8f8f2>fileEntry</color> <color=#f92672>=</color> <color=#f8f8f2>fileEntries</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+
+          <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>fileEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>DbFileSummary</color> <color=#f8f8f2>dbFileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getDbFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*willModify*/</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbFileSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>DbFileSummary</color> <color=#f8f8f2>localSummary</color> <color=#f92672>=</color> <color=#f8f8f2>fileEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>localSummary</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* Ensure that DbTree.releaseDb is called. [#16329] */</color>
+      <color=#f8f8f2>releaseDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+      <color=#75715e>/* This object is being discarded, subtract it from the budget. */</color>
+      <color=#f8f8f2>fileMap</color><color=#f8f8f2>.</color><color=#a6e22e>subtractFromMemoryBudget</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the DatabaseImpl from the database key, which is either the DatabaseId or DatabaseImpl.</color>
+<color=#75715e>   * The releaseDatabaseImpl must be called with the DatabaseImpl returned by this method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#f8f8f2>DatabaseImpl</color> <color=#a6e22e>databaseKeyToDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Must be called after calling databaseKeyToDatabaseImpl. The db parameter may be null, in which</color>
+<color=#75715e>   * case no action is taken.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If DbTree.getDb is called by the implementation of databaseKeyToDatabaseImpl, then</color>
+<color=#75715e>   * DbTree.releaseDb must be called by the implementation of this method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>releaseDatabaseImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Allocates DbFileSummary information locally in this object rather than in the DatabaseImpl.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param databaseKey is either a DatabaseId or DatabaseImpl depending on whether called from the</color>
+<color=#75715e>   *     RecoveryUtilizationTracker or LocalUtilizationTracker, respectively.</color>
+<color=#75715e>   * @return the summary, or null if the databaseKey param is null.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>DbFileSummary</color> <color=#a6e22e>getDbFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbFileSummaryMap</color> <color=#f8f8f2>fileMap</color> <color=#f92672>=</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileMap</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbFileSummaryMap</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/* countParentMapEntry */</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>fileMap</color><color=#f8f8f2>.</color><color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>dbMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMap</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Pass false for checkResurrected since a log file can be deleted</color>
+<color=#75715e>       * at any time when counting with a local tracker.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>fileMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>),</color>
+          <color=#66d9ef>true</color> <color=#75715e>/*adjustMemBudget*/</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color> <color=#75715e>/*checkResurrected*/</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Deallocates all DbFileSummary objects for the given database key. For use by subclasses. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>removeDbFileSummaries</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* The dbMap entry is budgeted by the DbFileSummaryMap. */</color>
+    <color=#f8f8f2>DbFileSummaryMap</color> <color=#f8f8f2>fileMap</color> <color=#f92672>=</color> <color=#f8f8f2>dbMap</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileMap</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileMap</color><color=#f8f8f2>.</color><color=#a6e22e>subtractFromMemoryBudget</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

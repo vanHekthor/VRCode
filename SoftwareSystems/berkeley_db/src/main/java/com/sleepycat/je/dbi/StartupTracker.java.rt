@@ -1,0 +1,579 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.dbi</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.ProgressListener</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.RecoveryProgress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.recovery.CheckpointEnd</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.recovery.RecoveryInfo</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.StatGroup</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.ByteArrayOutputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.PrintStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.EnumMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Formatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Store and calculate elapsed time, counts, and other statistics about environment open. No</color>
+<color=#75715e> * synchronization is used, which generally works because with the exception of replication,</color>
+<color=#75715e> * environment startup is currently a serial, single threaded event. Replicated environments must be</color>
+<color=#75715e> * sure to record startup times only at thread safe points.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>StartupTracker</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Statistics are kept about startup phases, defined below. Phases can</color>
+<color=#75715e>   * be nested, so the child and root fields are used to express this</color>
+<color=#75715e>   * relationship. For example:</color>
+<color=#75715e>   *  TotalEnvOpen</color>
+<color=#75715e>   *      TotalRecovery</color>
+<color=#75715e>   *         FindEndOfLog</color>
+<color=#75715e>   *          ..</color>
+<color=#75715e>   *         BuildTree</color>
+<color=#75715e>   *             ReadMapIN</color>
+<color=#75715e>   *             ..</color>
+<color=#75715e>   *         Ckpt</color>
+<color=#75715e>   *  TotalJoinGroup encompasses the following two phases.</color>
+<color=#75715e>   *      FindMaster</color>
+<color=#75715e>   *      BecomeConsistent</color>
+<color=#75715e>   * Keep these enums in order of execution, so that the display is easier to</color>
+<color=#75715e>   * comprehend. Of course, some phases subsume other phases, but in general,</color>
+<color=#75715e>   * this enum order follows the order of execution.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>enum</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>(</color><color=#e6db74>"Environment Open"</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>TOTAL_RECOVERY</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>FIND_END_OF_LOG</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>FIND_LAST_CKPT</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>BUILD_TREE</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>READ_MAP_INS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>REDO_MAP_INS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>UNDO_MAP_LNS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>REDO_MAP_LNS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>READ_INS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>REDO_INS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>UNDO_LNS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>REDO_LNS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>POPULATE_UP</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>POPULATE_EP</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>REMOVE_TEMP_DBS</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>CKPT</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>TOTAL_JOIN_GROUP</color><color=#f8f8f2>(</color><color=#e6db74>"Replication Join Group"</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>FIND_MASTER</color><color=#f8f8f2>,</color>
+    <color=#f8f8f2>BECOME_CONSISTENT</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>Phase</color><color=#f92672>[]</color> <color=#f8f8f2>children</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>root</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>reportLabel</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Phase</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#f8f8f2>Phase</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>reportLabel</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reportLabel</color> <color=#f92672>=</color> <color=#f8f8f2>reportLabel</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>.</color><color=#a6e22e>children</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Phase</color><color=#f92672>[]</color> <color=#f8f8f2>{</color><color=#f8f8f2>TOTAL_RECOVERY</color><color=#f8f8f2>};</color>
+      <color=#f8f8f2>TOTAL_RECOVERY</color><color=#f8f8f2>.</color><color=#a6e22e>children</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>Phase</color><color=#f92672>[]</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>FIND_END_OF_LOG</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>FIND_LAST_CKPT</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>BUILD_TREE</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>POPULATE_UP</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>POPULATE_EP</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>REMOVE_TEMP_DBS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>CKPT</color>
+          <color=#f8f8f2>};</color>
+      <color=#f8f8f2>BUILD_TREE</color><color=#f8f8f2>.</color><color=#a6e22e>children</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>Phase</color><color=#f92672>[]</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>READ_MAP_INS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>REDO_MAP_INS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>UNDO_MAP_LNS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>REDO_MAP_LNS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>READ_INS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>REDO_INS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>UNDO_LNS</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>REDO_LNS</color>
+          <color=#f8f8f2>};</color>
+      <color=#f8f8f2>TOTAL_JOIN_GROUP</color><color=#f8f8f2>.</color><color=#a6e22e>children</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Phase</color><color=#f92672>[]</color> <color=#f8f8f2>{</color><color=#f8f8f2>FIND_MASTER</color><color=#f8f8f2>,</color> <color=#f8f8f2>BECOME_CONSISTENT</color><color=#f8f8f2>};</color>
+
+      <color=#f8f8f2>TOTAL_RECOVERY</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>FIND_END_OF_LOG</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>FIND_LAST_CKPT</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>BUILD_TREE</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>READ_MAP_INS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>REDO_MAP_INS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>UNDO_MAP_LNS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>REDO_MAP_LNS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>READ_INS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>REDO_INS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>UNDO_LNS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>REDO_LNS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>POPULATE_UP</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>POPULATE_EP</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>REMOVE_TEMP_DBS</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>CKPT</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_ENV_OPEN</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>FIND_MASTER</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_JOIN_GROUP</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>BECOME_CONSISTENT</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>=</color> <color=#f8f8f2>TOTAL_JOIN_GROUP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color><color=#f92672>></color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Counter</color><color=#f92672>></color> <color=#f8f8f2>counters</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>StatGroup</color><color=#f92672>></color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RecoveryInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastDumpMillis</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>StartupTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>elapsed</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnumMap</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>counters</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnumMap</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Counter</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>stats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnumMap</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>StatGroup</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>p</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>Elapsed</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>lastDumpMillis</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setRecoveryInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>RecoveryInfo</color> <color=#f8f8f2>rInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>rInfo</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Note that a particular phase is starting. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>start</color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>phase</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>msg</color> <color=#f92672>=</color> <color=#e6db74>"Starting "</color> <color=#f92672>+</color> <color=#f8f8f2>phase</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>msg</color> <color=#f92672>+=</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>CONFIG</color><color=#f8f8f2>,</color> <color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>).</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Counter</color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Counter</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>counters</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>c</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>phase</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>TOTAL_ENV_OPEN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * LogManager does not exist yet so we can't reference it. Anyway,</color>
+<color=#75715e>       * cache misses are 0 to start with, so TOTAL_ENV_OPEN does not</color>
+<color=#75715e>       * have to set the starting cache miss count.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>setCacheMissStart</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>getNCacheMiss</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Note that a particular phase is ending. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>stop</color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>phase</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>end</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Counter</color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#f8f8f2>getCounter</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>setCacheMissEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>getNCacheMiss</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* Log this phase to the je.info file. */</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>msg</color> <color=#f92672>=</color> <color=#e6db74>"Stopping "</color> <color=#f92672>+</color> <color=#f8f8f2>phase</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>msg</color> <color=#f92672>+=</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>CONFIG</color><color=#f8f8f2>,</color> <color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Conditionally log the whole report to the je.info file, either</color>
+<color=#75715e>     * because this family of phases has ended, or because this startup</color>
+<color=#75715e>     * is taking a very long time.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Take care to only check the value of dumpThreshold here, rather than</color>
+<color=#75715e>     * setting it in the StartupTracker constructor, because StartupTracker</color>
+<color=#75715e>     * is instantiated before the DbConfigManager and the</color>
+<color=#75715e>     * STARTUP_DUMP_THRESHOLD param cannot be read.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>dumpThreshold</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STARTUP_DUMP_THRESHOLD</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* We're at the end of a family of phases. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getEnd</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getStart</color><color=#f8f8f2>())</color> <color=#f92672>></color> <color=#f8f8f2>dumpThreshold</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ByteArrayOutputStream</color> <color=#f8f8f2>baos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ByteArrayOutputStream</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>PrintStream</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PrintStream</color><color=#f8f8f2>(</color><color=#f8f8f2>baos</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>displayStats</color><color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>,</color> <color=#f8f8f2>phase</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#f8f8f2>baos</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * It's not the ending phase, but this has been taking a very long</color>
+<color=#75715e>     * time, so dump some information.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>lastDumpMillis</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#f8f8f2>dumpThreshold</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteArrayOutputStream</color> <color=#f8f8f2>baos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ByteArrayOutputStream</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>PrintStream</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PrintStream</color><color=#f8f8f2>(</color><color=#f8f8f2>baos</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>displayInterim</color><color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>,</color> <color=#f8f8f2>phase</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#f8f8f2>baos</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Record new progress states for any registered environment progress listener. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setProgress</color><color=#f8f8f2>(</color><color=#f8f8f2>RecoveryProgress</color> <color=#f8f8f2>progress</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ProgressListener</color><color=#f92672><</color><color=#f8f8f2>RecoveryProgress</color><color=#f92672>></color> <color=#f8f8f2>progressListener</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRecoveryProgressListener</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>progressListener</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>progressListener</color><color=#f8f8f2>.</color><color=#a6e22e>progress</color><color=#f8f8f2>(</color><color=#f8f8f2>progress</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>PROGRESS_LISTENER_HALT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"EnvironmentConfig.recoveryProgressListener: "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Return the counter for this phase so we can update one of the detail values stored there. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Counter</color> <color=#a6e22e>getCounter</color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>phase</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>counters</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Save stats for a given phase. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setStats</color><color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>sg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>sg</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Generate a description of the four recovery locations (firstActive, ckptStart, ckptend, end of</color>
+<color=#75715e>   * Log) and the distance inbetween.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>displayRecoveryInterval</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>returnInfo</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>CheckpointEnd</color> <color=#f8f8f2>cEnd</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointEnd</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cEnd</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"checkpointId = "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>cEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getInvoker</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"["</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>cEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getInvoker</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"] "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileMax</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_MAX</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>useStart</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointStartLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointStartLsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>head</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>useStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>firstActiveLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMax</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>useEnd</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointEndLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointEndLsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>ckpt</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>useEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointStartLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMax</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>useLast</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>lastUsedLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>lastUsedLsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>tail</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>useLast</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointEndLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMax</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>returnInfo</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"firstActive["</color>
+            <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>firstActiveLsn</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>"], ckptStart["</color>
+            <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointStartLsn</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>"], ckptEnd["</color>
+            <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>checkpointEndLsn</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>"], lastUsed["</color>
+            <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>lastUsedLsn</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#e6db74>"]\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Formatter</color> <color=#f8f8f2>f</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Formatter</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"%24s bytes = %,d\n%24s bytes = %,d\n%24s bytes = %,d"</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"firstActive->ckptStart"</color><color=#f8f8f2>,</color> <color=#f8f8f2>head</color><color=#f8f8f2>,</color> <color=#e6db74>"ckptStart->ckptEnd"</color><color=#f8f8f2>,</color> <color=#f8f8f2>ckpt</color><color=#f8f8f2>,</color> <color=#e6db74>"ckptEnd->end bytes"</color><color=#f8f8f2>,</color> <color=#f8f8f2>tail</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>returnInfo</color> <color=#f92672>+</color> <color=#e6db74>"\nApproximate distances:\n"</color> <color=#f92672>+</color> <color=#f8f8f2>sb</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>displayTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Formatter</color> <color=#f8f8f2>timestampFormatter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Formatter</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>timestampFormatter</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%tD,%tH:%tM:%tS:%tL"</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Display a phase and its children, showing elapsed time as a percentage of the phases' root. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>displayPhaseSubtree</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>PrintStream</color> <color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>parent</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>parentTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>rootElapsed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>headerFormat</color> <color=#f92672>=</color> <color=#e6db74>"%24s  %% of total  %s\n"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>parentFormat</color> <color=#f92672>=</color> <color=#e6db74>"%20s             %3d %s\n"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>dataFormat</color> <color=#f92672>=</color> <color=#e6db74>"%24s         %3d %s\n"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>divider</color> <color=#f92672>=</color> <color=#e6db74>"                         "</color> <color=#f92672>+</color> <color=#e6db74>"-------------------------"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>children</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>parentTime</color><color=#f8f8f2>.</color><color=#a6e22e>getEnd</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>parentTime</color><color=#f8f8f2>.</color><color=#a6e22e>getStart</color><color=#f8f8f2>())</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#f8f8f2>headerFormat</color><color=#f8f8f2>,</color> <color=#e6db74>" "</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>DISPLAY_COLUMNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#f8f8f2>parentFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>parent</color><color=#f8f8f2>,</color> <color=#f8f8f2>parentTime</color><color=#f8f8f2>.</color><color=#a6e22e>getPercentage</color><color=#f8f8f2>(</color><color=#f8f8f2>rootElapsed</color><color=#f8f8f2>),</color> <color=#f8f8f2>parentTime</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>divider</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Phase</color> <color=#f8f8f2>child</color> <color=#f8f8f2>:</color> <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>children</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>time</color> <color=#f92672>=</color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>child</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>time</color><color=#f8f8f2>.</color><color=#a6e22e>getStart</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#f8f8f2>dataFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>child</color><color=#f8f8f2>,</color> <color=#f8f8f2>time</color><color=#f8f8f2>.</color><color=#a6e22e>getPercentage</color><color=#f8f8f2>(</color><color=#f8f8f2>rootElapsed</color><color=#f8f8f2>),</color> <color=#f8f8f2>time</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>displayCounters</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>basicFormat</color> <color=#f92672>=</color> <color=#e6db74>"%20s   %s\n"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>headerNotPrinted</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Counter</color><color=#f92672>></color> <color=#f8f8f2>c</color> <color=#f8f8f2>:</color> <color=#f8f8f2>counters</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Phase</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>!=</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>Counter</color> <color=#f8f8f2>counter</color> <color=#f92672>=</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>counter</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>headerNotPrinted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#f8f8f2>basicFormat</color><color=#f8f8f2>,</color> <color=#e6db74>" "</color><color=#f8f8f2>,</color> <color=#f8f8f2>Counter</color><color=#f8f8f2>.</color><color=#a6e22e>DISPLAY_COLUMNS</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>headerNotPrinted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#f8f8f2>basicFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(),</color> <color=#f8f8f2>counter</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Display all information that has been tracked for this family of phases. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>displayStats</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lastDumpMillis</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>rootTime</color> <color=#f92672>=</color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>root</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\n=== "</color> <color=#f92672>+</color> <color=#f8f8f2>root</color><color=#f8f8f2>.</color><color=#a6e22e>reportLabel</color> <color=#f92672>+</color> <color=#e6db74>" Report  ==="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"start = "</color> <color=#f92672>+</color> <color=#f8f8f2>displayTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>rootTime</color><color=#f8f8f2>.</color><color=#a6e22e>getStart</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"end   = "</color> <color=#f92672>+</color> <color=#f8f8f2>displayTimestamp</color><color=#f8f8f2>(</color><color=#f8f8f2>rootTime</color><color=#f8f8f2>.</color><color=#a6e22e>getEnd</color><color=#f8f8f2>()));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>root</color> <color=#f92672>==</color> <color=#f8f8f2>Phase</color><color=#f8f8f2>.</color><color=#a6e22e>TOTAL_ENV_OPEN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>displayRecoveryInterval</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Elapsed time. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color><color=#f92672>></color> <color=#f8f8f2>x</color> <color=#f8f8f2>:</color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Phase</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#f8f8f2>x</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>p</color> <color=#f92672>!=</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>!=</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>displayPhaseSubtree</color><color=#f8f8f2>(</color><color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>x</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(),</color> <color=#f8f8f2>x</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>(),</color> <color=#f8f8f2>rootTime</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Counters */</color>
+    <color=#f8f8f2>displayCounters</color><color=#f8f8f2>(</color><color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>root</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Stats */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>StatGroup</color><color=#f92672>></color> <color=#f8f8f2>s</color> <color=#f8f8f2>:</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Phase</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>root</color> <color=#f92672>!=</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" stats:"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Display all information available so far. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>displayInterim</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>Phase</color> <color=#f8f8f2>phase</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lastDumpMillis</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\n=== Interim "</color> <color=#f92672>+</color> <color=#f8f8f2>phase</color> <color=#f92672>+</color> <color=#e6db74>" Report  ==="</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>displayRecoveryInterval</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* Elapsed time. */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>headerNotPrinted</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>Elapsed</color><color=#f92672>></color> <color=#f8f8f2>x</color> <color=#f8f8f2>:</color> <color=#f8f8f2>elapsed</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Phase</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#f8f8f2>x</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>Elapsed</color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>x</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>start</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>headerNotPrinted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"                             Elapsed(ms)"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>headerNotPrinted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>printf</color><color=#f8f8f2>(</color><color=#e6db74>"%20s : %s\n"</color><color=#f8f8f2>,</color> <color=#f8f8f2>p</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Counters */</color>
+    <color=#f8f8f2>displayCounters</color><color=#f8f8f2>(</color><color=#f8f8f2>stream</color><color=#f8f8f2>,</color> <color=#f8f8f2>phase</color><color=#f8f8f2>.</color><color=#a6e22e>root</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Stats */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Phase</color><color=#f8f8f2>,</color> <color=#f8f8f2>StatGroup</color><color=#f92672>></color> <color=#f8f8f2>s</color> <color=#f8f8f2>:</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" stats:"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Measures elapsed time in millisecond granularity. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>Elapsed</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* For dumping elapsed values in a column */</color>
+    <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DISPLAY_COLUMNS</color> <color=#f92672>=</color> <color=#e6db74>" Elapsed(ms)"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>end</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getStart</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>start</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getEnd</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>end</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Mark the start of a phase. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>start</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>start</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Mark the end of a phase. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>end</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>end</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>getPercentage</color><color=#f8f8f2>(</color><color=#f8f8f2>Elapsed</color> <color=#f8f8f2>rootTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rootTime</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>rootTotal</color> <color=#f92672>=</color> <color=#f8f8f2>rootTime</color><color=#f8f8f2>.</color><color=#a6e22e>end</color> <color=#f92672>-</color> <color=#f8f8f2>rootTime</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rootTotal</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>end</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(((</color><color=#66d9ef>float</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>end</color> <color=#f92672>-</color> <color=#f8f8f2>start</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>rootTotal</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>Formatter</color> <color=#f8f8f2>f</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Formatter</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>end</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%,13d"</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#f8f8f2>end</color> <color=#f92672>-</color> <color=#f8f8f2>start</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>start</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%13s  %tD,%tH:%tM:%tS:%tL"</color><color=#f8f8f2>,</color> <color=#e6db74>"started at"</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>start</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%13s"</color><color=#f8f8f2>,</color> <color=#e6db74>"none"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Record number of log entries processed during a given recovery phase. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>Counter</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>numRead</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>numProcessed</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>numDeleted</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>numAux</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>numRepeatIteratorReads</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>startCacheMiss</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>endCacheMiss</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* If nothing is set, don't print this one. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>numRead</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>numProcessed</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>numDeleted</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>numAux</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>numRepeatIteratorReads</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>((</color><color=#f8f8f2>endCacheMiss</color> <color=#f92672>-</color> <color=#f8f8f2>startCacheMiss</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>incNumRead</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>numRead</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>incNumProcessed</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>numProcessed</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>incNumDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>numDeleted</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Keep track of auxiliary log entries processed during this pass. For example, LNs are the main</color>
+<color=#75715e>     * target of the undoLN pass, but we also read aborts and commits.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>incNumAux</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>numAux</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setRepeatIteratorReads</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>repeats</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>numRepeatIteratorReads</color> <color=#f92672>=</color> <color=#f8f8f2>repeats</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setCacheMissStart</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>miss</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>startCacheMiss</color> <color=#f92672>=</color> <color=#f8f8f2>miss</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setCacheMissEnd</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>miss</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>endCacheMiss</color> <color=#f92672>=</color> <color=#f8f8f2>miss</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DISPLAY_COLUMNS</color> <color=#f92672>=</color>
+        <color=#e6db74>"      nRead nProcessed   nDeleted       nAux  nRepeatRd nCacheMiss"</color><color=#f8f8f2>;</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>Formatter</color> <color=#f8f8f2>f</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Formatter</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"%,11d%,11d%,11d%,11d%,11d%,11d"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>numRead</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>numProcessed</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>numDeleted</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>numAux</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>numRepeatIteratorReads</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>(</color><color=#f8f8f2>endCacheMiss</color> <color=#f92672>-</color> <color=#f8f8f2>startCacheMiss</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNumProcessed</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>numProcessed</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

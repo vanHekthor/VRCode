@@ -1,0 +1,84 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.txn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * LockResult is the return type of Locker.lock(). It encapsulates a LockGrantType (the return type</color>
+<color=#75715e> * of LockManager.lock()) and a WriteLockInfo.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The WriteLockInfo field is non-null if (a) the locker is transactional, and (b) the request</color>
+<color=#75715e> * was for a WRITE or WRITE_RANGE lock, and (c) the request was not a non-blocking request that got</color>
+<color=#75715e> * denied. If so, the WriteLockInfo is either a newly created one or a pre-existing one if the same</color>
+<color=#75715e> * locker had write-locked the same LSN before.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LockResult</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LockGrantType</color> <color=#f8f8f2>grant</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>wli</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Made public for unittests */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LockResult</color><color=#f8f8f2>(</color><color=#f8f8f2>LockGrantType</color> <color=#f8f8f2>grant</color><color=#f8f8f2>,</color> <color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>wli</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>grant</color> <color=#f92672>=</color> <color=#f8f8f2>grant</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>wli</color> <color=#f92672>=</color> <color=#f8f8f2>wli</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>LockGrantType</color> <color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>grant</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteLockInfo</color> <color=#a6e22e>getWriteLockInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>wli</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Method called from CursorImpl.LockStanding.prepareForUpdate()</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setAbortInfo</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>abortLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>abortKD</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortData</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>abortVLSN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>abortExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>abortExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Do not overwrite abort info if this locker has logged the</color>
+<color=#75715e>     * associated record before.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>wli</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>getNeverLocked</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>abortLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>abortLsn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>abortKD</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortKey</color><color=#f8f8f2>(</color><color=#f8f8f2>abortKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortData</color><color=#f8f8f2>(</color><color=#f8f8f2>abortData</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>abortVLSN</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortExpiration</color><color=#f8f8f2>(</color><color=#f8f8f2>abortExpiration</color><color=#f8f8f2>,</color> <color=#f8f8f2>abortExpirationInHours</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setDb</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setNeverLocked</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to copy write lock info when an LSN is changed. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>copyWriteLockInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>fromInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromInfo</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>wli</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>copyAllInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>fromInfo</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>wli</color><color=#f8f8f2>.</color><color=#a6e22e>setNeverLocked</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

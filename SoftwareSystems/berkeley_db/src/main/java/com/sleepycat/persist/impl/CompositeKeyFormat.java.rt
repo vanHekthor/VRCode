@@ -1,0 +1,338 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.ClassMetadata</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.EntityModel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.model.FieldMetadata</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawField</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawObject</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Format for a composite key class.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This class is similar to ComplexFormat in that a composite key class and other complex classes</color>
+<color=#75715e> * have fields, and the Accessor interface is used to access those fields. Composite key classes are</color>
+<color=#75715e> * different in the following ways:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- The superclass must be Object. No inheritance is allowed.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- All instance fields must be annotated with @KeyField, which determines their order in the</color>
+<color=#75715e> * data bytes.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- Although fields may be reference types (primitive wrappers or other simple reference types),</color>
+<color=#75715e> * they are stored as if they were primitives. No object format ID is stored, and the class of the</color>
+<color=#75715e> * object must be the declared classs of the field; i.e., no polymorphism is allowed for key fields.</color>
+<color=#75715e> * In other words, a composite key is stored as an ordinary tuple as defined in the</color>
+<color=#75715e> * com.sleepycat.bind.tuple package. This keeps the key small and gives it a well defined sort</color>
+<color=#75715e> * order.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- If the key class implements Comparable, it is called by the Database btree comparator. It</color>
+<color=#75715e> * must therefore be available during JE recovery, before the store and catalog have been opened. To</color>
+<color=#75715e> * support this, this format can be constructed during recovery. A SimpleCatalog singleton instance</color>
+<color=#75715e> * is used to provide a catalog of simple types that is used by the composite key format.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>- When interacting with the Accessor, the composite key format treats the Accessor's non-key</color>
+<color=#75715e> * fields as its key fields. The Accessor's key fields are secondary keys, while the composite</color>
+<color=#75715e> * format's key fields are the component parts of a single key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>CompositeKeyFormat</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Format</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>306843428409314630L</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldInfo</color><color=#f92672>></color> <color=#f8f8f2>fields</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Accessor</color> <color=#f8f8f2>objAccessor</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Accessor</color> <color=#f8f8f2>rawAccessor</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color> <color=#f8f8f2>rawFields</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>FieldInfo</color><color=#f92672>[]</color> <color=#f8f8f2>rawInputFields</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#a6e22e>getFieldNameArray</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldMetadata</color><color=#f92672>></color> <color=#f8f8f2>list</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f92672>[</color><color=#f8f8f2>list</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FieldMetadata</color> <color=#f8f8f2>f</color> <color=#f8f8f2>:</color> <color=#f8f8f2>list</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>a</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>index</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>a</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Creates a new composite key format. */</color>
+  <color=#f8f8f2>CompositeKeyFormat</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>,</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldMetadata</color><color=#f92672>></color> <color=#f8f8f2>fieldMeta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>,</color> <color=#f8f8f2>getFieldNameArray</color><color=#f8f8f2>(</color><color=#f8f8f2>fieldMeta</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Reconsistitues a composite key format after a PersistComparator is deserialized. */</color>
+  <color=#f8f8f2>CompositeKeyFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fieldNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*metadata*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>fieldNames</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>CompositeKeyFormat</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color> <color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fieldNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>cls</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>metadata</color> <color=#f92672>=</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Check that the superclass is Object. */</color>
+    <color=#f8f8f2>Class</color> <color=#f8f8f2>superCls</color> <color=#f92672>=</color> <color=#f8f8f2>cls</color><color=#f8f8f2>.</color><color=#a6e22e>getSuperclass</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>superCls</color> <color=#f92672>!=</color> <color=#f8f8f2>Object</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Composite key class must be derived from Object: "</color> <color=#f92672>+</color> <color=#f8f8f2>cls</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Populate fields list in fieldNames order. */</color>
+    <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldInfo</color><color=#f92672>></color> <color=#f8f8f2>instanceFields</color> <color=#f92672>=</color> <color=#f8f8f2>FieldInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getInstanceFields</color><color=#f8f8f2>(</color><color=#f8f8f2>cls</color><color=#f8f8f2>,</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>fields</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>FieldInfo</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>instanceFields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>fieldName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fieldNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>field</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>tryField</color> <color=#f8f8f2>:</color> <color=#f8f8f2>instanceFields</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fieldName</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>tryField</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>field</color> <color=#f92672>=</color> <color=#f8f8f2>tryField</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>field</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Composite key field is not an instance field: "</color> <color=#f92672>+</color> <color=#f8f8f2>getClassName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>'.'</color> <color=#f92672>+</color> <color=#f8f8f2>fieldName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>field</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>instanceFields</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>field</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Class</color> <color=#f8f8f2>fieldCls</color> <color=#f92672>=</color> <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>getFieldClass</color><color=#f8f8f2>(</color><color=#f8f8f2>getCatalog</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>SimpleCatalog</color><color=#f8f8f2>.</color><color=#a6e22e>isSimpleType</color><color=#f8f8f2>(</color><color=#f8f8f2>fieldCls</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>fieldCls</color><color=#f8f8f2>.</color><color=#a6e22e>isEnum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Composite key field is not a simple type or enum: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>getClassName</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>'.'</color>
+                <color=#f92672>+</color> <color=#f8f8f2>fieldName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>instanceFields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"All composite key instance fields must be key fields: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>getClassName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>'.'</color>
+              <color=#f92672>+</color> <color=#f8f8f2>instanceFields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>).</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FieldInfo</color><color=#f92672>></color> <color=#a6e22e>getFieldInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fields</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>migrateFromBeta</color><color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color><color=#f92672>></color> <color=#f8f8f2>formatMap</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>migrateFromBeta</color><color=#f8f8f2>(</color><color=#f8f8f2>formatMap</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>field</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fields</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>migrateFromBeta</color><color=#f8f8f2>(</color><color=#f8f8f2>formatMap</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isModelClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ClassMetadata</color> <color=#a6e22e>getClassMetadata</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>metadata</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>metadata</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color> <color=#a6e22e>getFields</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Lazily create the raw type information.  Synchronization is not</color>
+<color=#75715e>     * required since this object is immutable.  If by chance we create two</color>
+<color=#75715e>     * maps when two threads execute this block, no harm is done.  But be</color>
+<color=#75715e>     * sure to assign the rawFields field only after the map is fully</color>
+<color=#75715e>     * populated.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rawFields</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color> <color=#f8f8f2>map</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawField</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>RawField</color> <color=#f8f8f2>field</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fields</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>field</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>rawFields</color> <color=#f92672>=</color> <color=#f8f8f2>map</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>rawFields</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>collectRelatedFormats</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Format</color><color=#f92672>></color> <color=#f8f8f2>newFormats</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Collect field formats. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>field</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fields</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>collectRelatedFormats</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>newFormats</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>initialize</color><color=#f8f8f2>(</color><color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityModel</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>initVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Initialize all fields. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>FieldInfo</color> <color=#f8f8f2>field</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fields</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>field</color><color=#f8f8f2>.</color><color=#a6e22e>initialize</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>model</color><color=#f8f8f2>,</color> <color=#f8f8f2>initVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Create the accessor. */</color>
+    <color=#f8f8f2>Class</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>getType</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnhancedAccessor</color><color=#f8f8f2>.</color><color=#a6e22e>isEnhanced</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>objAccessor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnhancedAccessor</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>fields</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>objAccessor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReflectionAccessor</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>fields</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>rawAccessor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RawAccessor</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>fields</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#f8f8f2>Object</color> <color=#a6e22e>newArray</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>objAccessor</color><color=#f8f8f2>.</color><color=#a6e22e>newArray</color><color=#f8f8f2>(</color><color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Accessor</color> <color=#f8f8f2>accessor</color> <color=#f92672>=</color> <color=#f8f8f2>rawAccess</color> <color=#f92672>?</color> <color=#f8f8f2>rawAccessor</color> <color=#f8f8f2>:</color> <color=#f8f8f2>objAccessor</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>accessor</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#a6e22e>readObject</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Accessor</color> <color=#f8f8f2>accessor</color> <color=#f92672>=</color> <color=#f8f8f2>rawAccess</color> <color=#f92672>?</color> <color=#f8f8f2>rawAccessor</color> <color=#f8f8f2>:</color> <color=#f8f8f2>objAccessor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>accessor</color><color=#f8f8f2>.</color><color=#a6e22e>readCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>input</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>o</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>writeObject</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Accessor</color> <color=#f8f8f2>accessor</color> <color=#f92672>=</color> <color=#f8f8f2>rawAccess</color> <color=#f92672>?</color> <color=#f8f8f2>rawAccessor</color> <color=#f8f8f2>:</color> <color=#f8f8f2>objAccessor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>accessor</color><color=#f8f8f2>.</color><color=#a6e22e>writeCompositeKeyFields</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>output</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#f8f8f2>Object</color> <color=#a6e22e>convertRawObject</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Catalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>,</color> <color=#f8f8f2>RawObject</color> <color=#f8f8f2>rawObject</color><color=#f8f8f2>,</color> <color=#f8f8f2>IdentityHashMap</color> <color=#f8f8f2>converted</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Synchronization is not required since rawInputFields is immutable.</color>
+<color=#75715e>     * If by chance we create duplicate values when two threads execute</color>
+<color=#75715e>     * this block, no harm is done.  But be sure to assign the field only</color>
+<color=#75715e>     * after the values are fully populated.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>FieldInfo</color><color=#f92672>[]</color> <color=#f8f8f2>myFields</color> <color=#f92672>=</color> <color=#f8f8f2>rawInputFields</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myFields</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>myFields</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FieldInfo</color><color=#f92672>[</color><color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>toArray</color><color=#f8f8f2>(</color><color=#f8f8f2>myFields</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>rawInputFields</color> <color=#f92672>=</color> <color=#f8f8f2>myFields</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rawObject</color><color=#f8f8f2>.</color><color=#a6e22e>getSuper</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"RawObject has too many superclasses: "</color> <color=#f92672>+</color> <color=#f8f8f2>rawObject</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>RawObject</color><color=#f92672>[]</color> <color=#f8f8f2>objects</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RawObject</color><color=#f92672>[</color><color=#f8f8f2>myFields</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>fill</color><color=#f8f8f2>(</color><color=#f8f8f2>objects</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawObject</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>EntityInput</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RawComplexInput</color><color=#f8f8f2>(</color><color=#f8f8f2>catalog</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>,</color> <color=#f8f8f2>converted</color><color=#f8f8f2>,</color> <color=#f8f8f2>myFields</color><color=#f8f8f2>,</color> <color=#f8f8f2>objects</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Object</color> <color=#f8f8f2>o</color> <color=#f92672>=</color> <color=#f8f8f2>newInstance</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>converted</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>rawObject</color><color=#f8f8f2>,</color> <color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>readObject</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>,</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#f8f8f2>rawAccess</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>skipContents</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>RefreshException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>maxNum</color> <color=#f92672>=</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>maxNum</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>).</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>skipContents</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>copySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>RecordInput</color> <color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>RecordOutput</color> <color=#f8f8f2>output</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>maxNum</color> <color=#f92672>=</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>maxNum</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>).</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>copySecKey</color><color=#f8f8f2>(</color><color=#f8f8f2>input</color><color=#f8f8f2>,</color> <color=#f8f8f2>output</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#f8f8f2>Format</color> <color=#a6e22e>getSequenceKeyFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"A composite key class used with a sequence may contain "</color>
+              <color=#f92672>+</color> <color=#e6db74>"only a single key field: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>getClassName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>).</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>getSequenceKeyFormat</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>evolve</color><color=#f8f8f2>(</color><color=#f8f8f2>Format</color> <color=#f8f8f2>newFormatParam</color><color=#f8f8f2>,</color> <color=#f8f8f2>Evolver</color> <color=#f8f8f2>evolver</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Disallow evolution to a non-composite format. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>newFormatParam</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>CompositeKeyFormat</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>evolver</color><color=#f8f8f2>.</color><color=#a6e22e>addEvolveError</color><color=#f8f8f2>(</color>
+          <color=#66d9ef>this</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newFormatParam</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"A composite key class may not be changed to a different "</color> <color=#f92672>+</color> <color=#e6db74>"type"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>CompositeKeyFormat</color> <color=#f8f8f2>newFormat</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>CompositeKeyFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>newFormatParam</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Check for added or removed key fields. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>.</color><color=#a6e22e>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>evolver</color><color=#f8f8f2>.</color><color=#a6e22e>addEvolveError</color><color=#f8f8f2>(</color>
+          <color=#66d9ef>this</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newFormat</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Composite key class fields were added or removed "</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Old fields: "</color> <color=#f92672>+</color> <color=#f8f8f2>fields</color> <color=#f92672>+</color> <color=#e6db74>" new fields: "</color> <color=#f92672>+</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>.</color><color=#a6e22e>fields</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Check for modified key fields. */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>newVersion</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+          <color=#f8f8f2>evolver</color><color=#f8f8f2>.</color><color=#a6e22e>evolveRequiredKeyField</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>fields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>),</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>.</color><color=#a6e22e>fields</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>==</color> <color=#f8f8f2>Evolver</color><color=#f8f8f2>.</color><color=#a6e22e>EVOLVE_FAILURE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>==</color> <color=#f8f8f2>Evolver</color><color=#f8f8f2>.</color><color=#a6e22e>EVOLVE_NEEDED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newVersion</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We never need to use a custom reader because the physical key field</color>
+<color=#75715e>     * formats never change.  But we do create a new evolved format when</color>
+<color=#75715e>     * a type changes (primitive <-> primitive wrapper) so that the new</color>
+<color=#75715e>     * type information is correct.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>newVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>evolver</color><color=#f8f8f2>.</color><color=#a6e22e>useEvolvedFormat</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>evolver</color><color=#f8f8f2>.</color><color=#a6e22e>useOldFormat</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>newFormat</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,404 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.RepNode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.HostPortPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Properties</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * This exception indicates that the log files constituting the Environment are insufficient and</color>
+<color=#75715e> * cannot be used as the basis for continuing with the replication stream provided by the current</color>
+<color=#75715e> * master.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This exception is typically thrown by the ReplicatedEnvironment constructor when a node has</color>
+<color=#75715e> * been down for a long period of time and is being started up again. It may also be thrown when a</color>
+<color=#75715e> * brand new node attempts to become a member of the group and it does not have a sufficiently</color>
+<color=#75715e> * current set of log files. If the group experiences sustained network connectivity problems, this</color>
+<color=#75715e> * exception may also be thrown by an active Replica that has been unable to stay in touch with the</color>
+<color=#75715e> * members of its group for an extended period of time.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In the typical case, application handles the exception by invoking {@link</color>
+<color=#75715e> * NetworkRestore#execute} to obtain the log files it needs from one of the members of the</color>
+<color=#75715e> * replication group. After the log files are obtained, the node recreates its environment handle</color>
+<color=#75715e> * and resumes participation as an active member of the group.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @see NetworkRestore</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>InsufficientLogException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RestartRequiredException</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * These properties store information to serialize the ILE and save it in a</color>
+<color=#75715e>   * RestoreRequired log entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The properties named P_* describe a log provider. An ILE may have one or</color>
+<color=#75715e>   * more log providers, and a more structured format like Json would make it</color>
+<color=#75715e>   * easier to describe an array of items. Since we're currently constrained</color>
+<color=#75715e>   * to using a property list, we follow the convention of suffixing each</color>
+<color=#75715e>   * provider property with a number. For example, if there are two</color>
+<color=#75715e>   * providers, P_NUMPROVIDERS=2, and there would be P_NODENAME0,</color>
+<color=#75715e>   * P_NODENAME1, etc.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>P_NUMPROVIDERS</color> <color=#f92672>=</color> <color=#e6db74>"P_NUMPROVIDERS"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>P_NODENAME</color> <color=#f92672>=</color> <color=#e6db74>"P_NODENAME"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>P_NODETYPE</color> <color=#f92672>=</color> <color=#e6db74>"P_NODETYPE"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>P_HOSTNAME</color> <color=#f92672>=</color> <color=#e6db74>"P_HOSTNAME"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>P_PORT</color> <color=#f92672>=</color> <color=#e6db74>"P_PORT"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Properties needed to create an environment handle for the node which</color>
+<color=#75715e>   * needs new logs, and is the target for a backup.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>GROUP_NAME</color> <color=#f92672>=</color> <color=#e6db74>"GROUP_NAME"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>NODE_NAME</color> <color=#f92672>=</color> <color=#e6db74>"NODE_NAME"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>HOSTNAME</color> <color=#f92672>=</color> <color=#e6db74>"HOSTNAME"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>PORT</color> <color=#f92672>=</color> <color=#e6db74>"PORT"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>ENV_DIR</color> <color=#f92672>=</color> <color=#e6db74>"ENV_DIR"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>REFRESH_VLSN</color> <color=#f92672>=</color> <color=#e6db74>"REFRESH_VLSN"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A handle to the replication environment which is the target for the</color>
+<color=#75715e>   * network restore. May be null. If repImpl was created by the ILE, the</color>
+<color=#75715e>   * caller has the responsibility for closing the environment.  Note that a</color>
+<color=#75715e>   * RepImpl rather than RepNode is used as the environment handle. RepNodes</color>
+<color=#75715e>   * are only available for nodes which are a member of a group. In some</color>
+<color=#75715e>   * cases, an ILE is used by a node which is detached, and is not currently</color>
+<color=#75715e>   * connected to its group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>openedByILE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Attributes used by the network restore, in serialized format */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>transient</color> <color=#f8f8f2>Properties</color> <color=#f8f8f2>props</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * No longer used as of JE 7.5, but the field is retained for serializable</color>
+<color=#75715e>   * compatibility.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>refreshVLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Candidate nodes for a log file refresh. Note that this field is only</color>
+<color=#75715e>   * used by a thread that is synchronously processing the caught exception,</color>
+<color=#75715e>   * which is safely after the instance has been initialized.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>ReplicationNode</color><color=#f92672>></color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For KVS test use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#75715e>// KVS-only</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>props</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Creates an instance of the exception and packages up the information needed by</color>
+<color=#75715e>   *     NetworkRestore.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>ReplicationNode</color><color=#f92672>></color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>(),</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>INSUFFICIENT_LOG</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color> <color=#f92672>=</color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>props</color> <color=#f92672>=</color> <color=#f8f8f2>initProperties</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Properties</color> <color=#a6e22e>initProperties</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Properties</color> <color=#f8f8f2>p</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Properties</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * These apply to the destination node which is experiencing the</color>
+<color=#75715e>     * insufficient logs.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>NODE_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>HOSTNAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getHostName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>PORT</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getPort</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>ENV_DIR</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironmentHome</color><color=#f8f8f2>().</color><color=#a6e22e>getPath</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>REFRESH_VLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>refreshVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()));</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * There is a set of nodes which might act as the source for the</color>
+<color=#75715e>     * network restore. Since we can't store arrays, append an index</color>
+<color=#75715e>     * to the property name for each log provider.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NUMPROVIDERS</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>logProviders</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()));</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>rn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NODENAME</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>rn</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_HOSTNAME</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>rn</color><color=#f8f8f2>.</color><color=#a6e22e>getHostName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_PORT</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>rn</color><color=#f8f8f2>.</color><color=#a6e22e>getPort</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>p</color><color=#f8f8f2>.</color><color=#a6e22e>setProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NODETYPE</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>rn</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>name</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>p</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Creates an instance of the exception and packages up the information needed by</color>
+<color=#75715e>   *     Subscription API. The target is not a replication node, so the repImpl field is a shell</color>
+<color=#75715e>   *     which represents the subscription target.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>refreshVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>INSUFFICIENT_LOG</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>refreshVLSN</color><color=#f8f8f2>;</color>
+    <color=#75715e>/*</color>
+<color=#75715e>     * No log providers in this use case, but initialize the set for</color>
+<color=#75715e>     * initProperties, and for robustness.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>ReplicationNode</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>props</color> <color=#f92672>=</color> <color=#f8f8f2>initProperties</color><color=#f8f8f2>(</color><color=#e6db74>"NO_GROUP"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Creates an instance of the exception when a LOG_RESTORE_REQUIRED was found at recovery,</color>
+<color=#75715e>   *     and network restore must be initiated before the recovery can succeed. The flow is: 0. A</color>
+<color=#75715e>   *     network restore is underway. It writes a marker file, essentially serializing this ILE as a</color>
+<color=#75715e>   *     property list, and writing it into the log. Something then interrupts this network restore.</color>
+<color=#75715e>   *     The process dies, so all knowledge of the interrupted network restore is lost in memory but</color>
+<color=#75715e>   *     the the marker file acts as a persistent breadcrumb. 1. Since knowledge of the network</color>
+<color=#75715e>   *     restore was lost, the application tries to open and recover the target node. The</color>
+<color=#75715e>   *     LOG_RESTORE_REQUIRED entry is seen, which means that recovery can't continue. 2. Within</color>
+<color=#75715e>   *     recovery, a new ILE is created using information from the LOG_RESTORE_REQUIRED. It's</color>
+<color=#75715e>   *     thrown, which ends recovery. 3. The caller realizes that a network restore has to be</color>
+<color=#75715e>   *     carried out before this environment can be recovered. It uses the ILE instance created in</color>
+<color=#75715e>   *     step 2 to start a new invocation of network restore. 4. Network restore starts. Since</color>
+<color=#75715e>   *     network restore needs a RepImpl, one is instantiated using info from the ILE 5. When</color>
+<color=#75715e>   *     Network restore succeeds, it removes the marker file.</color>
+<color=#75715e>   * @param helperHosts extra helper hosts are derived from those used to open the environment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>Properties</color> <color=#f8f8f2>properties</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>helperHosts</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>INSUFFICIENT_LOG</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Don't initialize the repImpl until it's needed. If we try to do</color>
+<color=#75715e>     * so in step2, we'll be in a loop, trying to recover an environment</color>
+<color=#75715e>     * from  within recovery.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>vlsnVal</color> <color=#f92672>=</color> <color=#f8f8f2>properties</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>REFRESH_VLSN</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>parseLong</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsnVal</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>helperHosts</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostPortPair</color> <color=#f8f8f2>:</color> <color=#f8f8f2>helperHosts</color><color=#f8f8f2>.</color><color=#a6e22e>split</color><color=#f8f8f2>(</color><color=#e6db74>","</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>hpp</color> <color=#f92672>=</color> <color=#f8f8f2>hostPortPair</color><color=#f8f8f2>.</color><color=#a6e22e>trim</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hpp</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LogFileSource</color> <color=#f8f8f2>source</color> <color=#f92672>=</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>LogFileSource</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"NoName"</color><color=#f8f8f2>,</color> <color=#75715e>// not important</color>
+                  <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTABLE</color><color=#f8f8f2>.</color><color=#a6e22e>name</color><color=#f8f8f2>(),</color>
+                  <color=#f8f8f2>HostPortPair</color><color=#f8f8f2>.</color><color=#a6e22e>getHostname</color><color=#f8f8f2>(</color><color=#f8f8f2>hpp</color><color=#f8f8f2>),</color>
+                  <color=#f8f8f2>HostPortPair</color><color=#f8f8f2>.</color><color=#a6e22e>getPort</color><color=#f8f8f2>(</color><color=#f8f8f2>hpp</color><color=#f8f8f2>));</color>
+          <color=#f8f8f2>logProviders</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>source</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>props</color> <color=#f92672>=</color> <color=#f8f8f2>properties</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/*</color>
+<color=#75715e>     * Setup log providers. Since can't use something that supports array</color>
+<color=#75715e>     * types like JSON, and must use a property list, the provider flags</color>
+<color=#75715e>     * are named NODE_NAME0, HOSTNAME0, etc.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>numLogProviders</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NUMPROVIDERS</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>numLogProviders</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NODENAME</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_NODETYPE</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>hostname</color> <color=#f92672>=</color> <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_HOSTNAME</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>port</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>P_PORT</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>logProviders</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>LogFileSource</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>,</color> <color=#f8f8f2>hostname</color><color=#f8f8f2>,</color> <color=#f8f8f2>port</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Create new, read only, internal handle type environment for use</color>
+<color=#75715e>     * by the network backup.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setReadOnly</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_RECOVERY</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#e6db74>"false"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setTransactional</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>hostname</color> <color=#f92672>=</color> <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>HOSTNAME</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>portVal</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>PORT</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>repConfig</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>GROUP_NAME</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>NODE_NAME</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>HostPortPair</color><color=#f8f8f2>.</color><color=#a6e22e>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>hostname</color><color=#f8f8f2>,</color> <color=#f8f8f2>portVal</color><color=#f8f8f2>));</color>
+
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>NETWORKBACKUP_USE</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#e6db74>"true"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#f8f8f2>defaultNetConfig</color> <color=#f92672>=</color> <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>createDefault</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setRepNetConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>defaultNetConfig</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>File</color> <color=#f8f8f2>envDir</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>ENV_DIR</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>ReplicatedEnvironment</color> <color=#f8f8f2>restoreEnv</color> <color=#f92672>=</color>
+        <color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>createInternalEnvHandle</color><color=#f8f8f2>(</color><color=#f8f8f2>envDir</color><color=#f8f8f2>,</color> <color=#f8f8f2>repConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>restoreEnv</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>openedByILE</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>openedByILE</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>openedByILE</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>refreshVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>logProviders</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>props</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>props</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>wrapSelf</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>InsufficientLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the members of the replication group that can serve as candidate log providers to</color>
+<color=#75715e>   * supply the logs needed by this node.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a list of members that can provide logs</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>ReplicationNode</color><color=#f92672>></color> <color=#a6e22e>getLogProviders</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Returns the replication node whose log files need to be refreshed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>initRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"refreshVLSN="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>refreshVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" logProviders="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>logProviders</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" repImpl="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" props="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Properties</color> <color=#a6e22e>getProperties</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>props</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A standin for a ReplicationNode, so NetworkRestore can establish a</color>
+<color=#75715e>   * protocol connection with the source of the log files.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>LogFileSource</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>hostname</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>port</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LogFileSource</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>nodeTypeName</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>hostname</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>port</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>name</color> <color=#f92672>=</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>type</color> <color=#f92672>=</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeTypeName</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>hostname</color> <color=#f92672>=</color> <color=#f8f8f2>hostname</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>port</color> <color=#f92672>=</color> <color=#f8f8f2>port</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NodeType</color> <color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>InetSocketAddress</color> <color=#a6e22e>getSocketAddress</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>InetSocketAddress</color><color=#f8f8f2>(</color><color=#f8f8f2>hostname</color><color=#f8f8f2>,</color> <color=#f8f8f2>port</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getHostName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>hostname</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getPort</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>port</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called when network restore is complete to close the env if it was opened via this exception.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Also sets the repImpl field to null, to avoid OOME when opening the restored environment.</color>
+<color=#75715e>   * This is important whether or not the env was opened via this exception. [#26305]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>releaseRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>openedByILE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

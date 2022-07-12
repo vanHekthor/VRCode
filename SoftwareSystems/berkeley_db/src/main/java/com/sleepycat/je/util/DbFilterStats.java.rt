@@ -1,0 +1,332 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.util</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CmdUtil</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Transform one or more je.stat.csv statistics files and write the output to stdout. A set of</color>
+<color=#75715e> * column names is used to specify the order and which columns are written to the output. The</color>
+<color=#75715e> * utility is used to create an output file that is easier to analyze by projecting and ordering</color>
+<color=#75715e> * only the data that is required. Each user specified column name will either be a exact match of a</color>
+<color=#75715e> * column in the file or a prefix match. In order to output the "time" and all "Op" group statistics</color>
+<color=#75715e> * a column list "time,Op" could be used. Multiple input files are processed in the order specified</color>
+<color=#75715e> * on the command line. Duplicate column headers are suppressed in the output when processing</color>
+<color=#75715e> * multiple input files.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbFilterStats</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>USAGE</color> <color=#f92672>=</color>
+      <color=#e6db74>"usage: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getJavaCommand</color><color=#f8f8f2>(</color><color=#f8f8f2>DbFilterStats</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"      [-f <projection file>]     # use file for projection list\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"      [-p \"<list of columns>\"]   # use specified projection list\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"      <stat file> [<stat file>]  # list of statistic file names"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DELIMITER</color> <color=#f92672>=</color> <color=#e6db74>","</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>File</color> <color=#f8f8f2>projectionFile</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>projectionArg</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>inputFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/* list of colunms/prefixes to project */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>projList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>header</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileColHeader</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StringBuffer</color> <color=#f8f8f2>rowBuf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuffer</color><color=#f8f8f2>();</color>
+  <color=#75715e>/* used to save name/value from file */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>valMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Splitter</color> <color=#f8f8f2>tokenizer</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Splitter</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The main used by the DbFilterStats utility.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param argv An array of command line arguments to the DbFilterStats utility.</color>
+<color=#75715e>   *     <pre></color>
+<color=#75715e>   * usage: java { com.sleepycat.je.util.DbFilterStats | -jar</color>
+<color=#75715e>   * je.jar DbFilterStats }</color>
+<color=#75715e>   *  -f  &lt;projection file&gt;</color>
+<color=#75715e>   *  -p  &lt;column projection list&gt; A comma separated list of column</color>
+<color=#75715e>   *      names to project.</color>
+<color=#75715e>   *  &lt;stat file&gt; [&lt;stat file&gt;]</color>
+<color=#75715e>   * </pre></color>
+<color=#75715e>   *     <p>At least one argument must be specified.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>DbFilterStats</color> <color=#f8f8f2>dbf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbFilterStats</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>retstatus</color> <color=#f92672>=</color> <color=#f8f8f2>dbf</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#f8f8f2>retstatus</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Performs the processing of the DbFilterStats command.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param argv DbFilterStats command arguments</color>
+<color=#75715e>   * @return true if command is successful, otherwise false</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>retcode</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>USAGE</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>retcode</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbFilterStats</color> <color=#f8f8f2>dbf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbFilterStats</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>dbf</color><color=#f8f8f2>.</color><color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dbf</color><color=#f8f8f2>.</color><color=#a6e22e>validateParams</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>dbf</color><color=#f8f8f2>.</color><color=#a6e22e>processFiles</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>retcode</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>retcode</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>f</color> <color=#f8f8f2>:</color> <color=#f8f8f2>inputFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>processFile</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * processFile will form the list of columns based on the projection list. The column data to</color>
+<color=#75715e>   * stdout. If the header has not been output or is different that what was previously written, the</color>
+<color=#75715e>   * column header for the projected columns is written to stdout.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param statFile comma delimited file with a header</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>statFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>row</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>BufferedReader</color> <color=#f8f8f2>fr</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>outProj</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fr</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BufferedReader</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>FileReader</color><color=#f8f8f2>(</color><color=#f8f8f2>statFile</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>((</color><color=#f8f8f2>row</color> <color=#f92672>=</color> <color=#f8f8f2>fr</color><color=#f8f8f2>.</color><color=#a6e22e>readLine</color><color=#f8f8f2>())</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>cols</color> <color=#f92672>=</color> <color=#f8f8f2>parseRow</color><color=#f8f8f2>(</color><color=#f8f8f2>row</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outProj</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* form output projection list from header */</color>
+          <color=#f8f8f2>outProj</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>colNameMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>cname</color> <color=#f8f8f2>:</color> <color=#f8f8f2>cols</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>colNameMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>cname</color><color=#f8f8f2>,</color> <color=#f8f8f2>cname</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>projName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>projList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>colNameMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>projName</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>outProj</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>projName</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>colName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>cols</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>colName</color><color=#f8f8f2>.</color><color=#a6e22e>startsWith</color><color=#f8f8f2>(</color><color=#f8f8f2>projName</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                  <color=#f8f8f2>outProj</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>colName</color><color=#f8f8f2>);</color>
+                <color=#f8f8f2>}</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>header</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>row</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* output header row */</color>
+            <color=#f8f8f2>outputRow</color><color=#f8f8f2>(</color><color=#f8f8f2>outProj</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>header</color> <color=#f92672>=</color> <color=#f8f8f2>row</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>fileColHeader</color> <color=#f92672>=</color> <color=#f8f8f2>cols</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cols</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>!=</color> <color=#f8f8f2>fileColHeader</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color>
+                <color=#e6db74>"Invalid stat file "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>statFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color>
+                    <color=#f92672>+</color> <color=#e6db74>" header/columns are not equal."</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* put column name/value in map*/</color>
+          <color=#f8f8f2>valMap</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>cols</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>valMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>fileColHeader</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#f8f8f2>cols</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* form output row based on projection list */</color>
+          <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>setLength</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>pname</color> <color=#f8f8f2>:</color> <color=#f8f8f2>outProj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DELIMITER</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>String</color> <color=#f8f8f2>value</color> <color=#f92672>=</color> <color=#f8f8f2>valMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>pname</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" "</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>rowBuf</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Error occured accessing stat file "</color> <color=#f92672>+</color> <color=#f8f8f2>statFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"IOException occured accessing stat file "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>statFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" exception "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fr</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fr</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* eat exception */</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>outputRow</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>cvals</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>setLength</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>val</color> <color=#f8f8f2>:</color> <color=#f8f8f2>cvals</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DELIMITER</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>rowBuf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>rowBuf</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>argc</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nArgs</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>inputFiles</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>thisArg</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-f"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>projectionFile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-f requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-p"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>projectionArg</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-p requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inputFiles</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>validateParams</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>projList</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>inputFiles</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"requires statistic file argument"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>f</color> <color=#f8f8f2>:</color> <color=#f8f8f2>inputFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Specified stat file "</color> <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" does not exist."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>isDirectory</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Specified stat file "</color> <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" is not a file."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>projectionFile</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>projectionArg</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"requires either -p or -f argument"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* add command line projections */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>projectionArg</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addProjections</color><color=#f8f8f2>(</color><color=#f8f8f2>projectionArg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* add projection file projections */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>projectionFile</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>projectionFile</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Specified projection file "</color> <color=#f92672>+</color> <color=#f8f8f2>projectionFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" does not exist."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>projectionFile</color><color=#f8f8f2>.</color><color=#a6e22e>isDirectory</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Specified projection file "</color> <color=#f92672>+</color> <color=#f8f8f2>projectionFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" is not a file."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>formProjections</color><color=#f8f8f2>(</color><color=#f8f8f2>projectionFile</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>formProjections</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>projFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>row</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>BufferedReader</color> <color=#f8f8f2>fr</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fr</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BufferedReader</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>FileReader</color><color=#f8f8f2>(</color><color=#f8f8f2>projFile</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>row</color> <color=#f92672>=</color> <color=#f8f8f2>fr</color><color=#f8f8f2>.</color><color=#a6e22e>readLine</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>row</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Invalid projection file "</color> <color=#f92672>+</color> <color=#f8f8f2>projFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>addProjections</color><color=#f8f8f2>(</color><color=#f8f8f2>row</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Error occured accessing projection file "</color> <color=#f92672>+</color> <color=#f8f8f2>projFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"IOException occured accessing projection file "</color> <color=#f92672>+</color> <color=#f8f8f2>projFile</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fr</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fr</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* eat exception */</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#a6e22e>parseRow</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>row</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>trimIt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>vals</color> <color=#f92672>=</color> <color=#f8f8f2>tokenizer</color><color=#f8f8f2>.</color><color=#a6e22e>tokenize</color><color=#f8f8f2>(</color><color=#f8f8f2>row</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trimIt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>vals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>vals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>vals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>trim</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>vals</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addProjections</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>collist</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>names</color> <color=#f92672>=</color> <color=#f8f8f2>parseRow</color><color=#f8f8f2>(</color><color=#f8f8f2>collist</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f8f8f2>:</color> <color=#f8f8f2>names</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>printFatal</color><color=#f8f8f2>(</color><color=#e6db74>"Projection list contained a empty entry."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>projList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>msg</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>USAGE</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>printFatal</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

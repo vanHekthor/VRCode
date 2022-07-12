@@ -1,0 +1,149 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.trigger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Transaction</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * <code>Trigger</code> defines the trigger methods associated with a database. They provide a</color>
+<color=#75715e> * mechanism to track the database definition operations used to manage the lifecycle of the</color>
+<color=#75715e> * database itself, as well as the record operations used to modify the contents of the database.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>WARNING: Only transient triggers are currently supported, and the documention below has not</color>
+<color=#75715e> * yet been updated to reflect this fact. The bottom line is that triggers are currently only useful</color>
+<color=#75715e> * and known to be reliable for maintaining a cache of database information on a replica, where the</color>
+<color=#75715e> * cache is initialized after opening the database (and configuring the trigger), and where only the</color>
+<color=#75715e> * TransactionTrigger.commit method is used. More specifically:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>Although the {@link PersistentTrigger} interface exists, it may not currently be used</color>
+<color=#75715e> *       reliably.</color>
+<color=#75715e> *   <li>Triggers must be configured on each node in a rep group separately, when needed.</color>
+<color=#75715e> *       Specifically, a trigger configured on a master will not be automatically configured and</color>
+<color=#75715e> *       invoked on the replicas in the group.</color>
+<color=#75715e> *   <li>Because only transient triggers are currently supported, trigger methods are only called</color>
+<color=#75715e> *       after opening a database (when configuring the trigger in the DatabaseConfig), and are not</color>
+<color=#75715e> *       called after closing the database.</color>
+<color=#75715e> *   <li>As a result of the above point, triggers are not called during recovery, and therefore</color>
+<color=#75715e> *       cannot be reliably used to perform write operations using the tranaction passed to the</color>
+<color=#75715e> *       trigger method.</color>
+<color=#75715e> *   <li>Also see the warning at the top of ReplicatedDatabaseTrigger.java.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The trigger methods {@link #put put} and {@link #delete delete} are used to track all record</color>
+<color=#75715e> * operations on the database.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A trigger method takes a transaction as its first argument. If the environment is not</color>
+<color=#75715e> * transactional, the argument is null. In all other cases, it's a valid transaction ({@link</color>
+<color=#75715e> * Transaction#isValid() Transaction.isValid} is true) and the trigger can use this transaction to</color>
+<color=#75715e> * make it's own set of accompanying changes.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If the invocation of a trigger results in a runtime exception, the transaction (if one was</color>
+<color=#75715e> * associated with the method) is invalidated and any subsequent triggers associated with the</color>
+<color=#75715e> * operation are skipped. It's the caller's responsibility to handle the exception and abort the</color>
+<color=#75715e> * invalidated transaction. If the exception is thrown during the replay of a transaction on a</color>
+<color=#75715e> * replica in an HA application, the environment is invalidated and a new environment handle must be</color>
+<color=#75715e> * created.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A Trigger is associated with a database via {@link DatabaseConfig#setTriggers</color>
+<color=#75715e> * DatabaseConfig.setTriggers}.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>interface</color> <color=#a6e22e>Trigger</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the name associated with the trigger. All the triggers associated with a particular</color>
+<color=#75715e>   * database must have unique names.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the Trigger's name</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>String</color> <color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the database name associated with this trigger. The JE trigger mechanism invokes this</color>
+<color=#75715e>   * method to ensure that the trigger knows the name it's associated with across a rename of the</color>
+<color=#75715e>   * database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is also invoked each time the trigger is de-serialized, so that the trigger does</color>
+<color=#75715e>   * not need to store this information as part of it's serialized representation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param databaseName the name of the database associated with this trigger</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Trigger</color> <color=#a6e22e>setDatabaseName</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the result of the {@link #setDatabaseName(String)} operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the name of the database associated with this trigger</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>String</color> <color=#a6e22e>getDatabaseName</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/* Trigger lifecycle operations. */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The trigger method invoked when this trigger is added to the database. This is the very first</color>
+<color=#75715e>   * trigger method that is invoked and it's invoked exactly once. If the database is replicated,</color>
+<color=#75715e>   * it's invoked once per node on each node.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the active transaction associated with the operation. The argument is null if the</color>
+<color=#75715e>   *     database is not transactional.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>addTrigger</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The trigger method invoked when this trigger is removed from the database, either as a result</color>
+<color=#75715e>   * of opening the database with a different trigger configuration, or because the database it was</color>
+<color=#75715e>   * associated with it has been removed. In the latter case, this trigger method follows the</color>
+<color=#75715e>   * invocation of the {@link Persistent#remove} remove trigger. If the transaction is committed,</color>
+<color=#75715e>   * there will be no subsequent trigger method invocations for this trigger.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the active transaction associated with the operation. The argument is null if the</color>
+<color=#75715e>   *     database is not transactional.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>removeTrigger</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Record operations. */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The trigger method invoked after a successful put, that is, one that actually results in a</color>
+<color=#75715e>   * modification to the database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If a new entry was inserted, oldData will be null and newData will be non-null. If an</color>
+<color=#75715e>   * existing entry was updated, oldData and newData will be non-null.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the active transaction associated with the operation. The argument is null if the</color>
+<color=#75715e>   *     database is non-transactional.</color>
+<color=#75715e>   * @param key the non-null primary key</color>
+<color=#75715e>   * @param oldData the data before the change, or null if the record did not exist.</color>
+<color=#75715e>   * @param newData the non-null data after the change</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>oldData</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>newData</color><color=#f8f8f2>);</color>
+  <color=#75715e>// TODO: make API provisions for put triggers where we optimize it not to</color>
+  <color=#75715e>// fetch the oldData</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The trigger method invoked after a successful delete, that is, one that actually resulted in a</color>
+<color=#75715e>   * key/value pair being removed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Truncating a database does not invoke this trigger; {@link PersistentTrigger#truncate} is</color>
+<color=#75715e>   * invoked upon truncation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the active transaction associated with the operation. The argument is null if the</color>
+<color=#75715e>   *     database is non-transactional.</color>
+<color=#75715e>   * @param key the non-null primary key</color>
+<color=#75715e>   * @param oldData the non-null data that was associated with the deleted key</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>delete</color><color=#f8f8f2>(</color><color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>oldData</color><color=#f8f8f2>);</color>
+<color=#f8f8f2>}</color>

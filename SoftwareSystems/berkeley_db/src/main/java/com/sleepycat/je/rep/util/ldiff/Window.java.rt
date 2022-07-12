@@ -1,0 +1,191 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.util.ldiff</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Cursor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.LockMode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.OperationStatus</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Adler32</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.security.MessageDigest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.security.NoSuchAlgorithmException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** A rolling window of key/data pairs used by the ldiff algorithm. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Window</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color> <color=#f8f8f2>window</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageDigest</color> <color=#f8f8f2>md</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>windowSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>chksum</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The begin key/data pair of a window. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>beginData</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* The size of a different area. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>diffSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a window of the given size, starting at the next record pointed at by the Cursor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cursor an open cursor on the database being diff'd</color>
+<color=#75715e>   * @param windowSize the number of records to include in the window</color>
+<color=#75715e>   * @throws Exception</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>Window</color><color=#f8f8f2>(</color><color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>windowSize</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>windowSize</color> <color=#f92672>=</color> <color=#f8f8f2>windowSize</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* To compute a MD5 hash for each block. */</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>md</color> <color=#f92672>=</color> <color=#f8f8f2>MessageDigest</color><color=#f8f8f2>.</color><color=#a6e22e>getInstance</color><color=#f8f8f2>(</color><color=#e6db74>"MD5"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchAlgorithmException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>Exception</color><color=#f8f8f2>(</color><color=#e6db74>"MD5 hashes are required for ldiff."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>nextWindow</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Roll a window forward by one key. The rolling checksum is adjusted to account for this move</color>
+<color=#75715e>   * past one key/value pair. Note that the md5 hash associated with the window is computed on</color>
+<color=#75715e>   * demand and is not updated here.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>rollWindow</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyValue</color> <color=#f92672>=</color> <color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>concatByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>removeXi</color> <color=#f92672>=</color> <color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getXi</color><color=#f8f8f2>(</color><color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>keyValue</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>addXi</color> <color=#f92672>=</color> <color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getXi</color><color=#f8f8f2>(</color><color=#f8f8f2>keyValue</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>rollChecksum</color><color=#f8f8f2>(</color><color=#f8f8f2>removeXi</color><color=#f8f8f2>,</color> <color=#f8f8f2>addXi</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>chksum</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>diffSize</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Advance the window to the next block of records and update the rolling checksum. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>nextWindow</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* DatabaseEntry represents the key and data of each record. */</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>window</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#66d9ef>byte</color><color=#f92672>[]></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>diffSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Please pay attention to the check order in while loop. */</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>windowSize</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>beginKey</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>beginData</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>concatByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>setChecksum</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The checksum for the window.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the checksum for the window.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getChecksum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>chksum</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getBeginKey</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>beginKey</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getBeginData</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>beginData</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getDiffSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>diffSize</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Compute the MD5 hash for the window. This is an expensive operation and should be used</color>
+<color=#75715e>   * sparingly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the MD5 for the window.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getMd5Hash</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Reset the Message Digest first. */</color>
+    <color=#f8f8f2>md</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+    <color=#75715e>/* Feed the data into the Message Digest. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>ba</color> <color=#f8f8f2>:</color> <color=#f8f8f2>window</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>md</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>ba</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>md</color><color=#f8f8f2>.</color><color=#a6e22e>digest</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The number of records in the window. The size of the window will match the value set during</color>
+<color=#75715e>   * instantiation, until the end of the database is reached.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the number of records in the window.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * We use the rsync rolling checksum algorithm with the following changes:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1. Each byte (Xi in the tech report) is replaced by a 32 bit Adler checksum of the bytes</color>
+<color=#75715e>   * representing the concatenation of the key/value pair.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2. The value for M is 64 instead of 32 to reduce the chances of false collisions on the</color>
+<color=#75715e>   * rolling checksum, given our adaptation of the original algorithm to logically use 32 bit bytes.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setChecksum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Adler32 to compute the rolling checksum of key/data pair. */</color>
+    <color=#f8f8f2>Adler32</color> <color=#f8f8f2>adler32</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Adler32</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>element</color> <color=#f92672>=</color> <color=#f8f8f2>window</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>adler32</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>adler32</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>element</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>element</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>xi</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>adler32</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color> <color=#75715e>/* It's really 32 bits */</color>
+      <color=#f8f8f2>a</color> <color=#f92672>+=</color> <color=#f8f8f2>xi</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>b</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#f8f8f2>xi</color> <color=#f92672>*</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>i</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>chksum</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>a</color> <color=#f92672>&</color> <color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>MASK_32BIT</color><color=#f8f8f2>)</color> <color=#f92672>|</color> <color=#f8f8f2>((</color><color=#66d9ef>long</color><color=#f8f8f2>)</color> <color=#f8f8f2>b</color> <color=#f92672><<</color> <color=#ae81ff>32</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Update the checksum by removing removeXi and adding addXi, according to the rsync algorithm.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param removeXi the value to remove from the checksum</color>
+<color=#75715e>   * @param addXi the value to add to the checksum</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>rollChecksum</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>removeXi</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>addXi</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>chksum</color> <color=#f92672>-</color> <color=#f8f8f2>removeXi</color> <color=#f92672>+</color> <color=#f8f8f2>addXi</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>chksum</color> <color=#f92672>>></color> <color=#ae81ff>32</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>removeXi</color> <color=#f92672>*</color> <color=#f8f8f2>size</color><color=#f8f8f2>())</color> <color=#f92672>+</color> <color=#f8f8f2>a</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>chksum</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>a</color> <color=#f92672>&</color> <color=#f8f8f2>LDiffUtil</color><color=#f8f8f2>.</color><color=#a6e22e>MASK_32BIT</color><color=#f8f8f2>)</color> <color=#f92672>|</color> <color=#f8f8f2>((</color><color=#66d9ef>long</color><color=#f8f8f2>)</color> <color=#f8f8f2>b</color> <color=#f92672><<</color> <color=#ae81ff>32</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

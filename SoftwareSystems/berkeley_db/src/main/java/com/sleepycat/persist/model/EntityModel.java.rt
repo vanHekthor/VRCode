@@ -1,0 +1,353 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.persist.model</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.EntityStore</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.PrimaryIndex</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.SecondaryIndex</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.impl.Format</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.impl.PersistCatalog</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.impl.RefreshException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawObject</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.persist.raw.RawType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.ClassResolver</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collections</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The base class for classes that provide entity model metadata. An {@link EntityModel} defines</color>
+<color=#75715e> * entity classes, primary keys, secondary keys, and relationships between entities. For each entity</color>
+<color=#75715e> * class that is part of the model, a single {@link PrimaryIndex} object and zero or more {@link</color>
+<color=#75715e> * SecondaryIndex} objects may be accessed via an {@link EntityStore}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The built-in entity model, the {@link AnnotationModel}, is based on annotations that are added</color>
+<color=#75715e> * to entity classes and their key fields. Annotations are used in the examples in this package, and</color>
+<color=#75715e> * it is expected that annotations will normally be used; most readers should therefore skip to the</color>
+<color=#75715e> * {@link AnnotationModel} class. However, a custom entity model class may define its own metadata.</color>
+<color=#75715e> * This can be used to define entity classes and keys using mechanisms other than annotations.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A concrete entity model class should extend this class and implement the {@link</color>
+<color=#75715e> * #getClassMetadata}, {@link #getEntityMetadata} and {@link #getKnownClasses} methods.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This is an abstract class rather than an interface to allow adding capabilities to the model</color>
+<color=#75715e> * at a future date without causing incompatibilities. For example, a method may be added in the</color>
+<color=#75715e> * future for returning new information about the model and subclasses may override this method to</color>
+<color=#75715e> * return the new information. Any new methods will have default implementations that return default</color>
+<color=#75715e> * values, and the use of the new information will be optional.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>EntityModel</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>PersistCatalog</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ClassLoader</color> <color=#f8f8f2>classLoader</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The default constructor for use by subclasses. */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>EntityModel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether the model is associated with an open store.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The {@link #registerClass} method may only be called when the model is not yet open. Certain</color>
+<color=#75715e>   * other methods may only be called when the model is open:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>{@link #convertRawObject}</color>
+<color=#75715e>   *   <li>{@link #getAllRawTypeVersions}</color>
+<color=#75715e>   *   <li>{@link #getRawType}</color>
+<color=#75715e>   *   <li>{@link #getRawTypeVersion}</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return whether the model is associated with an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isOpen</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Registers a persistent class, most importantly, a {@link PersistentProxy} class or entity</color>
+<color=#75715e>   * subclass. Also registers an enum or array class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Any persistent class , enum class or array may be registered in advance of using it, to</color>
+<color=#75715e>   * avoid the overhead of updating the catalog database when an instance of the class is first</color>
+<color=#75715e>   * stored. This method <em>must</em> be called in three cases:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ol></color>
+<color=#75715e>   *   <li>to register all {@link PersistentProxy} classes, and</color>
+<color=#75715e>   *   <li>to register an entity subclass defining a secondary key, if {@link</color>
+<color=#75715e>   *       EntityStore#getSubclassIndex getSubclassIndex} is not called for the subclass, and</color>
+<color=#75715e>   *   <li>to register all new enum or array classes, if the these enum or array classes are unknown</color>
+<color=#75715e>   *       for DPL but will be used in a Converter mutation.</color>
+<color=#75715e>   * </ol></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For example:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre class="code"></color>
+<color=#75715e>   * EntityModel model = new AnnotationModel();</color>
+<color=#75715e>   * model.registerClass(MyProxy.class);</color>
+<color=#75715e>   * model.registerClass(MyEntitySubclass.class);</color>
+<color=#75715e>   * model.registerClass(MyEnum.class);</color>
+<color=#75715e>   * model.registerClass(MyArray[].class);</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * StoreConfig config = new StoreConfig();</color>
+<color=#75715e>   * ...</color>
+<color=#75715e>   * config.setModel(model);</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * EntityStore store = new EntityStore(..., config);</pre></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method must be called before opening a store based on this model.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param persistentClass the class to register.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is associated with an</color>
+<color=#75715e>   *     open store.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the given class is not persistent or has a different class</color>
+<color=#75715e>   *     loader than previously registered classes.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>registerClass</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color> <color=#f8f8f2>persistentClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Store is already open"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>persistentClass</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>ClassMetadata</color> <color=#f8f8f2>meta</color> <color=#f92672>=</color> <color=#f8f8f2>getClassMetadata</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>meta</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>persistentClass</color><color=#f8f8f2>.</color><color=#a6e22e>isEnum</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>persistentClass</color><color=#f8f8f2>.</color><color=#a6e22e>isArray</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Class is not persistent, or is not an enum or array: "</color> <color=#f92672>+</color> <color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   *     Internal access method that should not be used by applications.</color>
+<color=#75715e>   *     <p>This method is used to initialize the model when catalog creation is complete, and</color>
+<color=#75715e>   *     reinitialize it when a Replica refresh occurs. See Store.refresh.</color>
+<color=#75715e>   * @param newCatalog the catalog.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>setCatalog</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>PersistCatalog</color> <color=#f8f8f2>newCatalog</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>catalog</color> <color=#f92672>=</color> <color=#f8f8f2>newCatalog</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   *     Internal access method that should not be used by applications.</color>
+<color=#75715e>   *     <p>This method is called during EntityStore construction, before using the model.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setClassLoader</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassLoader</color> <color=#f8f8f2>loader</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>classLoader</color> <color=#f92672>=</color> <color=#f8f8f2>loader</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   *     Internal access method that should not be used by applications.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>ClassLoader</color> <color=#a6e22e>getClassLoader</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>classLoader</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the metadata for a given persistent class name, including proxy classes and entity</color>
+<color=#75715e>   * classes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the class name.</color>
+<color=#75715e>   * @return the metadata or null if the class is not persistent or does not exist.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>ClassMetadata</color> <color=#a6e22e>getClassMetadata</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the metadata for a given entity class name.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the class name.</color>
+<color=#75715e>   * @return the metadata or null if the class is not an entity class or does not exist.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>EntityMetadata</color> <color=#a6e22e>getEntityMetadata</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the names of all known persistent classes. A type becomes known when an instance of the</color>
+<color=#75715e>   * type is stored for the first time or metadata or type information is queried for a specific</color>
+<color=#75715e>   * class name.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return an unmodifiable set of class names.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getKnownClasses</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the names of all known persistent enum and array classes that may be used to store</color>
+<color=#75715e>   * persistent data. This differs from {@link #getKnownClasses}, which does not return enum and</color>
+<color=#75715e>   * array classes because they have no metadata.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return an unmodifiable set of enum and array class names.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getKnownSpecialClasses</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>emptySet</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the type information for the current version of a given class, or null if the class is</color>
+<color=#75715e>   * not currently persistent.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the name of the current version of the class.</color>
+<color=#75715e>   * @return the RawType.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>RawType</color> <color=#a6e22e>getRawType</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Store is not open"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the type information for a given version of a given class, or null if the given version</color>
+<color=#75715e>   * of the class is unknown.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the name of the latest version of the class.</color>
+<color=#75715e>   * @param version the desired version of the class.</color>
+<color=#75715e>   * @return the RawType.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>RawType</color> <color=#a6e22e>getRawTypeVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>version</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Format</color> <color=#f8f8f2>format</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getLatestVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>format</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>version</color> <color=#f92672>==</color> <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>format</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Store is not open"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns all known versions of type information for a given class name, or null if no persistent</color>
+<color=#75715e>   * version of the class is known.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the name of the latest version of the class.</color>
+<color=#75715e>   * @return an unmodifiable list of types for the given class name in order from most recent to</color>
+<color=#75715e>   *     least recent.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RawType</color><color=#f92672>></color> <color=#a6e22e>getAllRawTypeVersions</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Format</color> <color=#f8f8f2>format</color> <color=#f92672>=</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getLatestVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>format</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RawType</color><color=#f92672>></color> <color=#f8f8f2>list</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>RawType</color><color=#f92672>></color><color=#f8f8f2>();</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>format</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>list</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>format</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>format</color> <color=#f92672>=</color> <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>getPreviousVersion</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>unmodifiableList</color><color=#f8f8f2>(</color><color=#f8f8f2>list</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Store is not open"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns all versions of all known types.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return an unmodifiable list of types.</color>
+<color=#75715e>   * @throws IllegalStateException if this method is called for a model that is not associated with</color>
+<color=#75715e>   *     an open store.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>RawType</color><color=#f92672>></color> <color=#a6e22e>getAllRawTypes</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>catalog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>getAllRawTypes</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Store is not open"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts a given raw object to a live object according to the current class definitions.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The given raw object must conform to the current class definitions. However, the raw type</color>
+<color=#75715e>   * ({@link RawObject#getType}) is allowed to be from a different store, as long as the class names</color>
+<color=#75715e>   * and the value types match. This allows converting raw objects that are read from one store to</color>
+<color=#75715e>   * live objects in another store, for example, in a conversion program.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param raw the RawObject.</color>
+<color=#75715e>   * @return the live object.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#a6e22e>convertRawObject</color><color=#f8f8f2>(</color><color=#f8f8f2>RawObject</color> <color=#f8f8f2>raw</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>convertRawObject</color><color=#f8f8f2>(</color><color=#f8f8f2>raw</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>catalog</color><color=#f8f8f2>.</color><color=#a6e22e>convertRawObject</color><color=#f8f8f2>(</color><color=#f8f8f2>raw</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RefreshException</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Should be called by entity model implementations instead of calling Class.forName whenever</color>
+<color=#75715e>   * loading an application class. This method honors the BDB JE environment's ClassLoader property</color>
+<color=#75715e>   * and uses {@link ClassResolver} to implement the class loading policy.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the class name.</color>
+<color=#75715e>   * @return the Class.</color>
+<color=#75715e>   * @throws ClassNotFoundException if the class is not found.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Class</color> <color=#a6e22e>resolveClass</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>ClassResolver</color><color=#f8f8f2>.</color><color=#a6e22e>resolveClass</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>classLoader</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @param className the class name.</color>
+<color=#75715e>   * @return the Class.</color>
+<color=#75715e>   * @throws ClassNotFoundException if the class is not found.</color>
+<color=#75715e>   * @deprecated use {@link #resolveClass} instead. This method does not use the environment's</color>
+<color=#75715e>   *     ClassLoader property.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Class</color> <color=#a6e22e>classForName</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Class</color><color=#f8f8f2>.</color><color=#a6e22e>forName</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*initialize*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>().</color><color=#a6e22e>getContextClassLoader</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Class</color><color=#f8f8f2>.</color><color=#a6e22e>forName</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

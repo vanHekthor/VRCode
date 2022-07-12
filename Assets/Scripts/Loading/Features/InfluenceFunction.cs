@@ -150,9 +150,10 @@ namespace VRVis.IO.Features {
                     // (in original code also: "or a feature with a value" - but this is not done for numeric options, so we ignore it)
                     double value = 0;
                     bool isNumber = double.TryParse(token, out value);
-                    if (isNumber || token.Equals(numericOption.GetName())) {
-                        queue.Enqueue(token);
-                    }
+                    //if (isNumber || token.Equals(numericOption.GetName())) {
+                    //    queue.Enqueue(token);
+                    //}
+                    queue.Enqueue(token);
                 }
             }
 

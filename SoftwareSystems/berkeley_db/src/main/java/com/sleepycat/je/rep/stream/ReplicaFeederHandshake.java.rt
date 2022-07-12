@@ -1,0 +1,431 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.stream</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.JEVersion</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.NodeType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.Protocol.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.Message</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.ProtocolException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.NamedChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils.Clock</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType.LOG_VERSION_EXPIRE_INFO</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.GROUP_NAME</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.MAX_CLOCK_DELTA</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Implements the Replica side of the handshake protocol between the Replica and the Feeder. The</color>
+<color=#75715e> * FeederReplicaHandshake class takes care of the other side.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @see <a</color>
+<color=#75715e> *     href="https://sleepycat.oracle.com/pmwiki/pmwiki.php?n=JEHomePage.ReplicaFeederHandshake">FeederReplicaHandshake</a></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ReplicaFeederHandshake</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The rep node (server or replica) */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Clock</color> <color=#f8f8f2>clock</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>groupFormatVersion</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NamedChannel</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>feederNameIdPair</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The JE software versions in use by the Feeder */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>FeederJEVersions</color> <color=#f8f8f2>feederJEVersions</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The time to wait between retries to establish node info in the master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MEMBERSHIP_RETRY_SLEEP_MS</color> <color=#f92672>=</color> <color=#ae81ff>60</color> <color=#f92672>*</color> <color=#ae81ff>1000</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MEMBERSHIP_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used during testing: A non-zero value overrides the actual log version.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>volatile</color> <color=#66d9ef>int</color> <color=#f8f8f2>testCurrentLogVersion</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Used during testing: A non-zero value overrides the actual protocol version. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>volatile</color> <color=#66d9ef>int</color> <color=#f8f8f2>testCurrentProtocolVersion</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Fields used to track clock skew wrt the feeder. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>clockDelay</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>clockDelta</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CLOCK_SKEW_MAX_SAMPLE_SIZE</color> <color=#f92672>=</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>CLOCK_SKEW_MIN_DELAY_MS</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxClockDelta</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If the nodeType is an Arbiter, the SNTPRequest message is sent but the clock skew is not</color>
+<color=#75715e>   * checked.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>checkClockSkew</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An instance of this class is created with each new handshake preceding the setting up of a</color>
+<color=#75715e>   * connection.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param conf handshake configuration with feeder</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ReplicaFeederHandshake</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaFeederHandshakeConfig</color> <color=#f8f8f2>conf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>namedChannel</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getNamedChannel</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repGroup</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>groupFormatVersion</color> <color=#f92672>=</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getFormatVersion</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeType</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>replicaNameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>clock</color> <color=#f92672>=</color> <color=#f8f8f2>conf</color><color=#f8f8f2>.</color><color=#a6e22e>getClock</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeType</color><color=#f8f8f2>.</color><color=#a6e22e>isArbiter</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxClockDelta</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>checkClockSkew</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxClockDelta</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>MAX_CLOCK_DELTA</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>checkClockSkew</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the current log version, supporting a test override. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>getCurrentLogVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>testCurrentLogVersion</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>testCurrentLogVersion</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the current log version to a different value, for testing. Specifying {@code 0} reverts to</color>
+<color=#75715e>   * the standard value.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param testLogVersion the testing log version or {@code 0}</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setTestLogVersion</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>testLogVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>testCurrentLogVersion</color> <color=#f92672>=</color> <color=#f8f8f2>testLogVersion</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the current JE version, supporting a test override. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>JEVersion</color> <color=#a6e22e>getCurrentJEVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentJEVersion</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the current protocol version, supporting a test override. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>getCurrentProtocolVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>testCurrentProtocolVersion</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>testCurrentProtocolVersion</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getJEVersionProtocolVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>getCurrentJEVersion</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the current protocol version to a different value, for testing. Specifying {@code 0}</color>
+<color=#75715e>   * reverts to the standard value.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setTestProtocolVersion</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>testProtocolVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>testCurrentProtocolVersion</color> <color=#f92672>=</color> <color=#f8f8f2>testProtocolVersion</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the minJEVersion of the group, or null if unknown (in protocol versions < VERSION_7).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>JEVersion</color> <color=#a6e22e>getFeederMinJEVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>feederJEVersions</color><color=#f8f8f2>.</color><color=#a6e22e>getMinJEVersion</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Negotiates a protocol that both the replica and feeder can support.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the common protocol</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#a6e22e>negotiateProtocol</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>defaultProtocol</color> <color=#f92672>=</color>
+        <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getProtocol</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>,</color> <color=#f8f8f2>clock</color><color=#f8f8f2>,</color> <color=#f8f8f2>getCurrentProtocolVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>groupFormatVersion</color><color=#f8f8f2>);</color>
+    <color=#75715e>/* Send over the latest version protocol this replica can support. */</color>
+    <color=#f8f8f2>defaultProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>defaultProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>ReplicaProtocolVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Returns the highest level the feeder can support, or the version we</color>
+<color=#75715e>     * just sent, if it can support that version</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>defaultProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DuplicateNodeReject</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"A replica with the name: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>replicaNameIdPair</color>
+              <color=#f92672>+</color> <color=#e6db74>" is already active with the Feeder:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>FeederProtocolVersion</color> <color=#f8f8f2>feederVersion</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>FeederProtocolVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>feederNameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Protocol</color> <color=#f8f8f2>configuredProtocol</color> <color=#f92672>=</color>
+        <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>clock</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>getCurrentProtocolVersion</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>groupFormatVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Feeder id: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>"Response message: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>setNameIdPair</color><color=#f8f8f2>(</color><color=#f8f8f2>feederNameIdPair</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Channel Mapping: "</color> <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color> <color=#f92672>+</color> <color=#e6db74>" is at "</color> <color=#f92672>+</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>configuredProtocol</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Include JE version information [#22541] */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>PROTOCOL_VERSION_MISMATCH</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Incompatible protocol versions. "</color>
+              <color=#f92672>+</color> <color=#e6db74>"Protocol version: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" introduced in JE version: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getProtocolJEVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>feederVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>())</color>
+              <color=#f92672>+</color> <color=#e6db74>" requested by the Feeder: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color>
+              <color=#f92672>+</color> <color=#e6db74>" is not supported by this Replica: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>replicaNameIdPair</color>
+              <color=#f92672>+</color> <color=#e6db74>" with protocol version: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>defaultProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" introduced in JE version: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getProtocolJEVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>defaultProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>configuredProtocol</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Executes the replica side of the handshake.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws ProtocolException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Protocol</color> <color=#a6e22e>execute</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replica-feeder handshake start"</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* First negotiate the protocol, then use it. */</color>
+    <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>negotiateProtocol</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Ensure that software versions are compatible. */</color>
+    <color=#f8f8f2>verifyVersions</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Note whether log entries with later log versions need to be converted to log version 12 to</color>
+<color=#75715e>     * work around [#25222].</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>feederJEVersions</color><color=#f8f8f2>.</color><color=#a6e22e>getLogVersion</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LOG_VERSION_EXPIRE_INFO</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>setFixLogVersion12Entries</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now perform the membership information validation part of the</color>
+<color=#75715e>     * handshake</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>verifyMembership</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>checkClockSkew</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replica-feeder "</color> <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" handshake completed."</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Checks software and log version compatibility. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>verifyVersions</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>ReplicaJEVersions</color><color=#f8f8f2>(</color><color=#f8f8f2>getCurrentJEVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>getCurrentLogVersion</color><color=#f8f8f2>()),</color>
+        <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>JEVersionsReject</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* The software version is not compatible with the Feeder. */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>" Feeder: "</color> <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color> <color=#f92672>+</color> <color=#e6db74>". "</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>JEVersionsReject</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>).</color><color=#a6e22e>getErrorMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Save the version information in case we want to use it as the basis</color>
+<color=#75715e>     * for further compatibility checking in future.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>feederJEVersions</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>FeederJEVersions</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>feederJEVersions</color><color=#f8f8f2>.</color><color=#a6e22e>getLogVersion</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#f8f8f2>getCurrentLogVersion</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>" Feeder: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color>
+              <color=#f92672>+</color> <color=#e6db74>". "</color>
+              <color=#f92672>+</color> <color=#e6db74>"Feeder log version "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederJEVersions</color><color=#f8f8f2>.</color><color=#a6e22e>getLogVersion</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" is not known to the replica, whose current log version is "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>getCurrentLogVersion</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Exchange membership information messages. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>verifyMembership</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>GROUP_NAME</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color>
+        <color=#f8f8f2>protocol</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#f8f8f2>NodeGroupInfo</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>groupName</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getUUID</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getHostName</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getPort</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>nodeType</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDesignatedPrimary</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>getCurrentJEVersion</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NodeGroupInfoReject</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>NodeGroupInfoReject</color> <color=#f8f8f2>reject</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NodeGroupInfoReject</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>" Feeder: "</color> <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color> <color=#f92672>+</color> <color=#e6db74>". "</color> <color=#f92672>+</color> <color=#f8f8f2>reject</color><color=#f8f8f2>.</color><color=#a6e22e>getErrorMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NodeGroupInfoOK</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>" Feeder: "</color> <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color> <color=#f92672>+</color> <color=#e6db74>". "</color> <color=#f92672>+</color> <color=#e6db74>"Protocol error. Unexpected response "</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>NodeGroupInfoOK</color> <color=#f8f8f2>nodeGroupInfoOK</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NodeGroupInfoOK</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>hasUnknownUUID</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Correct the initial UUID */</color>
+      <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>setUUID</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeGroupInfoOK</color><color=#f8f8f2>.</color><color=#a6e22e>getUUID</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeType</color><color=#f8f8f2>.</color><color=#a6e22e>hasTransientId</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Update the transient node's ID */</color>
+      <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeGroupInfoOK</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks for clock skew wrt the current feeder. It's important that the clock skew be within an</color>
+<color=#75715e>   * acceptable range so that replica can meet any time based consistency requirements requested by</color>
+<color=#75715e>   * transactions. The intent of this check is to draw the attention of the application or the</color>
+<color=#75715e>   * administrators to the skew, not correct it.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The scheme implemented below is a variation on the scheme used by <a</color>
+<color=#75715e>   * href="http://tools.ietf.org/html/rfc2030">SNTP</a> protocol. The Feeder plays the role of the</color>
+<color=#75715e>   * SNTP server and the replica the role of the client in this situation. The mechanism used here</color>
+<color=#75715e>   * is rough and does not guarantee the detection of a clock skew, especially since it's a one time</color>
+<color=#75715e>   * check done each time a connection is re-established with the Feeder. The clocks could be in</color>
+<color=#75715e>   * sync at the time of this check and drift apart over the lifetime of the connection. It's also</color>
+<color=#75715e>   * for this reason that we do not store the skew value and make compensations using it when</color>
+<color=#75715e>   * determining replica consistency.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Replications nodes should therefore ensure that they are using NTP or a similar time</color>
+<color=#75715e>   * synchronization service to keep time on all the replication nodes in a group in sync.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   * @throws EnvironmentFailureException</color>
+<color=#75715e>   * @throws ProtocolException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkClockSkew</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>isLast</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>sampleCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>do</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkClockSkew</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Iterate until we have a value that's good enough. */</color>
+        <color=#f8f8f2>isLast</color> <color=#f92672>=</color>
+            <color=#f8f8f2>(</color><color=#f92672>++</color><color=#f8f8f2>sampleCount</color> <color=#f92672>>=</color> <color=#f8f8f2>CLOCK_SKEW_MAX_SAMPLE_SIZE</color><color=#f8f8f2>)</color>
+                <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>clockDelay</color> <color=#f92672><=</color> <color=#f8f8f2>CLOCK_SKEW_MIN_DELAY_MS</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>isLast</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>SNTPRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>isLast</color><color=#f8f8f2>),</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>SNTPResponse</color> <color=#f8f8f2>response</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>SNTPResponse</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getDelay</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>clockDelay</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>clockDelay</color> <color=#f92672>=</color> <color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getDelay</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>clockDelta</color> <color=#f92672>=</color> <color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getDelta</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isLast</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>checkClockSkew</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>abs</color><color=#f8f8f2>(</color><color=#f8f8f2>clockDelta</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#f8f8f2>maxClockDelta</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Round trip delay: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>clockDelay</color>
+            <color=#f92672>+</color> <color=#e6db74>" ms. "</color>
+            <color=#f92672>+</color> <color=#e6db74>"Clock delta: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>clockDelta</color>
+            <color=#f92672>+</color> <color=#e6db74>" ms. "</color>
+            <color=#f92672>+</color> <color=#e6db74>"Max permissible delta: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>maxClockDelta</color>
+            <color=#f92672>+</color> <color=#e6db74>" ms."</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>abs</color><color=#f8f8f2>(</color><color=#f8f8f2>clockDelta</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#f8f8f2>maxClockDelta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>HANDSHAKE_ERROR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Clock delta: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>clockDelta</color>
+              <color=#f92672>+</color> <color=#e6db74>" ms. "</color>
+              <color=#f92672>+</color> <color=#e6db74>"between Feeder: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feederNameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" and this Replica exceeds max permissible delta: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>maxClockDelta</color>
+              <color=#f92672>+</color> <color=#e6db74>" ms."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

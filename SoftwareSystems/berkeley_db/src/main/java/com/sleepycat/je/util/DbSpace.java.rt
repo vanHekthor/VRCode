@@ -1,0 +1,530 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.util</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.ExpirationProfile</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.ExpirationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileProcessor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.UtilizationFileReader</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CmdUtil</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.FormatUtil</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Pair</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.PrintStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.text.DateFormat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.text.ParsePosition</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.text.SimpleDateFormat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * DbSpace displays the disk space utilization for an environment.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> * usage: java { com.sleepycat.je.util.DbSpace |</color>
+<color=#75715e> *               -jar je-&lt;version&gt;.jar DbSpace }</color>
+<color=#75715e> *          -h &lt;dir&gt;# environment home directory</color>
+<color=#75715e> *         [-q]     # quiet, print grand totals only</color>
+<color=#75715e> *         [-u]     # sort by average utilization</color>
+<color=#75715e> *         [-d]     # dump file summary details</color>
+<color=#75715e> *         [-r]     # recalculate utilization (expensive)</color>
+<color=#75715e> *         [-R]     # recalculate expired data (expensive)</color>
+<color=#75715e> *         [-s]     # start file number or LSN, in hex</color>
+<color=#75715e> *         [-e]     # end file number or LSN, in hex</color>
+<color=#75715e> *         [-t]     # time for calculating expired data</color>
+<color=#75715e> *                  #   format: yyyy-MM-dd'T'HHZ</color>
+<color=#75715e> *                  #  example: 2016-03-09T22-0800</color>
+<color=#75715e> *         [-V]     # print JE version number</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DbSpace</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DATE_FORMAT</color> <color=#f92672>=</color> <color=#e6db74>"yyyy-MM-dd'T'HHZ"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DATE_EXAMPLE</color> <color=#f92672>=</color> <color=#e6db74>"2016-03-17T22-0800"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>USAGE</color> <color=#f92672>=</color>
+      <color=#e6db74>"usage: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>getJavaCommand</color><color=#f8f8f2>(</color><color=#f8f8f2>DbSpace</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       -h <dir> # environment home directory\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-q]     # quiet, print grand totals only\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-u]     # sort by average utilization\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-d]     # dump file summary details\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-r]     # recalculate utilization (expensive)\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-R]     # recalculate expired data (expensive)\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-s]     # start file number or LSN, in hex\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-e]     # end file number or LSN, in hex\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-t]     # time for calculating expired data,\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"                #   format: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DATE_FORMAT</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"                #  example: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>DATE_EXAMPLE</color>
+          <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+          <color=#f92672>+</color> <color=#e6db74>"       [-V]     # print JE version number"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>main</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbSpace</color> <color=#f8f8f2>space</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbSpace</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>space</color><color=#f8f8f2>.</color><color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setReadOnly</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Environment</color><color=#f8f8f2>(</color><color=#f8f8f2>space</color><color=#f8f8f2>.</color><color=#a6e22e>envHome</color><color=#f8f8f2>,</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>space</color><color=#f8f8f2>.</color><color=#a6e22e>initEnv</color><color=#f8f8f2>(</color><color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>space</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>env</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>printStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>quiet</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sorted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>details</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>doRecalcUtil</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>doRecalcExpired</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>targetTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>DbSpace</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Creates a DbSpace object for calculating utilization using an open Environment. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DbSpace</color><color=#f8f8f2>(</color><color=#f8f8f2>Environment</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>quiet</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>details</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sorted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullEnvImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>),</color> <color=#f8f8f2>quiet</color><color=#f8f8f2>,</color> <color=#f8f8f2>details</color><color=#f8f8f2>,</color> <color=#f8f8f2>sorted</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DbSpace</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>quiet</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>details</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sorted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>initEnv</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>quiet</color> <color=#f92672>=</color> <color=#f8f8f2>quiet</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>details</color> <color=#f92672>=</color> <color=#f8f8f2>details</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>sorted</color> <color=#f92672>=</color> <color=#f8f8f2>sorted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initEnv</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>printUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>msg</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>USAGE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>parseArgs</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>argv</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>argc</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nArgs</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nArgs</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>thisArg</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-q"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>quiet</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-u"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sorted</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-d"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>details</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-r"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>doRecalcUtil</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-R"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>doRecalcExpired</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-V"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>JEVersion</color><color=#f8f8f2>.</color><color=#a6e22e>CURRENT_VERSION</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>exit</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-h"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-h requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-s"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>startLsn</color> <color=#f92672>=</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>readLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-s requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-e"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>finishLsn</color> <color=#f92672>=</color> <color=#f8f8f2>CmdUtil</color><color=#f8f8f2>.</color><color=#a6e22e>readLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-e requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>thisArg</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>"-t"</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>argc</color> <color=#f92672><</color> <color=#f8f8f2>nArgs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>argv</color><color=#f92672>[</color><color=#f8f8f2>argc</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>DateFormat</color> <color=#f8f8f2>format</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>SimpleDateFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>DATE_FORMAT</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>ParsePosition</color> <color=#f8f8f2>pp</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ParsePosition</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>Date</color> <color=#f8f8f2>date</color> <color=#f92672>=</color> <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>parse</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>,</color> <color=#f8f8f2>pp</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>date</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>targetTime</color> <color=#f92672>=</color> <color=#f8f8f2>date</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-t doesn't match format: "</color> <color=#f92672>+</color> <color=#f8f8f2>DATE_FORMAT</color> <color=#f92672>+</color> <color=#e6db74>" example: "</color> <color=#f92672>+</color> <color=#f8f8f2>DATE_EXAMPLE</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-t requires an argument"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envHome</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-h is a required argument"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doRecalcUtil</color> <color=#f92672>&&</color> <color=#f8f8f2>doRecalcExpired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>printUsage</color><color=#f8f8f2>(</color><color=#e6db74>"-r and -R cannot both be used"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the recalculation property, which if true causes a more expensive recalculation of</color>
+<color=#75715e>   * utilization to be performed for debugging purposes. This property is false by default.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setRecalculate</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>recalc</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>doRecalcUtil</color> <color=#f92672>=</color> <color=#f8f8f2>recalc</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the start file number, which is a lower bound on the range of files for which utilization</color>
+<color=#75715e>   * is reported and (optionally) recalculated. By default there is no lower bound.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setStartFile</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>startFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>startLsn</color> <color=#f92672>=</color> <color=#f8f8f2>startFile</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the ending file number, which is an upper bound on the range of files for which</color>
+<color=#75715e>   * utilization is reported and (optionally) recalculated. By default there is no upper bound.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setEndFile</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>endFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>finishLsn</color> <color=#f92672>=</color> <color=#f8f8f2>endFile</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Sets the time for calculating expired data. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTime</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>time</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>targetTime</color> <color=#f92672>=</color> <color=#f8f8f2>time</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Calculates utilization and prints a report to the given output stream. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>out</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>startFile</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>startLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>startLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>finishFile</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>finishLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>finishLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#f8f8f2>map</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>getFileSummaryMap</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>).</color><color=#a6e22e>subMap</color><color=#f8f8f2>(</color><color=#f8f8f2>startFile</color><color=#f8f8f2>,</color> <color=#f8f8f2>finishFile</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>().</color><color=#a6e22e>removeAll</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCleaner</color><color=#f8f8f2>().</color><color=#a6e22e>getFileSelector</color><color=#f8f8f2>().</color><color=#a6e22e>getInProgressFiles</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#f8f8f2>recalcMap</color> <color=#f92672>=</color>
+        <color=#f8f8f2>doRecalcUtil</color>
+            <color=#f92672>?</color> <color=#f8f8f2>UtilizationFileReader</color><color=#f8f8f2>.</color><color=#a6e22e>calcFileSummaryMap</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>)</color>
+            <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ExpirationProfile</color> <color=#f8f8f2>expProfile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExpirationProfile</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationProfile</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>expProfile</color><color=#f8f8f2>.</color><color=#a6e22e>refresh</color><color=#f8f8f2>(</color><color=#f8f8f2>targetTime</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>fileIndex</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Summary</color> <color=#f8f8f2>totals</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Summary</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Summary</color><color=#f92672>[]</color> <color=#f8f8f2>summaries</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>quiet</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summaries</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Summary</color><color=#f92672>[</color><color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>fs</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>recalcFs</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcMap</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>recalcFs</color> <color=#f92672>=</color> <color=#f8f8f2>recalcMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>expiredSize</color> <color=#f92672>=</color> <color=#f8f8f2>expProfile</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiredBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>recalcExpiredSize</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expTracker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doRecalcExpired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>FileProcessor</color> <color=#f8f8f2>fileProcessor</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCleaner</color><color=#f8f8f2>().</color><color=#a6e22e>createProcessor</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>expTracker</color> <color=#f92672>=</color> <color=#f8f8f2>fileProcessor</color><color=#f8f8f2>.</color><color=#a6e22e>countExpiration</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>recalcExpiredSize</color> <color=#f92672>=</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiredBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>targetTime</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>Summary</color> <color=#f8f8f2>summary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Summary</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>fs</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalcFs</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalcExpiredSize</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>summaries</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>summaries</color><color=#f92672>[</color><color=#f8f8f2>fileIndex</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>summary</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>details</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"File 0x"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" expired: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>expiredSize</color>
+                <color=#f92672>+</color> <color=#e6db74>" histogram: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>expProfile</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>fs</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcMap</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Recalc util 0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>recalcFs</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expTracker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Recalc expiration 0x"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color>
+                  <color=#f92672>+</color> <color=#e6db74>" recalcExpired: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>recalcExpiredSize</color>
+                  <color=#f92672>+</color> <color=#e6db74>" recalcHistogram: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>totals</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>summary</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>fileIndex</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>details</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>doRecalcExpired</color>
+            <color=#f92672>?</color> <color=#f8f8f2>Summary</color><color=#f8f8f2>.</color><color=#a6e22e>RECALC_EXPIRED_HEADER</color>
+            <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>doRecalcUtil</color> <color=#f92672>?</color> <color=#f8f8f2>Summary</color><color=#f8f8f2>.</color><color=#a6e22e>RECALC_HEADER</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Summary</color><color=#f8f8f2>.</color><color=#a6e22e>HEADER</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>summaries</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>sorted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>sort</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>summaries</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#f8f8f2>Summary</color><color=#f92672>></color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>Summary</color> <color=#f8f8f2>s1</color><color=#f8f8f2>,</color> <color=#f8f8f2>Summary</color> <color=#f8f8f2>s2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>return</color> <color=#f8f8f2>s1</color><color=#f8f8f2>.</color><color=#a6e22e>avgUtilization</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>s2</color><color=#f8f8f2>.</color><color=#a6e22e>avgUtilization</color><color=#f8f8f2>();</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>});</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Summary</color> <color=#f8f8f2>summary</color> <color=#f8f8f2>:</color> <color=#f8f8f2>summaries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>totals</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totals</color><color=#f8f8f2>.</color><color=#a6e22e>expiredSize</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>DateFormat</color> <color=#f8f8f2>format</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>SimpleDateFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>DATE_FORMAT</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"%nAs of %s, %,d kB are expired, resulting in the%n"</color>
+              <color=#f92672>+</color> <color=#e6db74>"differences between minimum and maximum utilization.%n"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>format</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>targetTime</color><color=#f8f8f2>),</color> <color=#f8f8f2>totals</color><color=#f8f8f2>.</color><color=#a6e22e>expiredSize</color> <color=#f92672>/</color> <color=#ae81ff>1024</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>>></color> <color=#f8f8f2>reservedFileInfo</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileProtector</color><color=#f8f8f2>().</color><color=#a6e22e>getReservedFileInfo</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>reservedSize</color> <color=#f92672>=</color> <color=#f8f8f2>reservedFileInfo</color><color=#f8f8f2>.</color><color=#a6e22e>first</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>reservedFiles</color> <color=#f92672>=</color> <color=#f8f8f2>reservedFileInfo</color><color=#f8f8f2>.</color><color=#a6e22e>second</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>printReservedFiles</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>quiet</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"%n%,d kB are used by additional reserved files%s%n"</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>reservedSize</color> <color=#f92672>/</color> <color=#ae81ff>1024</color><color=#f8f8f2>,</color> <color=#f8f8f2>printReservedFiles</color> <color=#f92672>?</color> <color=#e6db74>":"</color> <color=#f8f8f2>:</color> <color=#e6db74>"."</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>printReservedFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>FormatUtil</color><color=#f8f8f2>.</color><color=#a6e22e>asHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>Summary</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>HEADER</color> <color=#f92672>=</color>
+        <color=#e6db74>"                      % Utilized\n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"  File    Size (kB)  Avg  Min  Max  \n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"--------  ---------  ---- ---  ---"</color><color=#f8f8f2>;</color>
+    <color=#75715e>// 12345678  123456789  123  123  123</color>
+    <color=#75715e>//         12         12   12   12</color>
+    <color=#75715e>// TOTALS:</color>
+
+    <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RECALC_HEADER</color> <color=#f92672>=</color>
+        <color=#e6db74>"                      % Utilized    Recalculated\n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"  File    Size (kB)  Avg  Min  Max  Avg  Min  Max\n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"--------  ---------  ---  ---  ---  ---  ---  ---"</color><color=#f8f8f2>;</color>
+    <color=#75715e>// 12345678  123456789  123  123  123  123  123  123</color>
+    <color=#75715e>//         12         12   12   12   12   12   12</color>
+    <color=#75715e>// TOTALS:</color>
+
+    <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RECALC_EXPIRED_HEADER</color> <color=#f92672>=</color>
+        <color=#e6db74>"                      % Utilized    w/Expiration\n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"  File    Size (kB)  Avg  Min  Max  Recalculated\n"</color>
+            <color=#f92672>+</color> <color=#e6db74>"--------  ---------  ---  ---  ---  ------------"</color><color=#f8f8f2>;</color>
+    <color=#75715e>// 12345678  123456789  123  123  123      123</color>
+    <color=#75715e>//         12         12   12   12   123456</color>
+    <color=#75715e>// TOTALS:</color>
+
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>recalcObsoleteSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>recalcExpiredSize</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Summary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#f8f8f2>Summary</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>summary</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>recalcSummary</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>recalcExpiredSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>totalSize</color> <color=#f92672>=</color> <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>obsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>summary</color><color=#f8f8f2>.</color><color=#a6e22e>getObsoleteSize</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>recalcObsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>recalcSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getObsoleteSize</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>expiredSize</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>expiredSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>recalcExpiredSize</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcExpiredSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>Summary</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>totalSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>obsoleteSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>recalcObsoleteSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>recalcObsoleteSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>expiredSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>expiredSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>recalcExpiredSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>recalcExpiredSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>out</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>.</color><color=#a6e22e>longValue</color><color=#f8f8f2>()),</color> <color=#ae81ff>8</color><color=#f8f8f2>,</color> <color=#e6db74>'0'</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>" TOTALS "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>kb</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color> <color=#f92672>/</color> <color=#ae81ff>1024</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>kb</color><color=#f8f8f2>),</color> <color=#ae81ff>9</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>avgUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>minUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>maxUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doRecalcExpired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"      "</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>expRecalcUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doRecalcUtil</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>avgRecalcUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>minRecalcUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#e6db74>"  "</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>maxRecalcUtilization</color><color=#f8f8f2>()),</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color> <color=#e6db74>' '</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>avgUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>minUtilization</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>maxUtilization</color><color=#f8f8f2>())</color> <color=#f92672>/</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>minUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>minUtilization</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>maxUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>maxUtilization</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>expRecalcUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>minUtilization</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalcExpiredSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>avgRecalcUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>minRecalcUtilization</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>maxRecalcUtilization</color><color=#f8f8f2>())</color> <color=#f92672>/</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>minRecalcUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>minUtilization</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcObsoleteSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#a6e22e>maxRecalcUtilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>maxUtilization</color><color=#f8f8f2>(</color><color=#f8f8f2>recalcObsoleteSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>minUtilization</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>expired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>utilization</color><color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsolete</color> <color=#f92672>+</color> <color=#f8f8f2>expired</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>),</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>maxUtilization</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>expired</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>utilization</color><color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#f8f8f2>expired</color><color=#f8f8f2>),</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>PrintStream</color> <color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>val</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>digits</color><color=#f8f8f2>,</color> <color=#66d9ef>char</color> <color=#f8f8f2>padChar</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>padSize</color> <color=#f92672>=</color> <color=#f8f8f2>digits</color> <color=#f92672>-</color> <color=#f8f8f2>val</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>padSize</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>padChar</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>print</color><color=#f8f8f2>(</color><color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

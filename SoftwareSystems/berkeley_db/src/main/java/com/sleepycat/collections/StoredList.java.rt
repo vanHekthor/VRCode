@@ -1,0 +1,656 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.collections</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntityBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.EntryBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.RecordNumberBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.RuntimeExceptionWrapper</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.keyrange.KeyRangeException</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collection</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ListIterator</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> *</color>
+<color=#75715e> * <!-- begin JE only --></color>
+<color=#75715e> *</color>
+<color=#75715e> * @hidden</color>
+<color=#75715e> *     <!-- end JE only --></color>
+<color=#75715e> *     A List view of a {@link Database}.</color>
+<color=#75715e> *     <p>For all stored lists the keys of the underlying Database must have record number format,</color>
+<color=#75715e> *     and therefore the store or index must be a RECNO, RECNO-RENUMBER, QUEUE, or BTREE-RECNUM</color>
+<color=#75715e> *     database. Only RECNO-RENUMBER allows true list behavior where record numbers are renumbered</color>
+<color=#75715e> *     following the position of an element that is added or removed. For the other access methods</color>
+<color=#75715e> *     (RECNO, QUEUE, and BTREE-RECNUM), stored Lists are most useful as read-only collections where</color>
+<color=#75715e> *     record numbers are not required to be sequential.</color>
+<color=#75715e> *     <p>In addition to the standard List methods, this class provides the following methods for</color>
+<color=#75715e> *     stored lists only. Note that the use of these methods is not compatible with the standard</color>
+<color=#75715e> *     Java collections interface.</color>
+<color=#75715e> *     <ul></color>
+<color=#75715e> *       <li>{@link #append(Object)}</color>
+<color=#75715e> *     </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>StoredList</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#66d9ef>extends</color> <color=#f8f8f2>StoredCollection</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>EntryBinding</color> <color=#f8f8f2>DEFAULT_KEY_BINDING</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexKeyBinding</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>baseIndex</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isSubList</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a list view of a {@link Database}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database is the Database underlying the new collection.</color>
+<color=#75715e>   * @param valueBinding is the binding used to translate between value buffers and value objects.</color>
+<color=#75715e>   * @param writeAllowed is true to create a read-write collection or false to create a read-only</color>
+<color=#75715e>   *     collection.</color>
+<color=#75715e>   * @throws IllegalArgumentException if formats are not consistently defined or a parameter is</color>
+<color=#75715e>   *     invalid.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StoredList</color><color=#f8f8f2>(</color><color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>DataView</color><color=#f8f8f2>(</color><color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>DEFAULT_KEY_BINDING</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a list entity view of a {@link Database}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database is the Database underlying the new collection.</color>
+<color=#75715e>   * @param valueEntityBinding is the binding used to translate between key/value buffers and entity</color>
+<color=#75715e>   *     value objects.</color>
+<color=#75715e>   * @param writeAllowed is true to create a read-write collection or false to create a read-only</color>
+<color=#75715e>   *     collection.</color>
+<color=#75715e>   * @throws IllegalArgumentException if formats are not consistently defined or a parameter is</color>
+<color=#75715e>   *     invalid.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StoredList</color><color=#f8f8f2>(</color><color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>valueEntityBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>DataView</color><color=#f8f8f2>(</color><color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>DEFAULT_KEY_BINDING</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueEntityBinding</color><color=#f8f8f2>,</color> <color=#f8f8f2>writeAllowed</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a list view of a {@link Database} with a {@link PrimaryKeyAssigner}. Writing is allowed</color>
+<color=#75715e>   * for the created list.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database is the Database underlying the new collection.</color>
+<color=#75715e>   * @param valueBinding is the binding used to translate between value buffers and value objects.</color>
+<color=#75715e>   * @param keyAssigner is used by the {@link #add} and {@link #append} methods to assign primary</color>
+<color=#75715e>   *     keys.</color>
+<color=#75715e>   * @throws IllegalArgumentException if formats are not consistently defined or a parameter is</color>
+<color=#75715e>   *     invalid.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StoredList</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>,</color> <color=#f8f8f2>PrimaryKeyAssigner</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>DataView</color><color=#f8f8f2>(</color><color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>DEFAULT_KEY_BINDING</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a list entity view of a {@link Database} with a {@link PrimaryKeyAssigner}. Writing is</color>
+<color=#75715e>   * allowed for the created list.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database is the Database underlying the new collection.</color>
+<color=#75715e>   * @param valueEntityBinding is the binding used to translate between key/value buffers and entity</color>
+<color=#75715e>   *     value objects.</color>
+<color=#75715e>   * @param keyAssigner is used by the {@link #add} and {@link #append} methods to assign primary</color>
+<color=#75715e>   *     keys.</color>
+<color=#75715e>   * @throws IllegalArgumentException if formats are not consistently defined or a parameter is</color>
+<color=#75715e>   *     invalid.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StoredList</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntityBinding</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>valueEntityBinding</color><color=#f8f8f2>,</color> <color=#f8f8f2>PrimaryKeyAssigner</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>DataView</color><color=#f8f8f2>(</color><color=#f8f8f2>database</color><color=#f8f8f2>,</color> <color=#f8f8f2>DEFAULT_KEY_BINDING</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueEntityBinding</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyAssigner</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#a6e22e>StoredList</color><color=#f8f8f2>(</color><color=#f8f8f2>DataView</color> <color=#f8f8f2>view</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>view</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>baseIndex</color> <color=#f92672>=</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>isSubList</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts the specified element at the specified position in this list (optional operation). This</color>
+<color=#75715e>   * method conforms to the {@link List#add(int, Object)} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is a sublist, or if the collection is</color>
+<color=#75715e>   *     indexed, or if the collection is read-only, or if the RECNO-RENUMBER access method was not</color>
+<color=#75715e>   *     used.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkIterAddAllowed</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>doAutoCommit</color> <color=#f92672>=</color> <color=#f8f8f2>beginAutoCommit</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>view</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putBefore</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>commitAutoCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>handleException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Appends the specified element to the end of this list (optional operation). This method</color>
+<color=#75715e>   * conforms to the {@link List#add(Object)} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is a sublist, or if the collection is</color>
+<color=#75715e>   *     indexed, or if the collection is read-only, or if the RECNO-RENUMBER access method was not</color>
+<color=#75715e>   *     used.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkIterAddAllowed</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>doAutoCommit</color> <color=#f92672>=</color> <color=#f8f8f2>beginAutoCommit</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>commitAutoCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>handleException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Appends a given value returning the newly assigned index. If a {@link</color>
+<color=#75715e>   * com.sleepycat.collections.PrimaryKeyAssigner} is associated with Store for this list, it will</color>
+<color=#75715e>   * be used to assigned the returned index. Otherwise the Store must be a QUEUE or RECNO database</color>
+<color=#75715e>   * and the next available record number is assigned as the index. This method does not exist in</color>
+<color=#75715e>   * the standard {@link List} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param value the value to be appended.</color>
+<color=#75715e>   * @return the assigned index.</color>
+<color=#75715e>   *     <!-- begin JE only --></color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is indexed, or if the collection is</color>
+<color=#75715e>   *     read-only, or if the Store has no {@link com.sleepycat.collections.PrimaryKeyAssigner} and</color>
+<color=#75715e>   *     is not a QUEUE or RECNO database.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>E</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>doAutoCommit</color> <color=#f92672>=</color> <color=#f8f8f2>beginAutoCommit</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Object</color><color=#f92672>[</color><color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>commitAutoCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>Number</color><color=#f8f8f2>)</color> <color=#f8f8f2>key</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>).</color><color=#a6e22e>intValue</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>handleException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>checkIterAddAllowed</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>UnsupportedOperationException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isSubList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Cannot add to subList"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>keysRenumbered</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// RECNO-RENUM</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Requires renumbered keys"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Inserts all of the elements in the specified collection into this list at the specified</color>
+<color=#75715e>   * position (optional operation). This method conforms to the {@link List#addAll(int, Collection)}</color>
+<color=#75715e>   * interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is a sublist, or if the collection is</color>
+<color=#75715e>   *     indexed, or if the collection is read-only, or if the RECNO-RENUMBER access method was not</color>
+<color=#75715e>   *     used.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>Collection</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>coll</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>checkIterAddAllowed</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Iterator</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>E</color><color=#f92672>></color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>doAutoCommit</color> <color=#f92672>=</color> <color=#f8f8f2>beginAutoCommit</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>storedOrExternalIterator</color><color=#f8f8f2>(</color><color=#f8f8f2>coll</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>view</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putBefore</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>StoredIterator</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>commitAutoCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>StoredIterator</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>handleException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>,</color> <color=#f8f8f2>doAutoCommit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if this list contains the specified element. This method conforms to the {@link</color>
+<color=#75715e>   * List#contains} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>containsValue</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the element at the specified position in this list. This method conforms to the {@link</color>
+<color=#75715e>   * List#get} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>getValue</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the index in this list of the first occurrence of the specified element, or -1 if this</color>
+<color=#75715e>   * list does not contain this element. This method conforms to the {@link List#indexOf} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>indexOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>indexOf</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the index in this list of the last occurrence of the specified element, or -1 if this</color>
+<color=#75715e>   * list does not contain this element. This method conforms to the {@link List#lastIndexOf}</color>
+<color=#75715e>   * interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>lastIndexOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>indexOf</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>indexOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>findFirst</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataCursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DataCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>view</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>findValue</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>,</color> <color=#f8f8f2>findFirst</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color>
+          <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentRecordNumber</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>StoredContainer</color><color=#f8f8f2>.</color><color=#a6e22e>convertException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>int</color> <color=#a6e22e>getIndexOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a list iterator of the elements in this list (in proper sequence). The iterator will be</color>
+<color=#75715e>   * read-only if the collection is read-only. This method conforms to the {@link</color>
+<color=#75715e>   * List#listIterator()} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For information on cursor stability and iterator block size, see {@link #iterator()}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a {@link ListIterator} for this collection.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   * @see #isWriteAllowed</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ListIterator</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>listIterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>blockIterator</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a list iterator of the elements in this list (in proper sequence), starting at the</color>
+<color=#75715e>   * specified position in this list. The iterator will be read-only if the collection is read-only.</color>
+<color=#75715e>   * This method conforms to the {@link List#listIterator(int)} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For information on cursor stability and iterator block size, see {@link #iterator()}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a {@link ListIterator} for this collection.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   * @see #isWriteAllowed</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ListIterator</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>listIterator</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>BlockIterator</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>blockIterator</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>.</color><color=#a6e22e>moveToIndex</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>i</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexOutOfBoundsException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Removes the element at the specified position in this list (optional operation). This method</color>
+<color=#75715e>   * conforms to the {@link List#remove(int)} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is a sublist, or if the collection is</color>
+<color=#75715e>   *     read-only.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Object</color><color=#f92672>[]</color> <color=#f8f8f2>oldVal</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Object</color><color=#f92672>[</color><color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>removeKey</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#f8f8f2>oldVal</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>oldVal</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexOutOfBoundsException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Removes the first occurrence in this list of the specified element (optional operation). This</color>
+<color=#75715e>   * method conforms to the {@link List#remove(Object)} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is a sublist, or if the collection is</color>
+<color=#75715e>   *     read-only.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>removeValue</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Replaces the element at the specified position in this list with the specified element</color>
+<color=#75715e>   * (optional operation). This method conforms to the {@link List#set} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#writeFailures">Write Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws UnsupportedOperationException if the collection is indexed, or if the collection is</color>
+<color=#75715e>   *     read-only.</color>
+<color=#75715e>   * @throws IllegalArgumentException if an entity value binding is used and the primary key of the</color>
+<color=#75715e>   *     value given is different than the existing stored primary key.</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>E</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>E</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>putKeyValue</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexOutOfBoundsException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a view of the portion of this list between the specified fromIndex, inclusive, and</color>
+<color=#75715e>   * toIndex, exclusive. Note that add() and remove() may not be called for the returned sublist.</color>
+<color=#75715e>   * This method conforms to the {@link List#subList} interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>E</color><color=#f92672>></color> <color=#a6e22e>subList</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>fromIndex</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>toIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fromIndex</color> <color=#f92672><</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>fromIndex</color> <color=#f92672>></color> <color=#f8f8f2>toIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexOutOfBoundsException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>fromIndex</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>newBaseIndex</color> <color=#f92672>=</color> <color=#f8f8f2>baseIndex</color> <color=#f92672>+</color> <color=#f8f8f2>fromIndex</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>StoredList</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>subView</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>fromIndex</color><color=#f8f8f2>),</color>
+              <color=#66d9ef>true</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>toIndex</color><color=#f8f8f2>),</color>
+              <color=#66d9ef>false</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>IndexKeyBinding</color><color=#f8f8f2>(</color><color=#f8f8f2>newBaseIndex</color><color=#f8f8f2>)),</color>
+          <color=#f8f8f2>newBaseIndex</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>KeyRangeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IndexOutOfBoundsException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>StoredContainer</color><color=#f8f8f2>.</color><color=#a6e22e>convertException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Compares the specified object with this list for equality. A value comparison is performed by</color>
+<color=#75715e>   * this method and the stored values are compared rather than calling the equals() method of each</color>
+<color=#75715e>   * element. This method conforms to the {@link List#equals} interface.</color>
+<color=#75715e>   * <!-- begin JE only --></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws OperationFailureException if one of the <a</color>
+<color=#75715e>   *     href="../je/OperationFailureException.html#readFailures">Read Operation Failures</a></color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   *     <!-- end JE only --></color>
+<color=#75715e>   * @throws RuntimeExceptionWrapper if a checked exception is thrown, including a {@code</color>
+<color=#75715e>   *     DatabaseException} on BDB (C Edition).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>List</color><color=#f8f8f2>))</color> <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>List</color> <color=#f8f8f2>otherList</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f8f8f2>)</color> <color=#f8f8f2>other</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>StoredIterator</color> <color=#f8f8f2>i1</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>ListIterator</color> <color=#f8f8f2>i2</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>i1</color> <color=#f92672>=</color> <color=#f8f8f2>storedIterator</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>i2</color> <color=#f92672>=</color> <color=#f8f8f2>storedOrExternalListIterator</color><color=#f8f8f2>(</color><color=#f8f8f2>otherList</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>i1</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>i2</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>i1</color><color=#f8f8f2>.</color><color=#a6e22e>nextIndex</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>i2</color><color=#f8f8f2>.</color><color=#a6e22e>nextIndex</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>Object</color> <color=#f8f8f2>o1</color> <color=#f92672>=</color> <color=#f8f8f2>i1</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>Object</color> <color=#f8f8f2>o2</color> <color=#f92672>=</color> <color=#f8f8f2>i2</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>o1</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>o2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>o1</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o2</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f92672>!</color><color=#f8f8f2>i2</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>StoredIterator</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>(</color><color=#f8f8f2>i1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>StoredIterator</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>(</color><color=#f8f8f2>i2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a StoredIterator if the given collection is a StoredCollection, else returns a</color>
+<color=#75715e>   * regular/external ListIterator. The iterator returned should be closed with the static method</color>
+<color=#75715e>   * StoredIterator.close(Iterator).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>ListIterator</color> <color=#a6e22e>storedOrExternalListIterator</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color> <color=#f8f8f2>list</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>list</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>StoredCollection</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>StoredCollection</color><color=#f8f8f2>)</color> <color=#f8f8f2>list</color><color=#f8f8f2>).</color><color=#a6e22e>storedIterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>list</color><color=#f8f8f2>.</color><color=#a6e22e>listIterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Add this in to keep FindBugs from whining at us about implementing</color>
+<color=#75715e>   * equals(), but not hashCode().</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>hashCode</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>E</color> <color=#a6e22e>makeIteratorData</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>BaseIterator</color> <color=#f8f8f2>iterator</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>keyEntry</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>priKeyEntry</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>valueEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>E</color><color=#f8f8f2>)</color> <color=#f8f8f2>view</color><color=#f8f8f2>.</color><color=#a6e22e>makeValue</color><color=#f8f8f2>(</color><color=#f8f8f2>priKeyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>valueEntry</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>boolean</color> <color=#a6e22e>hasValues</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>IndexKeyBinding</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RecordNumberBinding</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>IndexKeyBinding</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>baseIndex</color> <color=#f92672>=</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Long</color> <color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>entryToRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>objectToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>object</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>recordNumberToEntry</color><color=#f8f8f2>(((</color><color=#f8f8f2>Number</color><color=#f8f8f2>)</color> <color=#f8f8f2>object</color><color=#f8f8f2>).</color><color=#a6e22e>intValue</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>baseIndex</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

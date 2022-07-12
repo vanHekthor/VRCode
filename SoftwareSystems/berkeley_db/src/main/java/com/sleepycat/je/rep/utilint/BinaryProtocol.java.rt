@@ -1,0 +1,1070 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.StatsConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.ReplicationConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.utilint.StringUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.Constructor</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.lang.reflect.InvocationTargetException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.ReadableByteChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.WritableByteChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Arrays</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Formatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocolStatDefinition.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Supplies the basic infrastructure for BinaryProtocols used to exchange messages by the</color>
+<color=#75715e> * replications stream and during network based restore operations.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that this class and its subclasses are not synchronized. There must be one instance of</color>
+<color=#75715e> * this class per thread of control.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>IMPORTANT: Please avoid all uses of ByteBuffer.get/put when serializing message fields of</color>
+<color=#75715e> * types: long, int and short to avoid byte order issues. Use LogUtils.read/write methods instead,</color>
+<color=#75715e> * since they use a single canonical byte-independent representation.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>BinaryProtocol</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MESSAGE_HEADER_SIZE</color> <color=#f92672>=</color>
+      <color=#ae81ff>2</color> <color=#75715e>/* Message op id (short) */</color> <color=#f92672>+</color> <color=#ae81ff>4</color> <color=#75715e>/* message size (int) */</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Buffer reused to process the header of every message. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>header</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>((</color><color=#f8f8f2>MESSAGE_HEADER_SIZE</color><color=#f8f8f2>));</color>
+
+  <color=#75715e>/* The version as implemented by the actual code. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>codeVersion</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The version that this instance is actually configured to use. */</color>
+  <color=#75715e>/* It's not final to facilitate testing */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#f8f8f2>configuredVersion</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Identifies the node using this protocol. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Maps the message op id to its canonical descriptor instance. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Short</color><color=#f8f8f2>,</color> <color=#f8f8f2>MessageOp</color><color=#f92672>></color> <color=#f8f8f2>ops</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Short</color><color=#f8f8f2>,</color> <color=#f8f8f2>MessageOp</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>predefinedMessageCount</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The max message size which will be accepted. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxMessageSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Whether to use UTF8 or default encoding for Strings. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>useStringDefaultEncoding</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The predefined messages. IMPORTANT: Note that predefined message ops</color>
+<color=#75715e>   * start at 1000. to stay out of the way of subtype ops.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>CLIENT_VERSION</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>((</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#ae81ff>1001</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClientVersion</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>SERVER_VERSION</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>((</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#ae81ff>1002</color><color=#f8f8f2>,</color> <color=#f8f8f2>ServerVersion</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>INCOMPATIBLE_VERSION</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>((</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#ae81ff>1003</color><color=#f8f8f2>,</color> <color=#f8f8f2>IncompatibleVersion</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>PROTOCOL_ERROR</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f8f8f2>((</color><color=#66d9ef>short</color><color=#f8f8f2>)</color> <color=#ae81ff>1004</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolError</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Statistics definition. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nReadNanos</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nWriteNanos</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBytesRead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessagesRead</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBytesWritten</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessagesWritten</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessagesBatched</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessageBatches</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nEntriesWrittenOldVersion</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>Formatter</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a Protocol object configured that implements the specified (supported) version.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param codeVersion the version actually implemented by the protocol.</color>
+<color=#75715e>   * @param configuredVersion the version of the protocol that must be implemented/simulated by this</color>
+<color=#75715e>   *     protocol when communicating with the recipient.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>BinaryProtocol</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>codeVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>configuredVersion</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>codeVersion</color> <color=#f92672>=</color> <color=#f8f8f2>codeVersion</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>configuredVersion</color> <color=#f92672>=</color> <color=#f8f8f2>configuredVersion</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLoggerFormatterNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>formatter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationFormatter</color><color=#f8f8f2>(</color><color=#f8f8f2>nameIdPair</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>stats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>BinaryProtocolStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>BinaryProtocolStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nReadNanos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_READ_NANOS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nWriteNanos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_WRITE_NANOS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBytesRead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_BYTES_READ</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessagesRead</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MESSAGES_READ</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBytesWritten</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_BYTES_WRITTEN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessagesWritten</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MESSAGES_WRITTEN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessagesBatched</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MESSAGES_BATCHED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessageBatches</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MESSAGE_BATCHES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nEntriesWrittenOldVersion</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_ENTRIES_WRITTEN_OLD_VERSION</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Initialize with the pre-defined protocol messages. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>MessageOp</color> <color=#f8f8f2>op</color> <color=#f8f8f2>:</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>MessageOp</color><color=#f92672>[]</color> <color=#f8f8f2>{</color><color=#f8f8f2>CLIENT_VERSION</color><color=#f8f8f2>,</color> <color=#f8f8f2>SERVER_VERSION</color><color=#f8f8f2>,</color> <color=#f8f8f2>INCOMPATIBLE_VERSION</color><color=#f8f8f2>,</color> <color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>})</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>op</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Duplicate op: "</color> <color=#f92672>+</color> <color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>predefinedMessageCount</color> <color=#f92672>=</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>mMSz</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_MESSAGE_SIZE</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>maxMessageSize</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>mMSz</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>().</color><color=#a6e22e>getMaxMemory</color><color=#f8f8f2>()</color> <color=#f92672>>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>mMSz</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>useStringDefaultEncoding</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>PROTOCOL_OLD_STRING_ENCODING</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Some unit tests pass in null EnvImpl. */</color>
+      <color=#f8f8f2>maxMessageSize</color> <color=#f92672>=</color> <color=#ae81ff>1</color> <color=#f92672><<</color> <color=#ae81ff>20</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>useStringDefaultEncoding</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Must be invoked after the constructor has completed, to get around</color>
+<color=#75715e>   * base/subclass initialization dependences; MessageOps are instances of</color>
+<color=#75715e>   * nested classes declared in the subclass.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeMessageOps</color><color=#f8f8f2>(</color><color=#f8f8f2>MessageOp</color><color=#f92672>[]</color> <color=#f8f8f2>protocolOps</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>MessageOp</color> <color=#f8f8f2>op</color> <color=#f8f8f2>:</color> <color=#f8f8f2>protocolOps</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>op</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Duplicate op: "</color> <color=#f92672>+</color> <color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The total number of messages defined by the protocol. Includes messages</color>
+<color=#75715e>   * defined by the subclass.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>messageCount</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* The messages defined in this class. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#a6e22e>getPredefinedMessageCount</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>predefinedMessageCount</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the version associated with this protocol instance. Request message generated by this</color>
+<color=#75715e>   * instance conform to this version and responses are expected to conform to this version as well.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the version that is actually being used.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>configuredVersion</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Messages <= this size will use the shared buffer. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CACHED_BUFFER_SIZE</color> <color=#f92672>=</color> <color=#ae81ff>0x4000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The shared read and write buffers that are reused. There are</color>
+<color=#75715e>   * two buffers, so that reading and writing can proceed in parallel.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>cachedReadBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>CACHED_BUFFER_SIZE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>cachedWriteBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>CACHED_BUFFER_SIZE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a read buffer of the requested size.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param size the size of the requested buffer in bytes</color>
+<color=#75715e>   * @return the requested</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>allocateReadBuffer</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672><=</color> <color=#f8f8f2>CACHED_BUFFER_SIZE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cachedReadBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>rewind</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>cachedReadBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>cachedReadBuffer</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a write buffer of the requested size.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param size the size of the requested buffer in bytes</color>
+<color=#75715e>   * @return the requested</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>allocateWriteBuffer</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672><=</color> <color=#f8f8f2>CACHED_BUFFER_SIZE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cachedWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>rewind</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>cachedWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>cachedWriteBuffer</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Returns byte size of serialized string. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>stringSize</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>stringToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>).</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Serialize the string into the buffer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>putString</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>stringToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Reconstitutes the string serialized by the above method.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param buffer the buffer containing the string</color>
+<color=#75715e>   * @return the de-serialized string</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>length</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>bytesToString</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Responsible for converting a String to an encoded value for all protocols.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In JE 5.0.36 and earlier, only the default encoding was supported. In later releases, a</color>
+<color=#75715e>   * config param was added to force UTF-8 to be used. In JE 5.1 and later, the default will be to</color>
+<color=#75715e>   * use UTF-8. [#20967]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationConfig#PROTOCOL_OLD_STRING_ENCODING</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>stringToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useStringDefaultEncoding</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>getBytes</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>toUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Responsible for converting an encoded value to a String for all protocols.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #stringToBytes</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>bytesToString</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useStringDefaultEncoding</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fromUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The Operations that are part of the protocol. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>MessageOp</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* The string denoting the operation for the request message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>short</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The class used to represent the message. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* The constructor used to create message instances. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Constructor</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>constructor</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The label is used for debugging purposes. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>label</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>MessageOp</color><color=#f8f8f2>(</color><color=#66d9ef>short</color> <color=#f8f8f2>opId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>opId</color> <color=#f92672>=</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>messageClass</color> <color=#f92672>=</color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>label</color> <color=#f92672>=</color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>.</color><color=#a6e22e>getSimpleName</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>constructor</color> <color=#f92672>=</color>
+            <color=#f8f8f2>messageClass</color><color=#f8f8f2>.</color><color=#a6e22e>getConstructor</color><color=#f8f8f2>(</color><color=#f8f8f2>messageClass</color><color=#f8f8f2>.</color><color=#a6e22e>getEnclosingClass</color><color=#f8f8f2>(),</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecurityException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchMethodException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>short</color> <color=#a6e22e>getOpId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>opId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#a6e22e>getMessageClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messageClass</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Constructor</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#a6e22e>getConstructor</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>constructor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>label</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the Op from a message buffer. It's always the first item in the buffer. Leaves the</color>
+<color=#75715e>   * message buffer positioned after the Op.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param messageBuffer a message buffer the the protocol</color>
+<color=#75715e>   * @return the OpId</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>short</color> <color=#f8f8f2>opId</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readShort</color><color=#f8f8f2>(</color><color=#f8f8f2>messageBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>messageOp</color> <color=#f92672>=</color> <color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>opId</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Unknown message op id:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>opId</color>
+              <color=#f92672>+</color> <color=#e6db74>" Known op ids:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>ops</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>().</color><color=#a6e22e>toArray</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>messageOp</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used to indicate that an entity is formatable and can be serialized and</color>
+<color=#75715e>   * de-serialized.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>interface</color> <color=#a6e22e>WireFormatable</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Returns a ByteBuffer holding the message in a representation</color>
+<color=#75715e>     * suitable for use in a network transmission. The buffer is flipped</color>
+<color=#75715e>     * and ready for relative reads.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Fills a dedicated empty buffer with bytes read from the channel. It flips the buffer after it</color>
+<color=#75715e>   * has been filled, so it's ready for reading.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel to be read</color>
+<color=#75715e>   * @param buffer the buffer to be filled</color>
+<color=#75715e>   * @throws IOException if the errors were encountered while reading from the channel or the buffer</color>
+<color=#75715e>   *     could not be filled with the expected number of bytes</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>fillBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>ReadableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>start</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>numRead</color> <color=#f92672>=</color> <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>numRead</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Expected bytes: "</color> <color=#f92672>+</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" read bytes: "</color> <color=#f92672>+</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>nReadNanos</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>start</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Read and parse an incoming message, specifying the incoming version.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel to read from. Declared as a ReadableByteChannel rather than the more</color>
+<color=#75715e>   *     obvious SocketChannel to facilitate unit testing.</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Message</color> <color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>ReadableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Get the message header. */</color>
+    <color=#f8f8f2>fillBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>header</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Use the type value to determine the message type. */</color>
+    <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>op</color> <color=#f92672>=</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Constructor</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>cons</color> <color=#f92672>=</color> <color=#f8f8f2>op</color><color=#f8f8f2>.</color><color=#a6e22e>getConstructor</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Read the size to determine the body of the message. */</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>messageBodySize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>header</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nBytesRead</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>MESSAGE_HEADER_SIZE</color> <color=#f92672>+</color> <color=#f8f8f2>messageBodySize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nMessagesRead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageBodySize</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageBodySize</color> <color=#f92672>></color> <color=#f8f8f2>maxMessageSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Message op: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>op</color>
+                  <color=#f92672>+</color> <color=#e6db74>" Body size: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>messageBodySize</color>
+                  <color=#f92672>+</color> <color=#e6db74>" is too large.  maxSizeAllowed: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>maxMessageSize</color>
+                  <color=#f92672>+</color> <color=#e6db74>"\nIf a larger value is needed, set the "</color>
+                  <color=#f92672>+</color> <color=#e6db74>"'je.rep.maxMessageSize' parameter."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>body</color> <color=#f92672>=</color> <color=#f8f8f2>allocateReadBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>messageBodySize</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>fillBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>body</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>cons</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>body</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageBodySize</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Message op: "</color> <color=#f92672>+</color> <color=#f8f8f2>op</color> <color=#f92672>+</color> <color=#e6db74>" Body size: "</color> <color=#f92672>+</color> <color=#f8f8f2>messageBodySize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* No body */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>cons</color><color=#f8f8f2>.</color><color=#a6e22e>newInstance</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InstantiationException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalAccessException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecurityException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InvocationTargetException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* The header buffer will be reused, so clear it. */</color>
+      <color=#f8f8f2>header</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unchecked"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#f92672><</color><color=#f8f8f2>T</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>T</color> <color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>ReadableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>cl</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Note: the subclassing check instead of an equality check makes it</color>
+<color=#75715e>     * convenient to deal with responses when there can be multiple</color>
+<color=#75715e>     * possible but related responses.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>T</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ProtocolException</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cl</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write a message out to a channel.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>NamedChannel</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>write</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write a message out to a channel.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>WritableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>write</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NULL</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write a message out to a channel.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>WritableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>destinationNameIdPair</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>messageBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>nMessagesWritten</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>flushBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINER</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>destinationNameIdPair</color> <color=#f92672>==</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NULL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* No nameIdPair was supplied, so use the channel. */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINER</color><color=#f8f8f2>,</color> <color=#e6db74>"Sent "</color> <color=#f92672>+</color> <color=#f8f8f2>message</color> <color=#f92672>+</color> <color=#e6db74>" to "</color> <color=#f92672>+</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINER</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Sent to "</color> <color=#f92672>+</color> <color=#f8f8f2>destinationNameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>": "</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Rewind the message buffer in case it's a reusable wire format */</color>
+    <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>rewind</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Buffers the serialized form of the message (if possible) for later writes to the network.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If buffering the message would result in an overflow, the current contents of the buffer are</color>
+<color=#75715e>   * flushed before the message is added to the buffer. If the size of the message exceeds the size</color>
+<color=#75715e>   * of the buffer, the message is flushed directly to the network.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel to which the buffer is flushed on buffer overflows.</color>
+<color=#75715e>   * @param batchWriteBuffer the buffer accumulating the serialized messages It's best for</color>
+<color=#75715e>   *     performance if this is a direct byte buffer, to avoid another copy when the buffer is</color>
+<color=#75715e>   *     finally flushed.</color>
+<color=#75715e>   * @param nMessages the number of messages currently in the buffer, including this message, that</color>
+<color=#75715e>   *     is, nMessages is always > 0 upon entry.</color>
+<color=#75715e>   * @param message the message to be buffered.</color>
+<color=#75715e>   * @return the number of messages currently in the buffer after accounting for potential buffer</color>
+<color=#75715e>   *     flushes.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>bufferWrite</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>WritableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>nMessages</color><color=#f8f8f2>,</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>nMessages</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>messageBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>flushBufferedWrites</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>nMessages</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#75715e>/* 1 for the message we add below. */</color>
+      <color=#f8f8f2>nMessages</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * Buffer is too small for message, so write it directly.</color>
+<color=#75715e>         * This write must always be preceded by a buffer flush.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>nMessagesWritten</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>flushBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nMessages</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>nMessages</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>messageBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nMessages</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flush all the messages accumulated by earlier calls to bufferWrite</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param channel the channel to which the buffer is flushed.</color>
+<color=#75715e>   * @param batchWriteBuffer the buffer containing the accumulated messages</color>
+<color=#75715e>   * @param nMessages the number of messages in the batch</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>flushBufferedWrites</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>WritableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>nMessages</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>nMessagesWritten</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nMessages</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nMessages</color> <color=#f92672>></color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nMessagesBatched</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nMessages</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nMessageBatches</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>flushBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>batchWriteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Writes the entire contents of the buffer to the blocking channel. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>flushBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>WritableByteChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>bb</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>bb</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bb</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>start</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Even though the underlying channel is a blocking channel, there are circumstances where the</color>
+<color=#75715e>     * channel.write() returns without writing all of the buffer, in seeming contradiction to the</color>
+<color=#75715e>     * javadoc. One such example is when the peer fails in the middle of a write; in this case there</color>
+<color=#75715e>     * is a "successful" partial write and the next write will result in an I/O exception. There may</color>
+<color=#75715e>     * be other such examples as well, hence the defensive write loop below which tries to continue</color>
+<color=#75715e>     * writes to their logical conclusion or to an IOE.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>bb</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>bb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nBytesWritten</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * This should not happen since it's a blocking channel, but</color>
+<color=#75715e>         * the java doc is vague on this subject, so yield control if</color>
+<color=#75715e>         * we are not making progress.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>yield</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>nWriteNanos</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>start</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Base message class for all messages exchanged in the protocol. Serialized layout of a message:</color>
+<color=#75715e>   * - opType (short) - size of the body of the message (int) - body of the message - message</color>
+<color=#75715e>   * specific fields</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>All non-abstract subclasses must implement a constructor with a ByteBuffer argument. This</color>
+<color=#75715e>   * constructor is used during serialization to recreate the Message instance. It's considered good</color>
+<color=#75715e>   * practice to declare all attributes of a message as final. It's a simple way to ensure that the</color>
+<color=#75715e>   * above constructor has initialized all the attributes of the message.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Message</color> <color=#66d9ef>implements</color> <color=#f8f8f2>WireFormatable</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/** The default message consists of the operation enum and just a 0 length size. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>messageBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>allocateInitializedBuffer</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * For unit test support, so we can compare a message created for</color>
+<color=#75715e>     * sending against a message received. Some message types need to</color>
+<color=#75715e>     * override.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>match</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>wireFormat</color><color=#f8f8f2>().</color><color=#a6e22e>array</color><color=#f8f8f2>().</color><color=#a6e22e>clone</color><color=#f8f8f2>(),</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>wireFormat</color><color=#f8f8f2>().</color><color=#a6e22e>array</color><color=#f8f8f2>().</color><color=#a6e22e>clone</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Allocate a buffer for the message with the header initialized.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param size size of the message contents following the buffer</color>
+<color=#75715e>     * @return the initialized buffer</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>allocateInitializedBuffer</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>messageBuffer</color> <color=#f92672>=</color> <color=#f8f8f2>allocateWriteBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>MESSAGE_HEADER_SIZE</color> <color=#f92672>+</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeShort</color><color=#f8f8f2>(</color><color=#f8f8f2>messageBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>getOp</color><color=#f8f8f2>().</color><color=#a6e22e>getOpId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>messageBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>messageBuffer</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Base class for simple messages. Ones where performance is not of the utmost importance and</color>
+<color=#75715e>   * reflection can be used to simplify message serialization and de-serialization.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>SimpleMessage</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Assembles a sequence of arguments into its byte based wire format. The method does the</color>
+<color=#75715e>     * serialization in two steps. In step 1, it calculates the length of the buffer. In step 2, it</color>
+<color=#75715e>     * assembles the bytes into the allocated buffer. The interpretive approach used here is</color>
+<color=#75715e>     * suitable for the low performance requirements of the handshake protocol, but not for the core</color>
+<color=#75715e>     * data stream itself. It's for this reason that the method is associated with the Handshake</color>
+<color=#75715e>     * message class and not the Message class.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param arguments the arguments to be passed in the message</color>
+<color=#75715e>     * @return a byte buffer containing the serialized form of the message</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color><color=#f8f8f2>...</color> <color=#f8f8f2>arguments</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color> <color=#f8f8f2>:</color> <color=#f8f8f2>arguments</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>wireFormatSize</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Allocate the buffer and fill it up */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>allocateInitializedBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color> <color=#f8f8f2>:</color> <color=#f8f8f2>arguments</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>putWireFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>obj</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Put the bytes of the wire format for the object into the current position in the buffer.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param buffer the buffer</color>
+<color=#75715e>     * @param obj the object</color>
+<color=#75715e>     * @throws EnvironmentFailureException if the object is not supported</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>putWireFormat</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>cl</color> <color=#f92672>=</color> <color=#f8f8f2>obj</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeLong</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>Long</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>longValue</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>Integer</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>intValue</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Short</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeShort</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>Short</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>shortValue</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(((</color><color=#f8f8f2>Byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>byteValue</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Boolean</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(((</color><color=#f8f8f2>Boolean</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>booleanValue</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeLong</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>getSequence</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Enum</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>cl</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* An enum is stored as it's identifier string. */</color>
+        <color=#f8f8f2>Enum</color><color=#f92672><?></color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Enum</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>putString</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>name</color><color=#f8f8f2>(),</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * A string is stored with its length followed by its</color>
+<color=#75715e>         * contents.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>putString</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>,</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Double</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Treat a Double as a String. */</color>
+        <color=#f8f8f2>putString</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(),</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>String</color><color=#f92672>[]</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>sa</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>sa</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>element</color> <color=#f8f8f2>:</color> <color=#f8f8f2>sa</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>putString</color><color=#f8f8f2>(</color><color=#f8f8f2>element</color><color=#f8f8f2>,</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#66d9ef>byte</color><color=#f92672>[]</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>putByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* instanceof used to accomodate ReadOnlyNameIdPair. */</color>
+        <color=#f8f8f2>((</color><color=#f8f8f2>NameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>serialize</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown type: "</color> <color=#f92672>+</color> <color=#f8f8f2>cl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Put the bytes for the wire format of the specified byte array into the current position in</color>
+<color=#75715e>     * the buffer.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param buffer the buffer</color>
+<color=#75715e>     * @param ba the byte array</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>putByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>ba</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>ba</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>ba</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Return the wire format size of the specified object.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param obj the object</color>
+<color=#75715e>     * @return the size</color>
+<color=#75715e>     * @throws EnvironmentFailureException if the object is not supported</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#a6e22e>wireFormatSize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?></color> <color=#f8f8f2>cl</color> <color=#f92672>=</color> <color=#f8f8f2>obj</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Short</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Boolean</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Enum</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>isAssignableFrom</color><color=#f8f8f2>(</color><color=#f8f8f2>cl</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>stringSize</color><color=#f8f8f2>(((</color><color=#f8f8f2>Enum</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>name</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>stringSize</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>Double</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>stringSize</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#f8f8f2>String</color><color=#f92672>[]</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color> <color=#75715e>/* array length */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>sa</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>element</color> <color=#f8f8f2>:</color> <color=#f8f8f2>sa</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>stringSize</color><color=#f8f8f2>(</color><color=#f8f8f2>element</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cl</color> <color=#f92672>==</color> <color=#66d9ef>byte</color><color=#f92672>[]</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>4</color> <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f92672>[]</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* instanceof used to accomodate ReadOnlyNameIdPair. */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>NameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>serializedSize</color><color=#f8f8f2>(</color><color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown type: "</color> <color=#f92672>+</color> <color=#f8f8f2>cl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Reconstitutes an array of strings.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param buffer</color>
+<color=#75715e>     * @return</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#a6e22e>getStringArray</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>sa</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f92672>[</color><color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>sa</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sa</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>sa</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>ba</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>ba</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ba</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b</color> <color=#f92672>==</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown boolean value: "</color> <color=#f92672>+</color> <color=#f8f8f2>b</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f92672><</color><color=#f8f8f2>T</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Enum</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>>></color> <color=#f8f8f2>T</color> <color=#a6e22e>getEnum</color><color=#f8f8f2>(</color><color=#f8f8f2>Class</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>enumType</color><color=#f8f8f2>,</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>enumName</color> <color=#f92672>=</color> <color=#f8f8f2>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Enum</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>enumType</color><color=#f8f8f2>,</color> <color=#f8f8f2>enumName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Double</color> <color=#a6e22e>getDouble</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Double</color><color=#f8f8f2>(</color><color=#f8f8f2>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>protected</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getNameIdPair</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>deserialize</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The base class for reject responses to requests */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>RejectMessage</color> <color=#66d9ef>extends</color> <color=#f8f8f2>SimpleMessage</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Must not be null */</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>String</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>RejectMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Replace the null message with an empty string since the Simple</color>
+<color=#75715e>       * Message assumes non-null contents.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>errorMessage</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>errorMessage</color> <color=#f92672>=</color> <color=#e6db74>" "</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>errorMessage</color> <color=#f92672>=</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>errorMessage</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>RejectMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>errorMessage</color> <color=#f92672>=</color> <color=#f8f8f2>getString</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getErrorMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtocolError</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RejectMessage</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>errorMessage</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>errorMessage</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolError</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>PROTOCOL_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Version broadcasts the sending node's protocol version. */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtocolVersion</color> <color=#66d9ef>extends</color> <color=#f8f8f2>SimpleMessage</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>version</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nodeId</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolVersion</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>version</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>version</color> <color=#f92672>=</color> <color=#f8f8f2>version</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nodeId</color> <color=#f92672>=</color> <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>.</color><color=#a6e22e>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>wireFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>wireFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>version</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>version</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nodeId</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** @return the version */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>version</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The nodeId of the sender</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return nodeId</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>nodeId</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ClientVersion</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ProtocolVersion</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ClientVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>codeVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ClientVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>CLIENT_VERSION</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ServerVersion</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ProtocolVersion</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ServerVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>codeVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ServerVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>SERVER_VERSION</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>IncompatibleVersion</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RejectMessage</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>IncompatibleVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>IncompatibleVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>MessageOp</color> <color=#a6e22e>getOp</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>INCOMPATIBLE_VERSION</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Thrown in response to an unexpected response to a request. */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtocolException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>InternalException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>cl</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/** Constructor used for message sequencing errors. */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolException</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>,</color> <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>cl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedMessage</color> <color=#f92672>=</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cl</color> <color=#f92672>=</color> <color=#f8f8f2>cl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ProtocolException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedMessage</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>unexpectedMessage</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+          <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#e6db74>"Expected message type: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>cl</color>
+              <color=#f92672>+</color> <color=#e6db74>" but found: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color>
+
+              <color=#75715e>/*</color>
+<color=#75715e>               * Include information about the message, which is</color>
+<color=#75715e>               * particularly useful for a RejectMessage</color>
+<color=#75715e>               */</color>
+              <color=#e6db74>": "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>:</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>Message</color> <color=#a6e22e>getUnexpectedMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>unexpectedMessage</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

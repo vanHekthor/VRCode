@@ -1,0 +1,1522 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.util.DbResetRepGroup</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.net.SSLChannelFactory</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.ServerSocket</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.UnknownHostException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.StringTokenizer</color><color=#f8f8f2>;</color>
+
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RepParams</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Note: all replicated parameters should start with</color>
+<color=#75715e>   * EnvironmentParams.REP_PARAM_PREFIX, which is "je.rep.",</color>
+<color=#75715e>   * see SR [#19080].</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Name of a java System property (boolean) which can be turned on in order to avoid input</color>
+<color=#75715e>   *     validation checks on node names. This is undocumented.</color>
+<color=#75715e>   *     <p>Generally users should not skip validation, because there are a few kinds of punctuation</color>
+<color=#75715e>   *     characters that would cause problems if they were allowed in node names. But in the past</color>
+<color=#75715e>   *     users might have inadvertantly created node names that do not conform to the new, stricter</color>
+<color=#75715e>   *     rules. In that case they would not be able to upgrade to the newer version of JE that now</color>
+<color=#75715e>   *     includes this checking.</color>
+<color=#75715e>   *     <p>This flag actually applies to the group name too. But for group names the new rules are</color>
+<color=#75715e>   *     actually less strict than they used to be, so there should be no problem.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SKIP_NODENAME_VALIDATION</color> <color=#f92672>=</color> <color=#e6db74>"je.rep.skipNodenameValidation"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Name of a java System property (boolean) which can be turned on in order to avoid</color>
+<color=#75715e>   *     hostname resolution checks on helper host values. This is undocumented.</color>
+<color=#75715e>   *     <p>Generally users should not skip validation, because having valid helper hosts is an</color>
+<color=#75715e>   *     important path to let this node find the master in a replication group when its group</color>
+<color=#75715e>   *     membership db is not sufficient. Disabling the check should only be done in unusual cases,</color>
+<color=#75715e>   *     such as in the face of intermittent DNS failures. In that case, a hostname which seems to</color>
+<color=#75715e>   *     be invalid may actually be a transient problem, rather than a permanent configuration</color>
+<color=#75715e>   *     issue. Skipping the resolution check at config setting time may supply some degree of</color>
+<color=#75715e>   *     resilience in this unusual case.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SKIP_HELPER_HOST_RESOLUTION</color> <color=#f92672>=</color> <color=#e6db74>"je.rep.skipHelperHostResolution"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** A JE/HA configuration parameter describing an Identifier name. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>IdentifierConfigParam</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>=</color> <color=#f8f8f2>IdentifierConfigParam</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>IdentifierConfigParam</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>configName</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>defaultValue</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>mutable</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>configName</color><color=#f8f8f2>,</color> <color=#f8f8f2>defaultValue</color><color=#f8f8f2>,</color> <color=#f8f8f2>mutable</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Boolean</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>SKIP_NODENAME_VALIDATION</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>+</color> <color=#e6db74>": a value is required"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>char</color> <color=#f8f8f2>c</color> <color=#f8f8f2>:</color> <color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>toCharArray</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isValid</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>DEBUG_NAME</color>
+                  <color=#f92672>+</color> <color=#e6db74>": "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>name</color>
+                  <color=#f92672>+</color> <color=#e6db74>", must consist of "</color>
+                  <color=#f92672>+</color> <color=#e6db74>"letters, digits, hyphen, underscore, period."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isValid</color><color=#f8f8f2>(</color><color=#66d9ef>char</color> <color=#f8f8f2>c</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Character</color><color=#f8f8f2>.</color><color=#a6e22e>isLetterOrDigit</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'-'</color> <color=#f92672>||</color> <color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'_'</color> <color=#f92672>||</color> <color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'.'</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Replication group-wide properties. These properties are candidates for</color>
+<color=#75715e>   * consistency checking whenever there is a handshake between a master and</color>
+<color=#75715e>   * replica.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Names the Replication group. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>GROUP_NAME</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IdentifierConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DefaultGroup"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @deprecated see {@link ReplicationConfig#REP_STREAM_TIMEOUT} */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REP_STREAM_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REP_STREAM_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"30 min"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * MIN_RETAINED_VLSNS was never exposed in the public API, although we did ask several users to</color>
+<color=#75715e>   * configure it in the past, so we shouldn't delete the param definition.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @deprecated and no longer used as of JE 7.5. Reserved files are now retained based on available</color>
+<color=#75715e>   *     disk space -- see {@link EnvironmentConfig#MAX_DISK} and {@link</color>
+<color=#75715e>   *     EnvironmentConfig#FREE_DISK} should be used instead. However, this param is still used when</color>
+<color=#75715e>   *     some, but not all, nodes in a group have been upgraded to 7.5 or later.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>MIN_RETAINED_VLSNS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"minRetainedVLSNs"</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Unpublished (for now at least) parameter describing the minimum size of the VLSNIndex as a</color>
+<color=#75715e>   * number of VLSNs. Once the index grows to this size, it will not get smaller due to head</color>
+<color=#75715e>   * truncation by the cleaner.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When a disk limit is violated we will have already deleted as many reserved files as</color>
+<color=#75715e>   * possible. If space is made available and write operations can resume, we need to ensure that</color>
+<color=#75715e>   * each node has a large enough VLSNIndex to perform syncup, etc.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This limit is enforced on both master and replicas. It is particularly important on replicas</color>
+<color=#75715e>   * because feeders will not prevent VLSN index head truncation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>MIN_VLSN_INDEX_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"minVLSNIndexSize"</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>1000</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Can be used by tests to prevent the GlobalCBVLSN from being defunct, even when all nodes are</color>
+<color=#75715e>   * DEFUNCT_JE_VERSION or higher.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>TEST_CBVLSN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"testCBVLSN"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see ReplicationConfig#REPLICA_RECEIVE_BUFFER_SIZE */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLICA_RECEIVE_BUFFER_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_RECEIVE_BUFFER_SIZE</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>1048576</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The size of the message queue used for communication between the thread reading the replication</color>
+<color=#75715e>   * stream and the thread doing the replay. The default buffer size has been chosen to hold 500</color>
+<color=#75715e>   * single operation transactions (the ln + commit record) assuming 1K sized LN record.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Larger values of buffer size may result in higher peak memory utilization, due to a larger</color>
+<color=#75715e>   * number of LNs sitting in the queue. The size of the queue itself is unlikely to be an issue,</color>
+<color=#75715e>   * since it's tiny relative to cache sizes. At 1000, 1kbyte LNs it raises the peak utilization by</color>
+<color=#75715e>   * 1MB which for most apps is an insignificant rise in the peak.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the parameter is lazily mutable, that is, the change will take effect the next</color>
+<color=#75715e>   * time the node transitions to a replica state.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLICA_MESSAGE_QUEUE_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"replicaMessageQueueSize"</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>1000</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** The lock timeout for replay transactions. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLAY_TXN_LOCK_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_TXN_LOCK_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"75 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"500 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#ENV_SETUP_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ENV_SETUP_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_SETUP_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 h"</color><color=#f8f8f2>,</color> <color=#75715e>// default 10 hrs</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see ReplicationConfig#ENV_CONSISTENCY_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ENV_CONSISTENCY_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_CONSISTENCY_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"10 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"5 min"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see ReplicationConfig#ENV_UNKNOWN_STATE_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ENV_UNKNOWN_STATE_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_UNKNOWN_STATE_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"0 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see ReplicationConfig#REPLICA_ACK_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLICA_ACK_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_ACK_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"10 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"5 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#INSUFFICIENT_REPLICAS_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>INSUFFICIENT_REPLICAS_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>INSUFFICIENT_REPLICAS_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"10 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   * @see ReplicationConfig#ARBITER_ACK_TIMEOUT</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ARBITER_ACK_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ARBITER_ACK_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"10 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"2 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter enable use of the group ack message. It's on by default since protocol</color>
+<color=#75715e>   * version 6.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>ENABLE_GROUP_ACKS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"enableGroupAcks"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The maximum message size which will be accepted by a node (to prevent DOS attacks). While the</color>
+<color=#75715e>   * default shown here is 0, it dynamically calculated when the node is created and is set to the</color>
+<color=#75715e>   * half of the environment cache size. The cache size is mutable, but changing the cache size at</color>
+<color=#75715e>   * run time (after environment initialization) will not change the value of this parameter. If a</color>
+<color=#75715e>   * value other than cache size / 2 is desired, this non-mutable parameter should be specified at</color>
+<color=#75715e>   * initialization time.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongConfigParam</color> <color=#f8f8f2>MAX_MESSAGE_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LongConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_MESSAGE_SIZE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color> <color=#f92672><<</color> <color=#ae81ff>18</color><color=#f8f8f2>),</color> <color=#75715e>// min (256KB)</color>
+          <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// default (cachesize / 2)</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Identifies the default consistency policy used by a replica. Only two policies are meaningful</color>
+<color=#75715e>   * as properties denoting environment level default policies: NoConsistencyRequiredPolicy and</color>
+<color=#75715e>   * TimeConsistencyPolicy. They can be specified as: NoConsistencyRequiredPolicy or</color>
+<color=#75715e>   * TimeConsistencyPolicy(<permissibleLag>,<timeout>). For example, a time based consistency policy</color>
+<color=#75715e>   * with a lag of 1 second and a timeout of 1 hour is denoted by the string:</color>
+<color=#75715e>   * TimeConsistencyPolicy(1000,3600000)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>CONSISTENCY_POLICY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>CONSISTENCY_POLICY</color><color=#f8f8f2>,</color>
+          <color=#75715e>// Default lag of 1 sec, and timeout of 1 hour</color>
+          <color=#e6db74>"TimeConsistencyPolicy(1 s,1 h)"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// for Replication</color>
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>propertyValue</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/* Evaluate for the checking side-effect. */</color>
+          <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaConsistencyPolicy</color><color=#f8f8f2>(</color><color=#f8f8f2>propertyValue</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>};</color>
+
+  <color=#75715e>/* The ports used by a replication group */</color>
+
+  <color=#75715e>/** The port used for replication. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>DEFAULT_PORT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT_PORT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1024</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Short</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>5001</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Names the host (or interface) and port associated with the node in the replication group, e.g.</color>
+<color=#75715e>   * je.rep.nodeHostPort=foo.com:5001</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>NODE_HOST_PORT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>NODE_HOST_PORT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"localhost"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// forReplication</color>
+
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>hostAndPort</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"The value cannot be null or zero length: "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>int</color> <color=#f8f8f2>colonToken</color> <color=#f92672>=</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>indexOf</color><color=#f8f8f2>(</color><color=#e6db74>":"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>hostName</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>colonToken</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>ServerSocket</color> <color=#f8f8f2>testSocket</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>testSocket</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServerSocket</color><color=#f8f8f2>();</color>
+            <color=#75715e>/* The bind will fail if the hostName does not name this m/c.*/</color>
+            <color=#f8f8f2>testSocket</color><color=#f8f8f2>.</color><color=#a6e22e>bind</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>InetSocketAddress</color><color=#f8f8f2>(</color><color=#f8f8f2>hostName</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+            <color=#f8f8f2>testSocket</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>UnknownHostException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+                <color=#e6db74>"Property: "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Invalid hostname: "</color> <color=#f92672>+</color> <color=#f8f8f2>hostName</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Server socket could not be bound to any port. Hostname is</color>
+<color=#75715e>             * not associated with this m/c.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+                <color=#e6db74>"Property: "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Invalid hostname: "</color> <color=#f92672>+</color> <color=#f8f8f2>hostName</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>validatePort</color><color=#f8f8f2>(</color><color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>));</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>};</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The Name uniquely identifies this node within the replication group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>NODE_NAME</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IdentifierConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>NODE_NAME</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DefaultRepNodeName"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Identifies the type of the node.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnumConfigParam</color><color=#f92672><</color><color=#f8f8f2>NodeType</color><color=#f92672>></color> <color=#f8f8f2>NODE_TYPE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>EnumConfigParam</color><color=#f92672><</color><color=#f8f8f2>NodeType</color><color=#f92672>></color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>NODE_TYPE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTABLE</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Associated a priority with this node. The priority is used during</color>
+<color=#75715e>   * elections to favor one node over another. All other considerations being</color>
+<color=#75715e>   * equal, the priority is used as a tie-breaker; the node with the higher</color>
+<color=#75715e>   * priority is selected as the master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>NODE_PRIORITY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationMutableConfig</color><color=#f8f8f2>.</color><color=#a6e22e>NODE_PRIORITY</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Allow for Arbiter to provide Acks.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>ALLOW_ARBITER_ACK</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationMutableConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ALLOW_ARBITER_ACK</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>ARBITER_OUTPUT_QUEUE_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ARBITER_OUTPUT_QUEUE_SIZE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>128</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>4096</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Identifies the Primary node in a two node group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>DESIGNATED_PRIMARY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationMutableConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DESIGNATED_PRIMARY</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * An internal option used to control the use of Nagle's algorithm</color>
+<color=#75715e>   * on feeder connections. A value of true disables use of Nagle's algorithm</color>
+<color=#75715e>   * and causes output to be sent immediately without delay.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>FEEDER_TCP_NO_DELAY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"feederTcpNoDelay"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The time interval in nanoseconds during which records from a feeder may be batched before being</color>
+<color=#75715e>   * written to the network.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Larger values can result in fewer network packets and lower interrupt processing overheads.</color>
+<color=#75715e>   * Since the grouping is only done when the feeder knows that the replica is not completely in</color>
+<color=#75715e>   * sync, it's unlikely to have an adverse impact on overall throughput. Consequently this</color>
+<color=#75715e>   * parameter is retained as an internal tuning knob.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The HEARTBEAT_INTERVAL parameter serves as a ceiling on this time interval. Parameter values</color>
+<color=#75715e>   * larger than HEARTBEAT_INTERVAL are truncated to HEARTBEAT_INTERVAL.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>FEEDER_BATCH_NS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"feederBatchNs"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1000000</color><color=#f8f8f2>),</color> <color=#75715e>// default 1 ms</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The size in KB used to batch outgoing feeder records. Upon overflow the existing buffer</color>
+<color=#75715e>   * contents are written to the network and a new batch is initiated. The default value is 64K to</color>
+<color=#75715e>   * take advantage of networks that support jumbo frames.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>FEEDER_BATCH_BUFF_KB</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"feederBatchBuffKb"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>64</color><color=#f8f8f2>),</color> <color=#75715e>// default 64K</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationMutableConfig#ELECTABLE_GROUP_SIZE_OVERRIDE */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>ELECTABLE_GROUP_SIZE_OVERRIDE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationMutableConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTABLE_GROUP_SIZE_OVERRIDE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An internal option, accessed only via the utility {@link DbResetRepGroup} utility, to reset a</color>
+<color=#75715e>   * replication group to a single new member when the replicated environment is opened.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>RESET_REP_GROUP</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"resetRepGroup"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An internal option, used with {@link #RESET_REP_GROUP}, that causes the reset of the</color>
+<color=#75715e>   * replication group to retain the original group UUID and to not truncate the VLSN index. Use</color>
+<color=#75715e>   * this option when converting a SECONDARY node to an ELECTABLE node when recovering a replication</color>
+<color=#75715e>   * group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>RESET_REP_GROUP_RETAIN_UUID</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"resetRepGroupRetainUUID"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * An internal option to allow converting an ELECTABLE node to a SECONDARY node by ignoring the</color>
+<color=#75715e>   * electable node ID stored in the local rep group DB.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>IGNORE_SECONDARY_NODE_ID</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ignoreSecondaryNodeId"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Sets the maximum allowable skew between a Feeder and its replica. The</color>
+<color=#75715e>   * clock skew is checked as part of the handshake when the Replica</color>
+<color=#75715e>   * establishes a connection to its Feeder.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>MAX_CLOCK_DELTA</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_CLOCK_DELTA</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"2 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The list of helper node and port pairs.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>HELPER_HOSTS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>HELPER_HOSTS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// forReplication</color>
+
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostPortPairs</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>hostPortPairs</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>hostPortPairs</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>hostPortSet</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>StringTokenizer</color> <color=#f8f8f2>tokenizer</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringTokenizer</color><color=#f8f8f2>(</color><color=#f8f8f2>hostPortPairs</color><color=#f8f8f2>,</color> <color=#e6db74>","</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>tokenizer</color><color=#f8f8f2>.</color><color=#a6e22e>hasMoreTokens</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>String</color> <color=#f8f8f2>hostPortPair</color> <color=#f92672>=</color> <color=#f8f8f2>tokenizer</color><color=#f8f8f2>.</color><color=#a6e22e>nextToken</color><color=#f8f8f2>();</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>hostPortSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>hostPortPair</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+                    <color=#e6db74>"Property: "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>" Duplicate specification: "</color> <color=#f92672>+</color> <color=#f8f8f2>hostPortPair</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>}</color>
+              <color=#f8f8f2>validateHostAndPort</color><color=#f8f8f2>(</color><color=#f8f8f2>hostPortPair</color><color=#f8f8f2>,</color> <color=#f8f8f2>Boolean</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>SKIP_HELPER_HOST_RESOLUTION</color><color=#f8f8f2>));</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>iae</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Property: "</color> <color=#f92672>+</color> <color=#f8f8f2>name</color> <color=#f92672>+</color> <color=#e6db74>"Error: "</color> <color=#f92672>+</color> <color=#f8f8f2>iae</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>iae</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>};</color>
+
+  <color=#75715e>/* Heartbeat interval in milliseconds. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>HEARTBEAT_INTERVAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"heartbeatInterval"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1000</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1000</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Security check interval in milliseconds. This parameter controls how</color>
+<color=#75715e>   * frequently the feeder checks that stream consumers authenticated and</color>
+<color=#75715e>   * authorized to stream the requested tables.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>SECURITY_CHECK_INTERVAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"securityCheckInterval"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1000</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/* Replay Op Count after which we clear the DbTree cache. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>DBTREE_CACHE_CLEAR_COUNT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"dbIdCacheOpCount"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>5000</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>VLSN_STRIDE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"vlsn.stride"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>10</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>VLSN_MAX_MAP</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"vlsn.mappings"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1000</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>VLSN_MAX_DIST</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"vlsn.distance"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>100000</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Internal testing use only: Simulate a delay in the replica loop for test</color>
+<color=#75715e>   * purposes. The value is the delay in milliseconds.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>TEST_REPLICA_DELAY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"test.replicaDelay"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Sets the VLSNIndex cache holding recent log items in support of the</color>
+<color=#75715e>   * feeders. The size must be a power of two.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>VLSN_LOG_CACHE_SIZE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"vlsn.logCacheSize"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color> <color=#f92672><<</color> <color=#ae81ff>10</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>32</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The socket timeout value used by a Replica when it opens a new</color>
+<color=#75715e>   * connection to establish a replication stream with a feeder.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPSTREAM_OPEN_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"repstreamOpenTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"5 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"5 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The socket timeout value used by Elections agents when they open</color>
+<color=#75715e>   * sockets to communicate with each other using the Elections protocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ELECTIONS_OPEN_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"electionsOpenTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The maximum amount of time a Learner or Acceptor agent will wait for</color>
+<color=#75715e>   * input on a network connection, while listening for a message before</color>
+<color=#75715e>   * timing out. This timeout applies to the Elections protocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ELECTIONS_READ_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"electionsReadTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** The master re-broadcasts the results of an election with this period. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>ELECTIONS_REBROADCAST_PERIOD</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTIONS_REBROADCAST_PERIOD</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @see ReplicationConfig#ELECTIONS_PRIMARY_RETRIES */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>ELECTIONS_PRIMARY_RETRIES</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ELECTIONS_PRIMARY_RETRIES</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>,</color> <color=#ae81ff>2</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Socket open timeout for use with the RepGroupProtocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REP_GROUP_OPEN_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"repGroupOpenTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Socket read timeout for use with the RepGroupProtocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REP_GROUP_READ_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"repGroupReadTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Socket open timeout for use with the Monitor Protocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>MONITOR_OPEN_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"monitorOpenTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Socket read timeout for use with the MonitorProtocol.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>MONITOR_READ_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"monitorReadTimeout"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#e6db74>"1 min"</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"10 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#REPLICA_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLICA_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"2 s"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"30 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/* @see ReplicationConfig#REPLAY_MAX_OPEN_DB_HANDLES */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLAY_MAX_OPEN_DB_HANDLES</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationMutableConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_MAX_OPEN_DB_HANDLES</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>10</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/* @see ReplicationConfig#REPLAY_DB_HANDLE_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLAY_DB_HANDLE_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_DB_HANDLE_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 s"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"30 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/* @see ReplicationConfig#REPLICA_MAX_GROUP_COMMIT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLICA_MAX_GROUP_COMMIT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MAX_GROUP_COMMIT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>200</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/* @see ReplicationConfig#REPLICA_GROUP_COMMIT_INTERVAL */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLICA_GROUP_COMMIT_INTERVAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_GROUP_COMMIT_INTERVAL</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"0 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"3 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The number of heartbeat responses that must be detected as missing</color>
+<color=#75715e>   * during an otherwise idle period before the Feeder shuts down the</color>
+<color=#75715e>   * connection with the Replica.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * This value provides the basis for the "read timeout" used by the Feeder</color>
+<color=#75715e>   * when communicating with the Replica. The timeout is calculated as</color>
+<color=#75715e>   * FEEDER_HEARTBEAT_TIMEOUT * HEARTBEAT_INTERVAL. Upon a timeout the Feeder</color>
+<color=#75715e>   * closes the connection.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Reducing this value permits the master to discover failed Replicas</color>
+<color=#75715e>   * faster. However, it increases the chances of false positives as well, if</color>
+<color=#75715e>   * the network is experiencing transient problems from which it might</color>
+<color=#75715e>   * just recover.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>FEEDER_HEARTBEAT_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"feederHeartbeatTrigger"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to force setting of SO_REUSEADDR to true on the HA server socket when it binds to its</color>
+<color=#75715e>   * port.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the default is false, meaning that the socket has the system-specific default</color>
+<color=#75715e>   * setting associated with it. We set it to true primarily in unit tests where the interacting HA</color>
+<color=#75715e>   * processes are all on the same machine and use of this option is safe.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This option is currently intended just for internal test use.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>SO_REUSEADDR</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"soReuseAddr"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This option was motivated by the BDA. The BDA uses IB for intra-rack node communications and</color>
+<color=#75715e>   * 10gigE for inter-rack node communications. DNS is used to map the hostname to different IP</color>
+<color=#75715e>   * addresses depending on whether the hostname was resolved from within the rack or outside it.</color>
+<color=#75715e>   * The host thus gets HA traffic on both the IB and 10gigE interfaces and therefore needs to</color>
+<color=#75715e>   * listen on both interfaces. It does so binding its socket using a wild card address when this</color>
+<color=#75715e>   * option iks turned on.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationConfig#BIND_INADDR_ANY</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>BIND_INADDR_ANY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>BIND_INADDR_ANY</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Determines how long to wait for a bound socket to come free. This option can be useful when</color>
+<color=#75715e>   * dealing with sockets in the TIME_WAIT state to come free so they can be reused. Attempts are</color>
+<color=#75715e>   * made to retry binding to this period at intervals of 1 second until the port is bound</color>
+<color=#75715e>   * successfully, or this wait period is exceeded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A value of zero means that there are no retries. It does not make sense to wait too much</color>
+<color=#75715e>   * longer than the 2 min TIME_WAIT period, but we allow waiting as long as 2.5 min to account for</color>
+<color=#75715e>   * race conditions.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This option is currently intended just for internal test use.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>SO_BIND_WAIT_MS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"retrySocketBind"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>150</color> <color=#f92672>*</color> <color=#ae81ff>1000</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter used to determine the poll timeout used when accepting incoming feeder</color>
+<color=#75715e>   * connections. This timeout also determines the frequency of various housekeeping tasks, e.g.</color>
+<color=#75715e>   * detection of a master to replica change, etc.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>FEEDER_MANAGER_POLL_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"feederManagerPollTimeout"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"100 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"1 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+  <color=#75715e>/** @see ReplicationConfig#FEEDER_TIMEOUT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>FEEDER_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_TIMEOUT</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"2 s"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"30 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to log an info message when a commit log record exceeds this time interval from the time</color>
+<color=#75715e>   * it was created, to the time it was written out to the network.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>TRANSFER_LOGGING_THRESHOLD</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"transferLoggingThreshold"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"5 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to log an info message when the time taken to replay a single log entry at a replica</color>
+<color=#75715e>   * exceeds this threshold.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>REPLAY_LOGGING_THRESHOLD</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"replayLoggingThreshold"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"5 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Changes the notion of an ack. When set to true, a replica is considered to have acknowledged a</color>
+<color=#75715e>   * commit as soon as the feeder has written the commit record to the network. That is, it does not</color>
+<color=#75715e>   * wait for the replica to actually acknowledge the commit via a return message. This permits the</color>
+<color=#75715e>   * master to operate in a more async manner relative to the replica provide for higher throughput.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This config parameter is internal.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>COMMIT_TO_NETWORK</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"commitToNetwork"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>PRE_HEARTBEAT_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"preHeartbeatTimeoutMs"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 s"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"60 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Verifies that the port is a reasonable number. The port must be outside the range of "Well</color>
+<color=#75715e>   * Known Ports" (zero through 1024).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param portString the string representing the port.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>validatePort</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>portString</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>port</color> <color=#f92672>=</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>parseInt</color><color=#f8f8f2>(</color><color=#f8f8f2>portString</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>port</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>port</color> <color=#f92672>></color> <color=#ae81ff>0xffff</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Invalid port number: "</color> <color=#f92672>+</color> <color=#f8f8f2>portString</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>port</color> <color=#f92672><=</color> <color=#ae81ff>1023</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Port number "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>port</color>
+                <color=#f92672>+</color> <color=#e6db74>" is invalid because the port must be "</color>
+                <color=#f92672>+</color> <color=#e6db74>"outside the range of \"well known\" ports"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NumberFormatException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Invalid port number: "</color> <color=#f92672>+</color> <color=#f8f8f2>portString</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Validates that the hostPort is a string of the form:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>hostName[:port]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param hostAndPort</color>
+<color=#75715e>   * @param skipHostnameResolution if true, don't bother checking that the hostname resolves</color>
+<color=#75715e>   * @throws IllegalArgumentException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>validateHostAndPort</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>skipHostnameResolution</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>colonToken</color> <color=#f92672>=</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>indexOf</color><color=#f8f8f2>(</color><color=#e6db74>":"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>hostName</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>colonToken</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>hostAndPort</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>hostName</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"missing hostname"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>skipHostnameResolution</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>InetAddress</color><color=#f8f8f2>.</color><color=#a6e22e>getByName</color><color=#f8f8f2>(</color><color=#f8f8f2>hostName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>UnknownHostException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Invalid hostname: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>validatePort</color><color=#f8f8f2>(</color><color=#f8f8f2>hostAndPort</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>colonToken</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see ReplicationConfig#TXN_ROLLBACK_LIMIT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>TXN_ROLLBACK_LIMIT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>TXN_ROLLBACK_LIMIT</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>),</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>10</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#TXN_ROLLBACK_DISABLED */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>TXN_ROLLBACK_DISABLED</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>TXN_ROLLBACK_DISABLED</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#ALLOW_UNKNOWN_STATE_ENV_OPEN */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>({</color><color=#e6db74>"javadoc"</color><color=#f8f8f2>,</color> <color=#e6db74>"deprecation"</color><color=#f8f8f2>})</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>ALLOW_UNKNOWN_STATE_ENV_OPEN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>ALLOW_UNKNOWN_STATE_ENV_OPEN</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** If true, the replica runs with this property will not join the replication group. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>DONT_JOIN_REP_GROUP</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"dontJoinRepGroup"</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** Internal parameter used by the Arbiter. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>ARBITER_USE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"arbiterUse"</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter used by the Subscriber.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If true, the node is a replica that operates as a subscriber.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>SUBSCRIBER_USE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"subscriberUse"</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter used by network backups.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If true, the node is used to support network backups and operates in read only mode, with</color>
+<color=#75715e>   * various daemons disabled.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>TODO: would be nice to combine ARBITER_USE, SUBSCRIBER_USE and this into one concept.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>NETWORKBACKUP_USE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"networkBackupUse"</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter used by network backups.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See 'Algorithm' in {@link com.sleepycat.je.rep.NetworkRestore}. Is currently 50k, which</color>
+<color=#75715e>   * represents less than 1s of replay time.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>NETWORKBACKUP_MAX_LAG</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"networkBackupMaxLag"</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>50</color> <color=#f92672>*</color> <color=#ae81ff>1000</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal parameter to preserve record version (VLSN). Is immutable forever, i.e., it may not be</color>
+<color=#75715e>   * changed after the environment has been created. It has the following impacts:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>. The VLSN is stored with the LN in the Btree and is available via the CursorImpl API. . The</color>
+<color=#75715e>   * VLSN is included when migrating an LN during log cleaning.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>FUTURE: Expose this in ReplicationConfig and improve doc if we make record versions part of</color>
+<color=#75715e>   * the public API.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>PRESERVE_RECORD_VERSION</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"preserveRecordVersion"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Whether to cache the VLSN in the BIN after the LN has been stripped by eviction, unless caching</color>
+<color=#75715e>   * is explicitly disabled using the CACHE_RECORD_VERSION setting.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This setting has no impact if PRESERVE_RECORD_VERSION is not also enabled.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>FUTURE: Expose this in ReplicationConfig and improve doc if we make record versions part of</color>
+<color=#75715e>   * the public API.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>CACHE_RECORD_VERSION</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"cacheRecordVersion"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @see ReplicationConfig#PROTOCOL_OLD_STRING_ENCODING TODO: Change default to false in JE 5.1.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>BooleanConfigParam</color> <color=#f8f8f2>PROTOCOL_OLD_STRING_ENCODING</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>BooleanConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>PROTOCOL_OLD_STRING_ENCODING</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** A JE/HA configuration parameter specifying a data channel type */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ChannelTypeConfigParam</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BASIC</color> <color=#f92672>=</color> <color=#e6db74>"basic"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL</color> <color=#f92672>=</color> <color=#e6db74>"ssl"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CUSTOM</color> <color=#f92672>=</color> <color=#e6db74>"custom"</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>=</color> <color=#f8f8f2>ChannelTypeConfigParam</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>ChannelTypeConfigParam</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>configName</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>defaultValue</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>mutable</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>configName</color><color=#f8f8f2>,</color> <color=#f8f8f2>defaultValue</color><color=#f8f8f2>,</color> <color=#f8f8f2>mutable</color><color=#f8f8f2>,</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>+</color> <color=#e6db74>": a value is required"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>BASIC</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>SSL</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>CUSTOM</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>+</color> <color=#e6db74>": "</color> <color=#f92672>+</color> <color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>" a not a valid value"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Replication data channel factory configuration</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationNetworkConfig#CHANNEL_TYPE</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>CHANNEL_TYPE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ChannelTypeConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_TYPE</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ChannelTypeConfigParam</color><color=#f8f8f2>.</color><color=#a6e22e>BASIC</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Replication data channel logging identifier.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationNetworkConfig#CHANNEL_LOG_NAME</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>CHANNEL_LOG_NAME</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_LOG_NAME</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Data channel factory class</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationNetworkConfig#CHANNEL_FACTORY_CLASS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>CHANNEL_FACTORY_CLASS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_FACTORY_CLASS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Data channel factory parameters</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationNetworkConfig#CHANNEL_FACTORY_PARAMS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>CHANNEL_FACTORY_PARAMS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationNetworkConfig</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_FACTORY_PARAMS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL KeyStore file</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_KEYSTORE_FILE</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_KEYSTORE_FILE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_FILE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL KeyStore password</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_KEYSTORE_PASSWORD</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL KeyStore password source class</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_KEYSTORE_PASSWORD_CLASS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD_CLASS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_CLASS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL KeyStore password source constructor parameters</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_KEYSTORE_PASSWORD_PARAMS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD_PARAMS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_PARAMS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL KeyStore type</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_KEYSTORE_TYPE</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_KEYSTORE_TYPE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_TYPE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL server key alias</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_SERVER_KEY_ALIAS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_SERVER_KEY_ALIAS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_SERVER_KEY_ALIAS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL client key alias</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_CLIENT_KEY_ALIAS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_CLIENT_KEY_ALIAS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CLIENT_KEY_ALIAS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL TrustStore file</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_TRUSTSTORE_FILE</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_TRUSTSTORE_FILE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_FILE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL TrustStore type</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_TRUSTSTORE_TYPE</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_TRUSTSTORE_TYPE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_TYPE</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL cipher suites</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_CIPHER_SUITES</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_CIPHER_SUITES</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CIPHER_SUITES</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL protocols</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_PROTOCOLS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_PROTOCOLS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_PROTOCOLS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Authenticator</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_AUTHENTICATOR</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_AUTHENTICATOR</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// forReplication</color>
+
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"a value is required"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>SSLChannelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>isValidAuthenticator</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>" a not a valid value"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>};</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Authenticator class</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_AUTHENTICATOR_CLASS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_AUTHENTICATOR_CLASS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_CLASS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Authenticator parameters</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_AUTHENTICATOR_PARAMS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_AUTHENTICATOR_PARAMS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_PARAMS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Host Verifier</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_HOST_VERIFIER</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_HOST_VERIFIER</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// forReplication</color>
+
+        <color=#a6e22e>@Override</color>
+        <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>validateValue</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"a value is required"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>SSLChannelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>isValidHostVerifier</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>" a not a valid value"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>};</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Host Verifier class</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_HOST_VERIFIER_CLASS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_HOST_VERIFIER_CLASS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_CLASS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * SSL Host Verifier parameters</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see ReplicationSSLConfig#SSL_HOST_VERIFIER_PARAMS</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>SSL_HOST_VERIFIER_PARAMS</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_PARAMS</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** Override the current JE version, for testing only. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>TEST_JE_VERSION</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"test.jeVersion"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @deprecated see {@link ReplicationConfig#REPLAY_COST_PERCENT} */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLAY_COST_PERCENT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_COST_PERCENT</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#ae81ff>1000</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>150</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** @see ReplicationConfig#REPLAY_FREE_DISK_PERCENT */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>REPLAY_FREE_DISK_PERCENT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>ReplicationConfig</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_FREE_DISK_PERCENT</color><color=#f8f8f2>,</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#ae81ff>99</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** The subscription queue poll interval. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>SUBSCRIPTION_POLL_INTERVAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"subscriptionPollInterval"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"10 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"1 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// not mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** The subscription queue poll timeout. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>SUBSCRIPTION_POLL_TIMEOUT</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"subscriptionPollTimeout"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"100 ms"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"30 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// not mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/** The maximum number of times to retry failed subscription connections. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>IntConfigParam</color> <color=#f8f8f2>SUBSCRIPTION_MAX_CONNECT_RETRIES</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>IntConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"subscriptionMaxConnectRetries"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>),</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>3</color><color=#f8f8f2>),</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// not mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The amount of time that the subscription thread should sleep time before retrying a failed</color>
+<color=#75715e>   * connection.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>DurationConfigParam</color> <color=#f8f8f2>SUBSCRIPTION_SLEEP_BEFORE_RETRY</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>DurationConfigParam</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"subscriptionSleepBeforeRetry"</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"1 s"</color><color=#f8f8f2>,</color> <color=#75715e>// min</color>
+          <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#75715e>// max</color>
+          <color=#e6db74>"3 s"</color><color=#f8f8f2>,</color> <color=#75715e>// default</color>
+          <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#75715e>// not mutable</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>);</color> <color=#75715e>// forReplication</color>
+<color=#f8f8f2>}</color>

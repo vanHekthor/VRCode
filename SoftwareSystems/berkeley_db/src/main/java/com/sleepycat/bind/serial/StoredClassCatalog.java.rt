@@ -1,0 +1,457 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.bind.serial</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.RuntimeExceptionWrapper</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.util.UtfOps</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.math.BigInteger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A <code>ClassCatalog</code> that is stored in a <code>Database</code>.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A single <code>StoredClassCatalog</code> object is normally used along with a set of databases</color>
+<color=#75715e> * that stored serialized objects.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> * @see <a href="SerialBinding.html#evolution">Class Evolution</a></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>StoredClassCatalog</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ClassCatalog</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Record types ([key] [data]):</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * [0] [next class ID]</color>
+<color=#75715e>   * [1 / class ID] [ObjectStreamClass (class format)]</color>
+<color=#75715e>   * [2 / class name] [ClassInfo (has 8 byte class ID)]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>REC_LAST_CLASS_ID</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>REC_CLASS_FORMAT</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>REC_CLASS_INFO</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>LAST_CLASS_ID_KEY</color> <color=#f92672>=</color> <color=#f8f8f2>{</color><color=#f8f8f2>REC_LAST_CLASS_ID</color><color=#f8f8f2>};</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Database</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassInfo</color><color=#f92672>></color> <color=#f8f8f2>classMap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>BigInteger</color><color=#f8f8f2>,</color> <color=#f8f8f2>ObjectStreamClass</color><color=#f92672>></color> <color=#f8f8f2>formatMap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LockMode</color> <color=#f8f8f2>writeLockMode</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>cdbMode</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>txnMode</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a catalog based on a given database. To save resources, only a single catalog object</color>
+<color=#75715e>   * should be used for each unique catalog database.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param database an open database to use as the class catalog. It must be a BTREE database and</color>
+<color=#75715e>   *     must not allow duplicates.</color>
+<color=#75715e>   * @throws DatabaseException if an error occurs accessing the database.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the database is not a BTREE database or if it configured to</color>
+<color=#75715e>   *     allow duplicates.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StoredClassCatalog</color><color=#f8f8f2>(</color><color=#f8f8f2>Database</color> <color=#f8f8f2>database</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>database</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>EnvironmentConfig</color> <color=#f8f8f2>envConfig</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>().</color><color=#a6e22e>getConfig</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>writeLockMode</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getInitializeLocking</color><color=#f8f8f2>(</color><color=#f8f8f2>envConfig</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>envConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactional</color><color=#f8f8f2>())</color>
+            <color=#f92672>?</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>RMW</color>
+            <color=#f8f8f2>:</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>cdbMode</color> <color=#f92672>=</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getInitializeCDB</color><color=#f8f8f2>(</color><color=#f8f8f2>envConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>txnMode</color> <color=#f92672>=</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactional</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>isTypeBtree</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"The class catalog must be a BTREE database."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getUnsortedDuplicates</color><color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"The class catalog database must not allow duplicates."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Create the class format and class info maps. Note that these are not</color>
+<color=#75715e>     * synchronized, and therefore the methods that use them are</color>
+<color=#75715e>     * synchronized.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>classMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassInfo</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>formatMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>BigInteger</color><color=#f8f8f2>,</color> <color=#f8f8f2>ObjectStreamClass</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>LAST_CLASS_ID_KEY</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Check that the class ID record exists. */</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"A read-only catalog database may not be empty"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Add the initial class ID record if it doesn't exist.  */</color>
+      <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>);</color> <color=#75715e>// zero ID</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Query the record before writing it to the database, to avoid</color>
+<color=#75715e>       * ReplicaWriteException while opening a StoredClassCatalog on the</color>
+<color=#75715e>       * replicas.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>NOTFOUND</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#75715e>/*null,*/</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>Put</color><color=#f8f8f2>.</color><color=#a6e22e>NO_OVERWRITE</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>// javadoc is inherited</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>formatMap</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>classMap</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>// javadoc is inherited</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getClassID</color><color=#f8f8f2>(</color><color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ClassInfo</color> <color=#f8f8f2>classInfo</color> <color=#f92672>=</color> <color=#f8f8f2>getClassInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getClassID</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>// javadoc is inherited</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>ObjectStreamClass</color> <color=#a6e22e>getClassFormat</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classID</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>getClassFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>classID</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal function for getting the class format. Allows passing the DatabaseEntry object for the</color>
+<color=#75715e>   * data, so the bytes of the class format can be examined afterwards.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ObjectStreamClass</color> <color=#a6e22e>getClassFormat</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classID</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* First check the map and, if found, add class info to the map. */</color>
+
+    <color=#f8f8f2>BigInteger</color> <color=#f8f8f2>classIDObj</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#f8f8f2>classID</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color> <color=#f92672>=</color> <color=#f8f8f2>formatMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>classIDObj</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>classFormat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Make the class format key. */</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>classID</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>keyBytes</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>REC_CLASS_FORMAT</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>classID</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>classID</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Read the class format. */</color>
+
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassNotFoundException</color><color=#f8f8f2>(</color><color=#e6db74>"Catalog class ID not found"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ObjectInputStream</color> <color=#f8f8f2>ois</color> <color=#f92672>=</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>ObjectInputStream</color><color=#f8f8f2>(</color>
+                <color=#66d9ef>new</color> <color=#f8f8f2>ByteArrayInputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>()));</color>
+        <color=#f8f8f2>classFormat</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>ObjectStreamClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>ois</color><color=#f8f8f2>.</color><color=#a6e22e>readObject</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>RuntimeExceptionWrapper</color><color=#f8f8f2>.</color><color=#a6e22e>wrapIfNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Update the class format map. */</color>
+
+      <color=#f8f8f2>formatMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>classIDObj</color><color=#f8f8f2>,</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the ClassInfo for a given class name, adding it and its ObjectStreamClass to the database</color>
+<color=#75715e>   * if they are not already present, and caching both of them using the class info and class format</color>
+<color=#75715e>   * maps. When a class is first loaded from the database, the stored ObjectStreamClass is compared</color>
+<color=#75715e>   * to the current ObjectStreamClass loaded by the Java class loader; if they are different, a new</color>
+<color=#75715e>   * class ID is assigned for the current format.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ClassInfo</color> <color=#a6e22e>getClassInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ClassNotFoundException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * First check for a cached copy of the class info, which if</color>
+<color=#75715e>     * present always contains the class format object.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ClassInfo</color> <color=#f8f8f2>classInfo</color> <color=#f92672>=</color> <color=#f8f8f2>classMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>classInfo</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Make class info key.  */</color>
+      <color=#66d9ef>char</color><color=#f92672>[]</color> <color=#f8f8f2>nameChars</color> <color=#f92672>=</color> <color=#f8f8f2>className</color><color=#f8f8f2>.</color><color=#a6e22e>toCharArray</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>1</color> <color=#f92672>+</color> <color=#f8f8f2>UtfOps</color><color=#f8f8f2>.</color><color=#a6e22e>getByteLength</color><color=#f8f8f2>(</color><color=#f8f8f2>nameChars</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>keyBytes</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>REC_CLASS_INFO</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>UtfOps</color><color=#f8f8f2>.</color><color=#a6e22e>charsToBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>nameChars</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameChars</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Read class info.  */</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Not found in the database, write class info and class</color>
+<color=#75715e>         * format.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>classInfo</color> <color=#f92672>=</color> <color=#f8f8f2>putClassInfo</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>ClassInfo</color><color=#f8f8f2>(),</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * Read class info to get the class format key, then read class</color>
+<color=#75715e>         * format.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>classInfo</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ClassInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>formatData</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>storedClassFormat</color> <color=#f92672>=</color> <color=#f8f8f2>getClassFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getClassID</color><color=#f8f8f2>(),</color> <color=#f8f8f2>formatData</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Compare the stored class format to the current class format,</color>
+<color=#75715e>         * and if they are different then generate a new class ID.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>areClassFormatsEqual</color><color=#f8f8f2>(</color><color=#f8f8f2>storedClassFormat</color><color=#f8f8f2>,</color> <color=#f8f8f2>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>formatData</color><color=#f8f8f2>),</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>classInfo</color> <color=#f92672>=</color> <color=#f8f8f2>putClassInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>classInfo</color><color=#f8f8f2>,</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Update the class info map.  */</color>
+        <color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>setClassFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>classMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Assign a new class ID (increment the current ID record), write the ObjectStreamClass record for</color>
+<color=#75715e>   * this new ID, and update the ClassInfo record with the new ID also. The ClassInfo passed as an</color>
+<color=#75715e>   * argument is the one to be updated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ClassInfo</color> <color=#a6e22e>putClassInfo</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>ClassInfo</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>classKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* An intent-to-write cursor is needed for CDB. */</color>
+    <color=#f8f8f2>CursorConfig</color> <color=#f8f8f2>cursorConfig</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cdbMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursorConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CursorConfig</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>setWriteCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursorConfig</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Transaction</color> <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>().</color><color=#a6e22e>beginTransaction</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>openCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>,</color> <color=#f8f8f2>cursorConfig</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Get the current class ID. */</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>LAST_CLASS_ID_KEY</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>writeLockMode</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>!=</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Class ID not initialized"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>idBytes</color> <color=#f92672>=</color> <color=#f8f8f2>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Increment the ID by one and write the updated record.  */</color>
+      <color=#f8f8f2>idBytes</color> <color=#f92672>=</color> <color=#f8f8f2>incrementID</color><color=#f8f8f2>(</color><color=#f8f8f2>idBytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>idBytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Write the new class format record whose key is the ID just</color>
+<color=#75715e>       * assigned.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyBytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>1</color> <color=#f92672>+</color> <color=#f8f8f2>idBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>keyBytes</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>REC_CLASS_FORMAT</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>idBytes</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyBytes</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>idBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>key</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>keyBytes</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>ByteArrayOutputStream</color> <color=#f8f8f2>baos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ByteArrayOutputStream</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>ObjectOutputStream</color> <color=#f8f8f2>oos</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>oos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ObjectOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>baos</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>oos</color><color=#f8f8f2>.</color><color=#a6e22e>writeObject</color><color=#f8f8f2>(</color><color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>RuntimeExceptionWrapper</color><color=#f8f8f2>.</color><color=#a6e22e>wrapIfNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>baos</color><color=#f8f8f2>.</color><color=#a6e22e>toByteArray</color><color=#f8f8f2>());</color>
+
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Write the new class info record, using the key passed in; this</color>
+<color=#75715e>       * is done last so that a reader who gets the class info record</color>
+<color=#75715e>       * first will always find the corresponding class format record.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>setClassID</color><color=#f8f8f2>(</color><color=#f8f8f2>idBytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>toDbt</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>classKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Update the maps before closing the cursor, so that the cursor</color>
+<color=#75715e>       * lock prevents other writers from duplicating this entry.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>classInfo</color><color=#f8f8f2>.</color><color=#a6e22e>setClassFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>classMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>formatMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#f8f8f2>idBytes</color><color=#f8f8f2>),</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>classInfo</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>incrementID</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>BigInteger</color> <color=#f8f8f2>id</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BigInteger</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>id</color> <color=#f92672>=</color> <color=#f8f8f2>id</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>BigInteger</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>id</color><color=#f8f8f2>.</color><color=#a6e22e>toByteArray</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Holds the class format key for a class, maintains a reference to the ObjectStreamClass. Other</color>
+<color=#75715e>   * fields can be added when we need to store more information per class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ClassInfo</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Serializable</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>3845446969989650562L</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classID</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ClassInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#f8f8f2>ClassInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>classID</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>classID</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>toDbt</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>1</color> <color=#f92672>+</color> <color=#f8f8f2>classID</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>data</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>classID</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>classID</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>classID</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>setClassID</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>classID</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>classID</color> <color=#f92672>=</color> <color=#f8f8f2>classID</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getClassID</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>classID</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>ObjectStreamClass</color> <color=#a6e22e>getClassFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>setClassFormat</color><color=#f8f8f2>(</color><color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>classFormat</color> <color=#f92672>=</color> <color=#f8f8f2>classFormat</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return whether two class formats are equal. This determines whether a new class format is</color>
+<color=#75715e>   * needed for an object being serialized. Formats must be identical in all respects, or a new</color>
+<color=#75715e>   * format is needed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>areClassFormatsEqual</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>format1</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>format1Bytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>ObjectStreamClass</color> <color=#f8f8f2>format2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>format1Bytes</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color> <color=#75715e>// using cached format1 object</color>
+        <color=#f8f8f2>format1Bytes</color> <color=#f92672>=</color> <color=#f8f8f2>getObjectBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>format1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>format2Bytes</color> <color=#f92672>=</color> <color=#f8f8f2>getObjectBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>format2</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>java</color><color=#f8f8f2>.</color><color=#a6e22e>util</color><color=#f8f8f2>.</color><color=#a6e22e>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>format2Bytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>format1Bytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * We can return the same byte[] for 0 length arrays.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>ZERO_LENGTH_BYTE_ARRAY</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>b</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>b</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getObjectBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ByteArrayOutputStream</color> <color=#f8f8f2>baos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ByteArrayOutputStream</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ObjectOutputStream</color> <color=#f8f8f2>oos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ObjectOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>baos</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>oos</color><color=#f8f8f2>.</color><color=#a6e22e>writeObject</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>baos</color><color=#f8f8f2>.</color><color=#a6e22e>toByteArray</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For BDB JE, returns the ClassLoader property of the catalog database environment. This ensures</color>
+<color=#75715e>   * that the Environment's ClassLoader property is used for loading all user-supplied classes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For BDB, this method returns null because no Environment ClassLoader property is available.</color>
+<color=#75715e>   * This method may be overridden to return a ClassLoader.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ClassLoader</color> <color=#a6e22e>getClassLoader</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getClassLoader</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironment</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * DatabaseException is declared to be thrown by getEnvironment in</color>
+<color=#75715e>       * DB (not JE), but this should never happen in practice.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

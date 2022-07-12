@@ -1,0 +1,188 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.MatchpointSearchResults</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * This exception may be thrown by a Replica during the {@link <a</color>
+<color=#75715e> * href="{@docRoot}/../ReplicationGuide/lifecycle.html#lifecycle-nodestartup">replication stream</color>
+<color=#75715e> * sync-up</a>} phase of startup. It indicates that a syncup cannot proceed without undoing a number</color>
+<color=#75715e> * of committed transactions that exceeds the limit defined by {@link</color>
+<color=#75715e> * ReplicationConfig#TXN_ROLLBACK_LIMIT}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>It is rare for committed transactions to be rolled back during a sync-up. One way this can</color>
+<color=#75715e> * happen is if a replication group has been executing with a {@link com.sleepycat.je.Durability}</color>
+<color=#75715e> * policy that specifies a {@link com.sleepycat.je.Durability.ReplicaAckPolicy ReplicaAckPolicy} of</color>
+<color=#75715e> * NONE.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When ReplicaAckPolicy.NONE is specified, transactions can commit on the master without</color>
+<color=#75715e> * receiving any acknowledgments from replica nodes. Using that policy, it is possible that if the</color>
+<color=#75715e> * master node crashes at a given time, and the group fails over and continues on with a new master,</color>
+<color=#75715e> * the old master's environment will have transactions on disk that were never replicated and</color>
+<color=#75715e> * received by other nodes. When this old master comes back up and rejoins the group as a replica,</color>
+<color=#75715e> * it will have committed transactions that need to be rolled back.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If the number of committed transactions to be rolled back is less than or equal to the limit</color>
+<color=#75715e> * specified by {@link ReplicationConfig#TXN_ROLLBACK_LIMIT}, JE will automatically truncate the</color>
+<color=#75715e> * environment log to remove the unreplicated transactions, and will throw a {@link</color>
+<color=#75715e> * RollbackException}. The application only needs to reinstantiate the ReplicatedEnvironment and</color>
+<color=#75715e> * proceed on. If the limit specified by {@link ReplicationConfig#TXN_ROLLBACK_LIMIT} is exceeded,</color>
+<color=#75715e> * the application will receive a RollbackProhibitedException to indicate that manual intervention</color>
+<color=#75715e> * is required.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The RollbackProhibitedException lets the user interject application specific processing before</color>
+<color=#75715e> * the log is truncated. The exception message and getter methods indicate the number of</color>
+<color=#75715e> * transactions that must be rolled back, and the time and id of the earliest targeted transaction,</color>
+<color=#75715e> * and the user can use this information to make any desired application adjustments. The</color>
+<color=#75715e> * application may then manually truncate the log using {@link com.sleepycat.je.util.DbTruncateLog}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that any CommitTokens obtained before restarting this <code>Replica</code> shouldn't be</color>
+<color=#75715e> * used after {@link RollbackProhibitedException} is thrown because the token may no longer exist on</color>
+<color=#75715e> * the current <code>Master</code> node.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RollbackProhibitedException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RestartRequiredException</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1L</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * searchResults is only used by threads that catch the exception,</color>
+<color=#75715e>   * so the field is sure to be initialized.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MatchpointSearchResults</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>RollbackProhibitedException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>rollbackTxnLimit</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>rollbackDisabled</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>MatchpointSearchResults</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>ROLLBACK_PROHIBITED</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>makeMessage</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackTxnLimit</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackDisabled</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>searchResults</color> <color=#f92672>=</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>makeMessage</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>MatchpointSearchResults</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>rollbackTxnLimit</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>rollbackDisabled</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>matchpointLSN</color> <color=#f92672>=</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpointLSN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileNumber</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>str</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>str</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"Node "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" must rollback "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getRollbackMsg</color><color=#f8f8f2>())</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" in order to rejoin the replication group, but "</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rollbackDisabled</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>str</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"rollbacks are disabled because "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"je.rep.txnRollbackDisabled has been set to true. "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"Either set je.rep.txnRollbackDisabled to false to "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"permit automatic rollback,"</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>str</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" the transaction rollback limit of "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackTxnLimit</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" prohibits this. "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"Either increase je.rep.txnRollbackLimit to a "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"value larger than "</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackTxnLimit</color><color=#f8f8f2>)</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" to permit automatic rollback,"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>str</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" or manually remove the problematic transactions. "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"To do manual removal, truncate the log to file "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumber</color><color=#f8f8f2>))</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>", offset 0x"</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color><color=#f8f8f2>))</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>", vlsn "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" using the directions in "</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"com.sleepycat.je.util.DbTruncateLog."</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>str</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>RollbackProhibitedException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>RollbackProhibitedException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>searchResults</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>searchResults</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>RollbackProhibitedException</color> <color=#a6e22e>wrapSelf</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackProhibitedException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The JE log must be truncated to this file in order for this node to</color>
+<color=#75715e>   * rejoin the group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTruncationFileNumber</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpointLSN</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The JE log must be truncated to this offset in the specified file in order for this node to</color>
+<color=#75715e>   * rejoin the group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTruncationFileOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchpointLSN</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the time in milliseconds of the earliest transaction commit that will be rolled back if</color>
+<color=#75715e>   * the log is truncated to the location specified by {@link #getTruncationFileNumber} and {@link</color>
+<color=#75715e>   * #getTruncationFileOffset}</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Long</color> <color=#a6e22e>getEarliestTransactionCommitTime</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getEarliestPassedTxn</color><color=#f8f8f2>().</color><color=#a6e22e>time</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return the id of the earliest transaction commit that will be rolled back if the log is</color>
+<color=#75715e>   * truncated to the location specified by {@link #getTruncationFileNumber} and {@link</color>
+<color=#75715e>   * #getTruncationFileOffset}</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getEarliestTransactionId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>searchResults</color><color=#f8f8f2>.</color><color=#a6e22e>getEarliestPassedTxn</color><color=#f8f8f2>().</color><color=#a6e22e>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

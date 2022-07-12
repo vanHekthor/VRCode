@@ -1,0 +1,593 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LNLogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.text.NumberFormat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The StatsFileReader generates stats about the log entries read, such as the count of each type of</color>
+<color=#75715e> * entry, the number of bytes, minimum and maximum sized log entry.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>StatsFileReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DumpFileReader</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>></color> <color=#f8f8f2>entryInfoMap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalCount</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Keep stats on log composition in terms of ckpt intervals. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>CheckpointCounter</color><color=#f92672>></color> <color=#f8f8f2>ckptList</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>CheckpointCounter</color> <color=#f8f8f2>ckptCounter</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>firstLsnRead</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realTotalKeyCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realMinKeyBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realMaxKeyBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realTotalDataCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realMinDataBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>realMaxDataBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Create this reader to start at a given LSN. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>StatsFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>entryTypes</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>dbIds</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>txnIds</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>repEntriesOnly</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>forwards</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>finishLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>endOfFileLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>entryTypes</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>dbIds</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>txnIds</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>verbose</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repEntriesOnly</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>forwards</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryInfoMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>LogEntryTypeComparator</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>totalLogBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ckptCounter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CheckpointCounter</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ckptList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>CheckpointCounter</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ckptList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>ckptCounter</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** This reader collects stats about the log entry. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>currentType</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentType</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needMatchEntry</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getSharedLogEntry</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>matchEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>itemSize</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getItemSize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>headerSize</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Record various stats based on the entry header.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Get the info object for it, if this is the first time it's seen,</color>
+<color=#75715e>     * create an info object and insert it.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>EntryInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>entryInfoMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntryInfo</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>entryInfoMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Update counts. */</color>
+    <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getProvisional</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>YES</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>provisionalCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>itemSize</color> <color=#f92672>+</color> <color=#f8f8f2>headerSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>headerBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>headerSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalLogBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>minBytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>minBytes</color> <color=#f92672>></color> <color=#f8f8f2>size</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>minBytes</color> <color=#f92672>=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>maxBytes</color> <color=#f92672><</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>maxBytes</color> <color=#f92672>=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstLsnRead</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>firstLsnRead</color> <color=#f92672>=</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentType</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CKPT_END</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Start counting a new interval. */</color>
+        <color=#f8f8f2>ckptCounter</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color> <color=#f92672>=</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>ckptCounter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CheckpointCounter</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>ckptList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>ckptCounter</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>ckptCounter</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentType</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>isUserLNType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Read the entry into the ByteBuffer. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>entry</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>getSharedLogEntry</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The getUnconvertedXxx methods are used because we don't have a</color>
+<color=#75715e>       * DatabaseImpl for calling LNLogEntry.postFetchInit, and we can</color>
+<color=#75715e>       * tolerate statistics that use the old duplicates format.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>keyLen</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getUnconvertedKeyLength</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>realTotalKeyCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>realMinKeyBytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>realMinKeyBytes</color> <color=#f92672>></color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>realMinKeyBytes</color> <color=#f92672>=</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>realMaxKeyBytes</color> <color=#f92672><</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>realMaxKeyBytes</color> <color=#f92672>=</color> <color=#f8f8f2>keyLen</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>dataLen</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getUnconvertedDataLength</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>realTotalDataCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>realMinDataBytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>realMinDataBytes</color> <color=#f92672>></color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>realMinDataBytes</color> <color=#f92672>=</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>realMaxDataBytes</color> <color=#f92672><</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>realMaxDataBytes</color> <color=#f92672>=</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If we have not read the entry, skip over it.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entry</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>nextEntryPosition</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>nextEntryPosition</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>summarize</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>csvFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>csvFormat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summarizeCSV</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summarizeText</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>class</color> <color=#a6e22e>CheckpointInfoTextFormatter</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>form</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>CheckpointInfoTextFormatter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#f8f8f2>CheckpointInfoTextFormatter</color><color=#f8f8f2>(</color><color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>form</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>form</color> <color=#f92672>=</color> <color=#f8f8f2>form</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>class</color> <color=#a6e22e>CheckpointInfoCSVFormatter</color> <color=#66d9ef>extends</color> <color=#f8f8f2>CheckpointInfoTextFormatter</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>CheckpointInfoCSVFormatter</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>","</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>","</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#f8f8f2>String</color> <color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>value</color> <color=#f92672>+</color> <color=#e6db74>","</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>summarizeCSV</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>>></color> <color=#f8f8f2>iter</color> <color=#f92672>=</color> <color=#f8f8f2>entryInfoMap</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>form</color> <color=#f92672>=</color> <color=#f8f8f2>NumberFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getIntegerInstance</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>percentForm</color> <color=#f92672>=</color> <color=#f8f8f2>NumberFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getInstance</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>percentForm</color><color=#f8f8f2>.</color><color=#a6e22e>setMaximumFractionDigits</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#e6db74>"type,total count,provisional count,total bytes,"</color>
+            <color=#f92672>+</color> <color=#e6db74>"min bytes,max bytes,avg bytes,entries as % of log"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>></color> <color=#f8f8f2>m</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>EntryInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>m</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>m</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>provisionalCount</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>minBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>maxBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color> <color=#f92672>/</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>double</color> <color=#f8f8f2>entryPercent</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>entryPercent</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Print special line for key/data */</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"key bytes,"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyCount</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>","</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realMinKeyBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realMaxKeyBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>/</color> <color=#f8f8f2>realTotalKeyCount</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"data bytes,"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataCount</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>","</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realMinDataBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realMaxDataBytes</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>/</color> <color=#f8f8f2>realTotalDataCount</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>','</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\nTotal bytes in portion of log read: "</color> <color=#f92672>+</color> <color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Total number of entries: "</color> <color=#f92672>+</color> <color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>totalCount</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summarizeCheckpointInfo</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>CheckpointInfoCSVFormatter</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>summarizeText</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Log statistics:"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>>></color> <color=#f8f8f2>iter</color> <color=#f92672>=</color> <color=#f8f8f2>entryInfoMap</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>().</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>form</color> <color=#f92672>=</color> <color=#f8f8f2>NumberFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getIntegerInstance</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>NumberFormat</color> <color=#f8f8f2>percentForm</color> <color=#f92672>=</color> <color=#f8f8f2>NumberFormat</color><color=#f8f8f2>.</color><color=#a6e22e>getInstance</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>percentForm</color><color=#f8f8f2>.</color><color=#a6e22e>setMaximumFractionDigits</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"type"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"total"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"provisional"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"total"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"min"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"max"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"avg"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"entries"</color><color=#f8f8f2>));</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"count"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"count"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"bytes"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"bytes"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"bytes"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"bytes"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"as % of log"</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>></color> <color=#f8f8f2>m</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>EntryInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>m</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>m</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>provisionalCount</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>minBytes</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>maxBytes</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color> <color=#f92672>/</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f8f8f2>)));</color>
+      <color=#66d9ef>double</color> <color=#f8f8f2>entryPercent</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>totalBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>percentForm</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>entryPercent</color><color=#f8f8f2>)));</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Print special line for key/data */</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"key bytes"</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyCount</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realMinKeyBytes</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realMaxKeyBytes</color><color=#f8f8f2>)));</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>keySize</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>/</color> <color=#f8f8f2>realTotalKeyCount</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>double</color> <color=#f8f8f2>keyPct</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>totalLogBytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalKeyBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>))</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>keySize</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>realSize</color> <color=#f92672>=</color> <color=#e6db74>"("</color> <color=#f92672>+</color> <color=#f8f8f2>percentForm</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>keyPct</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>")"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>realSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>"data bytes"</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataCount</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realMinDataBytes</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>realMaxDataBytes</color><color=#f8f8f2>)));</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>dataSize</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>/</color> <color=#f8f8f2>realTotalDataCount</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>double</color> <color=#f8f8f2>dataPct</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>totalLogBytes</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(((</color><color=#66d9ef>double</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>realTotalDataBytes</color> <color=#f92672>*</color> <color=#ae81ff>100</color><color=#f8f8f2>)))</color> <color=#f92672>/</color> <color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>dataSize</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>realSize</color> <color=#f92672>=</color> <color=#e6db74>"("</color> <color=#f92672>+</color> <color=#f8f8f2>percentForm</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>dataPct</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>")"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>realSize</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\nTotal bytes in portion of log read: "</color> <color=#f92672>+</color> <color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>totalLogBytes</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"Total number of entries: "</color> <color=#f92672>+</color> <color=#f8f8f2>form</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>totalCount</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>summarizeCheckpointInfo</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>CheckpointInfoTextFormatter</color><color=#f8f8f2>(</color><color=#f8f8f2>form</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>pad</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>result</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>spaces</color> <color=#f92672>=</color> <color=#ae81ff>20</color> <color=#f92672>-</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>spaces</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>summarizeCheckpointInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>CheckpointInfoTextFormatter</color> <color=#f8f8f2>f</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"\nPer checkpoint interval info:"</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Print out checkpoint interval info.</color>
+<color=#75715e>     * If the log looks like this:</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * start of log</color>
+<color=#75715e>     * ckpt1 start</color>
+<color=#75715e>     * ckpt1 end</color>
+<color=#75715e>     * ckpt2 start</color>
+<color=#75715e>     * ckpt2 end</color>
+<color=#75715e>     * end of log</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * There are 3 ckpt intervals</color>
+<color=#75715e>     * start of log->ckpt1 end</color>
+<color=#75715e>     * ckpt1 end -> ckpt2 end</color>
+<color=#75715e>     * ckpt2 end -> end of log</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"lnTxn"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"ln"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"mapLNTxn"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"mapLN"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"end to end"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#75715e>// ckpt n-1 end -> ckpt n end</color>
+            <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"end to start"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#75715e>// ckpt n-1 end -> ckpt n start</color>
+            <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"start to end"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#75715e>// ckpt n start -> ckpt n end</color>
+            <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"maxLNReplay"</color><color=#f8f8f2>)</color>
+            <color=#f92672>+</color> <color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"ckptEnd"</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>logFileMax</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getLong</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_MAX</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>CheckpointCounter</color><color=#f92672>></color> <color=#f8f8f2>iter</color> <color=#f92672>=</color> <color=#f8f8f2>ckptList</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>CheckpointCounter</color> <color=#f8f8f2>prevCounter</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>CheckpointCounter</color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#f8f8f2>iter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Entry type counts. */</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxTxnLNs</color> <color=#f92672>=</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>preStartLNTxnCount</color> <color=#f92672>+</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>postStartLNTxnCount</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>maxTxnLNs</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxLNs</color> <color=#f92672>=</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>preStartLNCount</color> <color=#f92672>+</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>postStartLNCount</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>maxLNs</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>preStartMapLNTxnCount</color> <color=#f92672>+</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>postStartMapLNTxnCount</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>preStartMapLNCount</color> <color=#f92672>+</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>postStartMapLNCount</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/* Checkpoint interval distance. */</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>end</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>endToEndDistance</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileMgr</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevCounter</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endToEndDistance</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>end</color><color=#f8f8f2>,</color> <color=#f8f8f2>firstLsnRead</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileMax</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMgr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endToEndDistance</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>end</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevCounter</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileMax</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMgr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>endToEndDistance</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Interval between last checkpoint end and this checkpoint start.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>start</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>startCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>getLastLsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>startCkptLsn</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>endToStartDistance</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevCounter</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endToStartDistance</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>firstLsnRead</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileMax</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMgr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endToStartDistance</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>start</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevCounter</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileMax</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMgr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>endToStartDistance</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Interval between ckpt start and ckpt end.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startToEndDistance</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>startCkptLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>startToEndDistance</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getWithCleaningDistance</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>startCkptLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logFileMax</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileMgr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>startToEndDistance</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The maximum number of LNs to replay includes the portion of LNs</color>
+<color=#75715e>       * from checkpoint start to checkpoint end of the previous</color>
+<color=#75715e>       * interval.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxReplay</color> <color=#f92672>=</color> <color=#f8f8f2>maxLNs</color> <color=#f92672>+</color> <color=#f8f8f2>maxTxnLNs</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevCounter</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>maxReplay</color> <color=#f92672>+=</color> <color=#f8f8f2>prevCounter</color><color=#f8f8f2>.</color><color=#a6e22e>postStartLNTxnCount</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>maxReplay</color> <color=#f92672>+=</color> <color=#f8f8f2>prevCounter</color><color=#f8f8f2>.</color><color=#a6e22e>postStartLNCount</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>f</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#f8f8f2>maxReplay</color><color=#f8f8f2>));</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"   "</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>getLastLsn</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"   "</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>endCkptLsn</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>prevCounter</color> <color=#f92672>=</color> <color=#f8f8f2>c</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>EntryInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>count</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>provisionalCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalBytes</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>headerBytes</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>minBytes</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxBytes</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>EntryInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>count</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>provisionalCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>totalBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>headerBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>minBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>maxBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>LogEntryTypeComparator</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Comparator</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>o1</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>o2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>o1</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>o2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>Byte</color> <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>o1</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>Byte</color> <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>Byte</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>o2</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>t1</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Accumulate the count of items from checkpoint end->checkpoint end.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>CheckpointCounter</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#f8f8f2>startCkptLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#f8f8f2>endCkptLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>preStartLNTxnCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>preStartLNCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>preStartMapLNTxnCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>preStartMapLNCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>postStartLNTxnCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>postStartLNCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>postStartMapLNTxnCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>postStartMapLNCount</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>increment</color><color=#f8f8f2>(</color><color=#f8f8f2>FileReader</color> <color=#f8f8f2>reader</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>currentEntryTypeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryTypeNum</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CKPT_START</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>startCkptLsn</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLsn</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>isUserLNType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>startCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>preStartLNTxnCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>postStartLNTxnCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>startCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>preStartLNCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>postStartLNCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_MAPLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>startCkptLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>preStartMapLNCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>postStartMapLNCount</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

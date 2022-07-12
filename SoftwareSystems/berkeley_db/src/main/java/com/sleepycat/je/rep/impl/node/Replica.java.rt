@@ -1,0 +1,1604 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.ReplicatedEnvironment.State</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory.ConnectOptions</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.Heartbeat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.ShutdownRequest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.MasterStatus.MasterSyncException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.Protocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshake</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshakeConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederSyncup</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederSyncup.TestHook</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.txn.MasterTxn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.txn.ReplayTxn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.Message</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.MessageOp</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.ProtocolException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils.Clock</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils.ExceptionAwareCountDownLatch</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.Response</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.ConnectException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.ClosedByInterruptException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.SortedMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.TreeMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ArrayBlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ReplicaStatDefinition.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The Replica class is the locus of the replay operations and replica transaction consistency</color>
+<color=#75715e> * tracking and management operations at a replica node.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A single instance of this class is created when the replication node is created and exists for</color>
+<color=#75715e> * the lifetime of the replication node, although it is only really used when the node is operating</color>
+<color=#75715e> * as a Replica.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that the Replica (like the FeederManager) does not have its own independent thread of</color>
+<color=#75715e> * control; it runs in the RepNode's thread. To make the network I/O as aync as possible, and avoid</color>
+<color=#75715e> * stalls during network I/O the input and output are done in separate threads. The overall thread</color>
+<color=#75715e> * and queue organization is as sketched below:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>read from network -> RepNodeThread (does read) -> replayQueue replayQueue -> ReplayThread -></color>
+<color=#75715e> * outputQueue outputQueue -> ReplicaOutputThread (does write) -> writes to network</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This three thread organization has the following benefits over a single thread replay model:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>1) It makes the heartbeat mechanism used to determine whether the HA sockets are in use more</color>
+<color=#75715e> * reliable. This is because a heartbeat response cannot be blocked by lock contention in the replay</color>
+<color=#75715e> * thread, since a heartbeat can be sent spontaneously (without an explicit heartbeat request from</color>
+<color=#75715e> * the feeder) by the ReplicaOutputThread, if a heartbeat had not been sent during a heartbeat</color>
+<color=#75715e> * interval period.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>2) The cpu load in the replay thread is reduced by offloading the network-specific aspects of</color>
+<color=#75715e> * the processing to different threads. It's important to keep the CPU load in this thread at a</color>
+<color=#75715e> * minimum so we can use a simple single thread replay scheme.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>3) Prevents replay thread stalls by input and output buffering in the two threads on either</color>
+<color=#75715e> * side of it.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>With jdk 1.7 we could eliminate the use of these threads and switch over to the new aysnc I/O</color>
+<color=#75715e> * APIs, but that involves a lot more code restructuring.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Replica</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The Node to which the Replica belongs. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The replay component of the Replica */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Replay</color> <color=#f8f8f2>replay</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The exception that provoked the replica exit. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * It's non null when the loop is active.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>NamedChannelWithTimeout</color> <color=#f8f8f2>replicaFeederChannel</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The consistency component. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConsistencyTracker</color> <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The latest txn-ending (commit or abort) VLSN that we have on this replica. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>txnEndVLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A test delay introduced in the replica loop to simulate a loaded</color>
+<color=#75715e>   * replica. The replica waits this amount of time before processing each</color>
+<color=#75715e>   * message.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>testDelayMs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For testing only - mimic a network partition. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dontProcessStream</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Number of times to retry on a network connection failure. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>NETWORK_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Service unavailable retries. These are typically the result of service</color>
+<color=#75715e>   * request being made before the node is ready to provide them. For</color>
+<color=#75715e>   * example, the feeder service is only available after a node has</color>
+<color=#75715e>   * transitioned to becoming the master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SERVICE_UNAVAILABLE_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>10</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The number of ms to wait between above retries, allowing time for the</color>
+<color=#75715e>   * master to assume its role, and start listening on its port.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color> <color=#f92672>=</color> <color=#ae81ff>1000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The protocol instance if one is currently in use by the Replica.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Protocol statistics aggregated across all past protocol instantiations.</color>
+<color=#75715e>   * It does not include the statistics for the current Protocol object in</color>
+<color=#75715e>   * use. A node can potentially go through the Replica state multiple time</color>
+<color=#75715e>   * during it's lifetime. This instance aggregates replica statistics</color>
+<color=#75715e>   * across all transitions into and out of the Replica state.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>aggProtoStats</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Holds the exception that is thrown to indicate that an election is</color>
+<color=#75715e>   * needed before a hard recovery can proceed. It's set to a non-null value</color>
+<color=#75715e>   * when the need for a hard recovery is first discovered and is</color>
+<color=#75715e>   * subsequently cleared after an election is held and before the next</color>
+<color=#75715e>   * attempt at a syncup with the newly elected master. The election ensures</color>
+<color=#75715e>   * that the master being used for an actual rollback is current and is not</color>
+<color=#75715e>   * an isolated master that is out of date, due to a network partition that</color>
+<color=#75715e>   * has since been resolved.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>HardRecoveryElectionException</color> <color=#f8f8f2>hardRecoveryElectionException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For testing only. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>replicaFeederSyncupHook</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>utilint</color><color=#f8f8f2>.</color><color=#a6e22e>TestHook</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>replayHook</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>utilint</color><color=#f8f8f2>.</color><color=#a6e22e>TestHook</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>initialReplayHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A cache of DatabaseImpls for the Replay to speed up DbTree.getId().</color>
+<color=#75715e>   * Cleared/invalidated by a heartbeat or if je.rep.dbIdCacheOpCount</color>
+<color=#75715e>   * operations have gone by, or if any replay operations on Name LNs are</color>
+<color=#75715e>   * executed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DbCache</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The message queue used for communications between the network read thread and the replay</color>
+<color=#75715e>   * thread.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>replayQueue</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The replica output thread. It's only maintained here as an IV, rather</color>
+<color=#75715e>   * than as a local variable inside doRunReplicaLoopInternalWork() to</color>
+<color=#75715e>   * facilitate unit tests and is non null only for for the duration of the</color>
+<color=#75715e>   * method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>ReplicaOutputThread</color> <color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The number of times a message entry could not be inserted into the queue within the poll period</color>
+<color=#75715e>   * and had to be retried.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessageQueueOverflows</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>Replica</color><color=#f8f8f2>(</color><color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>Replay</color> <color=#f8f8f2>replay</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repNode</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dbCache</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>DbCache</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_MAX_OPEN_DB_HANDLES</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_DB_HANDLE_TIMEOUT</color><color=#f8f8f2>));</color>
+
+    <color=#f8f8f2>consistencyTracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConsistencyTracker</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replay</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>aggProtoStats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>BinaryProtocolStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>BinaryProtocolStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessageQueueOverflows</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getMessageQueueOverflows</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>testDelayMs</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>TEST_REPLICA_DELAY</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>replayHook</color> <color=#f92672>=</color> <color=#f8f8f2>initialReplayHook</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Set up the replay queue. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>replayQueueSize</color> <color=#f92672>=</color>
+        <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MESSAGE_QUEUE_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>replayQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>replayQueueSize</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Shutdown the Replica, free any threads that may have been waiting for the replica to reach some</color>
+<color=#75715e>   * degree of consistency. This method is only invoked as part of the repnode shutdown.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the shutdown is being executed from a different thread, it attempts to interrupt the</color>
+<color=#75715e>   * thread by first shutting down the channel it may be waiting on for input from the feeder. The</color>
+<color=#75715e>   * replica thread should notice the channel shutdown and/or the shutdown state of the rep node</color>
+<color=#75715e>   * itself. The caller will use harsher methods, like an interrupt, if the rep node thread (Replica</color>
+<color=#75715e>   * or Feeder) is still active.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdown</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Rep node must have initiated the shutdown."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>shutdown</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Perform the actions to provoke a "soft" shutdown.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Since the replica shares the RepNode thread, it will take care of</color>
+<color=#75715e>     * the actual thread shutdown itself.</color>
+<color=#75715e>     */</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Shutdown the channel as an attempt to interrupt just the socket</color>
+<color=#75715e>     * read/write operation.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Clear the latch in case the replica loop is waiting for the outcome</color>
+<color=#75715e>     * of an election.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNFreezeLatch</color><color=#f8f8f2>().</color><color=#a6e22e>clearLatch</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit testing only! */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTestDelayMs</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>testDelayMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>testDelayMs</color> <color=#f92672>=</color> <color=#f8f8f2>testDelayMs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getTestDelayMs</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>testDelayMs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit testing only! */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDontProcessStream</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>dontProcessStream</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getTxnEndVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txnEndVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Replay</color> <color=#a6e22e>replay</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replay</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>DbCache</color> <color=#a6e22e>getDbCache</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ConsistencyTracker</color> <color=#a6e22e>getConsistencyTracker</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>DataChannel</color> <color=#a6e22e>getReplicaFeederChannel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>Protocol</color> <color=#a6e22e>getProtocol</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the last commit VLSN at the master, as known at the replica.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the commit VLSN</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMasterTxnEndVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterTxnEndVLSN</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For test use only. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicaOutputThread</color> <color=#a6e22e>getReplicaOutputThread</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The core control loop when the node is serving as a Replica. Note that if a Replica is also</color>
+<color=#75715e>   * serving the role of a feeder, it will run additional feeder loops in separate threads. The loop</color>
+<color=#75715e>   * exits when it encounters one of the following possible conditions:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1) The connection to the master can no longer be maintained, due to connectivity issues, or</color>
+<color=#75715e>   * because the master has explicitly shutdown its connections due to an election.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2) The node becomes aware of a change in master, that is, assertSync() fails.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>3) The loop is interrupted, which is interpreted as a request to shutdown the replication</color>
+<color=#75715e>   * node as a whole.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>4) It fails to establish its node information in the master as it attempts to join the</color>
+<color=#75715e>   * replication group for the first time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Normal exit from this run loop results in the rep node retrying an election and continuing</color>
+<color=#75715e>   * in its new role as determined by the outcome of the election. A thrown exception, on the other</color>
+<color=#75715e>   * hand, results in the rep node as a whole terminating its operation and no longer participating</color>
+<color=#75715e>   * in the replication group, that is, it enters the DETACHED state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the in/out streams are handled synchronously on the replica, while they are</color>
+<color=#75715e>   * handled asynchronously by the Feeder.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InterruptedException</color>
+<color=#75715e>   * @throws DatabaseException if the environment cannot be closed/for a re-init</color>
+<color=#75715e>   * @throws GroupShutdownException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>runReplicaLoop</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RetryException</color><color=#f92672>></color> <color=#f8f8f2>retryExceptionClass</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>retryCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>runReplicaLoopInternal</color><color=#f8f8f2>();</color>
+          <color=#75715e>/* Normal exit */</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RetryException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>inSync</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Retry terminated, out of sync."</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>retryExceptionClass</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>++</color><color=#f8f8f2>retryCount</color> <color=#f92672>>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#75715e>/* Exit replica retry elections */</color>
+              <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                  <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                  <color=#e6db74>"Failed to recover from exception: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>", despite "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color>
+                      <color=#f92672>+</color> <color=#e6db74>" retries.\n"</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+              <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>retryCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>retryExceptionClass</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Retry #: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>retryCount</color>
+                  <color=#f92672>+</color> <color=#e6db74>"/"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color>
+                  <color=#f92672>+</color> <color=#e6db74>" Will retry replica loop after "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color>
+                  <color=#f92672>+</color> <color=#e6db74>"ms. "</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>inSync</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DiskLimitException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * Exit replica loop, wait for disk space to become</color>
+<color=#75715e>           * available in main rep node loop.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Reset the rep node ready latch unless the replica is not ready</color>
+<color=#75715e>       * because it's going to hold an election before proceeding with</color>
+<color=#75715e>       * hard recovery and joining the group.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hardRecoveryElectionException</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>resetReadyLatch</color><color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Exit use elections to try a different master. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>runReplicaLoopInternal</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>RestartRequiredException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>RetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Replica loop started with master: "</color> <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMasterNameId</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>testDelayMs</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Test delay of: "</color> <color=#f92672>+</color> <color=#f8f8f2>testDelayMs</color> <color=#f92672>+</color> <color=#e6db74>"ms."</color> <color=#f92672>+</color> <color=#e6db74>" after each message sent"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>initReplicaLoop</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>doRunReplicaLoopInternalWork</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RestartRequiredException</color> <color=#f8f8f2>rre</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>rre</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>rre</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ClosedByInterruptException</color> <color=#f8f8f2>closedByInterruptException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdown</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replica loop interrupted for shutdown."</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replica loop unexpected interrupt."</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>(</color><color=#f8f8f2>closedByInterruptException</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Master may have changed with the master shutting down its</color>
+<color=#75715e>       * connection as a result. Normal course of events, log it and</color>
+<color=#75715e>       * return to the outer node level loop.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replica IO exception: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" Message:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>))</color> <color=#f8f8f2>:</color> <color=#e6db74>""</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RetryException</color> <color=#f92672>|</color> <color=#f8f8f2>DiskLimitException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Propagate it outwards. Node does not need to shutdown. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>severe</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replica unexpected exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>MasterSyncException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* expected change in masters from an election. */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>HardRecoveryElectionException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Exit the replica loop so that elections can be held and the</color>
+<color=#75715e>       * master confirmed.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>hardRecoveryElectionException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>severe</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replica unexpected exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>loopExitCleanup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>doRunReplicaLoopInternalWork</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_TIMEOUT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>setTimeoutMs</color><color=#f8f8f2>(</color><color=#f8f8f2>timeoutMs</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getReplay</color><color=#f8f8f2>().</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>replicaOutputThread</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ReplayThread</color> <color=#f8f8f2>replayThread</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplayThread</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>maxPending</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdownOrInvalid</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Throw DiskLimitException if there is a violation. */</color>
+        <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>checkDiskLimitViolation</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>offer</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplayThread</color><color=#f8f8f2>.</color><color=#a6e22e>QUEUE_POLL_INTERVAL_NS</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>NANOSECONDS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Offer timed out. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>isAlive</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* Retry the offer */</color>
+          <color=#f8f8f2>nMessageQueueOverflows</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>pending</color> <color=#f92672>=</color> <color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pending</color> <color=#f92672>></color> <color=#f8f8f2>maxPending</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>maxPending</color> <color=#f92672>=</color> <color=#f8f8f2>pending</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Make sure messages in the queue are processed. Ensure, in</color>
+<color=#75715e>       * particular, that shutdown requests are processed and not ignored</color>
+<color=#75715e>       * due to the IOEException resulting from a closed connection.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Drain all queued messages, exceptions may be generated</color>
+<color=#75715e>         * in the process. They logically precede IO exceptions.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* replay thread is dead or exiting. */</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Ensure thread has exited in all circumstances */</color>
+        <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>replayThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>replicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>replicaOutputThread</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process the shutdown message from the master and return the GroupShutdownException that must be</color>
+<color=#75715e>   * thrown to exit the Replica loop.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the GroupShutdownException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>GroupShutdownException</color> <color=#a6e22e>processShutdown</color><color=#f8f8f2>(</color><color=#f8f8f2>ShutdownRequest</color> <color=#f8f8f2>shutdown</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Acknowledge the shutdown message right away, since the checkpoint</color>
+<color=#75715e>     * operation can take a long time to complete. Long enough to exceed</color>
+<color=#75715e>     * the feeder timeout on the master. The master only needs to know that</color>
+<color=#75715e>     * the replica has received the message.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>SHUTDOWN_ACK</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Turn off network timeouts on the replica, since we don't want the</color>
+<color=#75715e>     * replica to timeout the connection. The connection itself is no</color>
+<color=#75715e>     * longer used past this point and will be reclaimed as part of normal</color>
+<color=#75715e>     * replica exit cleanup.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>setTimeoutMs</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * TODO: Share the following code with the standalone Environment</color>
+<color=#75715e>     * shutdown, or better yet, call EnvironmentImpl.doClose here.</color>
+<color=#75715e>     */</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Begin shutdown of the deamons before checkpointing.  Cleaning during</color>
+<color=#75715e>     * the checkpoint is wasted and slows down the checkpoint, plus it may</color>
+<color=#75715e>     * cause additional checkpoints.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>requestShutdownDaemons</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now start a potentially long running checkpoint.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Checkpoint initiated."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>CheckpointConfig</color> <color=#f8f8f2>config</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CheckpointConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>setForce</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>setMinimizeRecoveryTime</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>invokeCheckpoint</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#e6db74>"Group Shutdown"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Checkpoint completed."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Checkpoint failed: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Force final shutdown of the daemons. */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>shutdownDaemons</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>getShutdownTimeMs</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initialize for replica loop entry, which involves completing the following steps successfully:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1) The replica feeder handshake. 2) The replica feeder syncup. 3) Processing the first</color>
+<color=#75715e>   * heartbeat request from the feeder.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initReplicaLoop</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>HardRecoveryElectionException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>createReplicaFeederChannel</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ReplicaFeederHandshake</color> <color=#f8f8f2>handshake</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaFeederHandshake</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>RepFeederHandshakeConfig</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>handshake</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>notifyReplicaConnected</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Init GlobalCBVLSN using feeder manager's minJEVersion. */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>globalCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>handshake</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederMinJEVersion</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>hardRecoveryNeedsElection</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hardRecoveryElectionException</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replica syncup after election to verify master:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>hardRecoveryElectionException</color><color=#f8f8f2>.</color><color=#a6e22e>getMaster</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" elected master:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMasterNameId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>hardRecoveryNeedsElection</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>hardRecoveryNeedsElection</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>hardRecoveryElectionException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ReplicaFeederSyncup</color> <color=#f8f8f2>syncup</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaFeederSyncup</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>replay</color><color=#f8f8f2>,</color> <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>,</color> <color=#f8f8f2>hardRecoveryNeedsElection</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getCBVLSNTracker</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>txnEndVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchedVLSN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>matchedTxnEndTime</color> <color=#f92672>=</color> <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>getMatchedVLSNTime</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>reinit</color><color=#f8f8f2>(</color><color=#f8f8f2>txnEndVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>matchedTxnEndTime</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color> <color=#f8f8f2>heartbeat</color> <color=#f92672>=</color>
+        <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>(),</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>processHeartbeat</color><color=#f8f8f2>(</color><color=#f8f8f2>heartbeat</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>replicaDelta</color> <color=#f92672>=</color>
+        <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterTxnEndVLSN</color><color=#f8f8f2>()</color>
+            <color=#f92672>-</color> <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Replica initialization completed. Replica VLSN: %s "</color>
+                <color=#f92672>+</color> <color=#e6db74>" Heartbeat master commit VLSN: %,d "</color>
+                <color=#f92672>+</color> <color=#e6db74>" DTVLSN:%,d Replica VLSN delta: %,d"</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>lastReplayedVLSN</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterTxnEndVLSN</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getAnyDTVLSN</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>replicaDelta</color><color=#f8f8f2>));</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The replica is ready for business, indicate that the node is</color>
+<color=#75715e>     * ready by counting down the latch and releasing any waiters.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getReadyLatch</color><color=#f8f8f2>().</color><color=#a6e22e>countDown</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process a heartbeat message. It queues a response and updates the consistency tracker with the</color>
+<color=#75715e>   * information in the heartbeat.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param heartbeat the heartbeat message</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processHeartbeat</color><color=#f8f8f2>(</color><color=#f8f8f2>Heartbeat</color> <color=#f8f8f2>heartbeat</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT_ACK</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>trackHeartbeat</color><color=#f8f8f2>(</color><color=#f8f8f2>heartbeat</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Performs the cleanup actions upon exit from the internal replica loop. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>loopExitCleanup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RetryException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Retrying connection to feeder. Message: "</color> <color=#f92672>+</color> <color=#f8f8f2>shutdownException</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Exiting inner Replica loop."</color> <color=#f92672>+</color> <color=#e6db74>" Master requested shutdown."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Exiting inner Replica loop with exception "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>shutdownException</color>
+                <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Exiting inner Replica loop."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>clearDbTreeCache</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>consistencyTracker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>logStats</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Sum up statistics for the loop. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>protocol</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>aggProtoStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If this node has a transient ID, then null out its ID to allow the</color>
+<color=#75715e>     * next feeder connection to assign it a new one</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeType</color><color=#f8f8f2>().</color><color=#a6e22e>hasTransientId</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>revertToNull</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Clear the DatabaseId -> DatabaseImpl cache used to speed up DbTree</color>
+<color=#75715e>   * lookup operations.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>clearDbTreeCache</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>dbCache</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Invoked when this node transitions to the master state. Aborts all inflight replay transactions</color>
+<color=#75715e>   * outstanding from a previous state as a Replica, because they were initiated by a different</color>
+<color=#75715e>   * master and will never complete. Also, release any Replica transactions that were waiting on</color>
+<color=#75715e>   * consistency policy requirements.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>masterTransitionCleanup</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>hardRecoveryElectionException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>abortOldTxns</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>forceTripLatches</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>MasterStateException</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getStateChangeEvent</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Invoked when this node seamlessly changes roles from master to replica without a recovery. The</color>
+<color=#75715e>   * ability to do this transition without a recovery is desirable because it's a faster transition,</color>
+<color=#75715e>   * and avoids the GC overhead of releasing the JE cache, and the I/O overhead of recreating the</color>
+<color=#75715e>   * in-memory btree.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The two key cases where this happens are: A) a network partition occurs, and the group</color>
+<color=#75715e>   * elects a new master. The orphaned master did not crash and its environment is still valid, and</color>
+<color=#75715e>   * when it regains contact with the group, it discovers that it has been deposed. It transitions</color>
+<color=#75715e>   * into a replica status.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>B) a master transfer request moves mastership from this node to another member of the group.</color>
+<color=#75715e>   * This node's environment is still valid, and it transitions to replica state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The transition from master to replica requires resetting state so all is as expected for a</color>
+<color=#75715e>   * Replica. There are two categories of work: - network connections: shutting down feeder</color>
+<color=#75715e>   * connections and reinitializing feeder infrastructure so that a future replica->master</color>
+<color=#75715e>   * transition will work. - resetting transaction state. All MasterTxns must be transformed into</color>
+<color=#75715e>   * ReplayTxns, bearing the same transaction id and holding the same locks.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note: since non-masters can't commit txns, the inflight MasterTxns are destined to be</color>
+<color=#75715e>   * aborted in the future. An alternative to resetting transaction state would be to mark them in</color>
+<color=#75715e>   * some way so that the later HA syncup/ replay ignores operations pertaining to these ill fated</color>
+<color=#75715e>   * txns. We didn't chose that approach because the simplicity of the replay is a plus; it is</color>
+<color=#75715e>   * almost entirely ignorant of the semantics of the replication stream. Also, replays have</color>
+<color=#75715e>   * potential for complexity, either because syncups could restart if masters change or become</color>
+<color=#75715e>   * unavailable, or because there may be future performance optimizations in that area.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Resetting transaction state is tricky because the MasterTxn is accessible to the application</color>
+<color=#75715e>   * code. While the Replay thread is attempting to transform the MasterTxn, application threads may</color>
+<color=#75715e>   * be attempting to commit or abort the transactions. Note that application threads will not be</color>
+<color=#75715e>   * trying to add locks, because the node will be in UNKNOWN state, and writes will be prohibited</color>
+<color=#75715e>   * by the MasterTxn.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>MasterTransfers do impose a blocking period on transaction commits and aborts, but even</color>
+<color=#75715e>   * there, windows exist in the post-block period where the application may try to abort the</color>
+<color=#75715e>   * transaction. Network partitions do no form of blocking, and have a wider window when the</color>
+<color=#75715e>   * application and RepNode thread must be coordinated. Here's a diagram of the time periods of</color>
+<color=#75715e>   * concern</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>t1 - master transfer request issued (only when master transfer) t2 - user txns which attempt</color>
+<color=#75715e>   * to abort or commit are blocked on RepImpl.blockTxnLatch (only when mt) t3 - node detects that</color>
+<color=#75715e>   * it has transitioned to UNKNOWN and lost master status. MasterTxns are now stopped from</color>
+<color=#75715e>   * acquiring locks or committing and will throw UnknownMasterException. t4 - feeder connections</color>
+<color=#75715e>   * shutdown t5 - node begins conversion to replica state t6 - blockTxnLatch released (only when</color>
+<color=#75715e>   * master transfer) t7 - existing MasterTxns converted into ReplayTxns, locks moved into new</color>
+<color=#75715e>   * ReplayTxns. Blocked txns must be released before this conversion, because the application</color>
+<color=#75715e>   * thread is holding the txn mutex, and conversion needs to take that mutex.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>At any time during this process, the application threads may attempt to abort or commit</color>
+<color=#75715e>   * outstanding txns, or acquire read or write locks. After t3, any attempts to lock, abort or</color>
+<color=#75715e>   * commit will throw an UnknownMasterException or ReplicaWriteException, and in the normal course</color>
+<color=#75715e>   * of events, the txn would internally abort. But once t5 is reached, we want to prevent any</color>
+<color=#75715e>   * changes to the number of write locks in the txn so as to prevent interference with the</color>
+<color=#75715e>   * conversion of the master txns and any danger of converting only part of a txn. We set the</color>
+<color=#75715e>   * volatile, transient MasterTxn.freeze field at t5 to indicate that there should be no change to</color>
+<color=#75715e>   * the contents of the transaction. When freeze is true, any attempts to abort or commit the</color>
+<color=#75715e>   * transaction will throw Unknown/ReplicaWriteException, and the txn will be put into MUST_ABORT</color>
+<color=#75715e>   * state, but the existing locks will be unchanged.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In a network partition, it's possible that the txn will be aborted or committed locally</color>
+<color=#75715e>   * before t5. In that case, there may be a hard rollback when the node syncs up with the new</color>
+<color=#75715e>   * master, and finds the anomalous abort record. In masterTransfer, the window is smaller, and the</color>
+<color=#75715e>   * blocking latch ensures that no commits can happen bettween t1-t5. After t5, the node will not</color>
+<color=#75715e>   * be a master, so there can be no commits. Aborts may happen and can cause hard rollbacks, but no</color>
+<color=#75715e>   * data will be lost.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The freeze field is similar to the blockTxnLatch, and we considered using the blockTxnLatch</color>
+<color=#75715e>   * to stabilize the txns, but ruled it out because: - the locking hierarchy where the application</color>
+<color=#75715e>   * thread holds the txn mutex while awaiting the block txn latch prevents txn conversion. - the</color>
+<color=#75715e>   * blockTxnLatch is scoped to the MasterTransfer instance, which may not be in play for network</color>
+<color=#75715e>   * partitioning.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>replicaTransitionCleanup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Logically an assert, use an exception rather than Java assert</color>
+<color=#75715e>     * because we want this check to be enabled at all times. If</color>
+<color=#75715e>     * unexpectedly in master state, invalidate the environment, so we do a</color>
+<color=#75715e>     * recovery and are sure to cleanup.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>State</color><color=#f8f8f2>.</color><color=#a6e22e>MASTER</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Should not be in MASTER state when converting from master "</color> <color=#f92672>+</color> <color=#e6db74>"to replica state"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Find all MasterTxns, and convert them to ReplayTxns.  The set of</color>
+<color=#75715e>     * existing MasterTxns cannot increase at this point, because the node</color>
+<color=#75715e>     * is not in MASTER state. Freeze all txns and prevent change.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>MasterTxn</color><color=#f92672>></color> <color=#f8f8f2>existingMasterTxns</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getExistingMasterTxns</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Transitioning node to replica state, "</color> <color=#f92672>+</color> <color=#f8f8f2>existingMasterTxns</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" txns to clean up"</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Prevent aborts on all MasterTxns; hold their contents steady */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>MasterTxn</color> <color=#f8f8f2>masterTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>existingMasterTxns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>masterTxn</color><color=#f8f8f2>.</color><color=#a6e22e>freeze</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Unblock any transactions that are stuck in their commit processing,</color>
+<color=#75715e>     * awaiting the release of the master transfer block. Such</color>
+<color=#75715e>     * transactions hold a mutex on the transaction, and the mutex would</color>
+<color=#75715e>     * block any of the lock stealing that will occur below. Note that if</color>
+<color=#75715e>     * we are doing this transition because of a network partition, there</color>
+<color=#75715e>     * will be no blocked transactions.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>unblockTxnCompletion</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>MasterTxn</color> <color=#f8f8f2>masterTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>existingMasterTxns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Convert this masterTxn to a ReplayTxn and move any existing</color>
+<color=#75715e>       * write locks to it. Unfreeze and then abort the masterTxn.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>replayTxn</color> <color=#f92672>=</color> <color=#f8f8f2>masterTxn</color><color=#f8f8f2>.</color><color=#a6e22e>convertToReplayTxnAndClose</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getReplay</color><color=#f8f8f2>());</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Master Txn "</color> <color=#f92672>+</color> <color=#f8f8f2>masterTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" has no locks, nothing to transfer"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnManager</color><color=#f8f8f2>().</color><color=#a6e22e>registerTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"state for replay transaction "</color> <color=#f92672>+</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" = "</color> <color=#f92672>+</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We're done with the transition, clear any active master transfers,</color>
+<color=#75715e>     * if they exist.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>clearActiveTransfer</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a channel used by the Replica to connect to the Feeder. The socket is configured with a</color>
+<color=#75715e>   * read timeout that's a multiple of the heartbeat interval to help detect, or initiate a change</color>
+<color=#75715e>   * in master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   * @throws ConnectRetryException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>createReplicaFeederChannel</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectRetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataChannel</color> <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>PRE_HEARTBEAT_TIMEOUT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>receiveBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_RECEIVE_BUFFER_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>openTimeout</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPSTREAM_OPEN_TIMEOUT</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Note that soTimeout is not set since it's a blocking channel and</color>
+<color=#75715e>       * setSoTimeout has no effect on a blocking nio channel.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Push responses out rapidly, they are small (heart beat or commit</color>
+<color=#75715e>       * response) and need timely delivery to the master.</color>
+<color=#75715e>       * (tcpNoDelay = true)</color>
+<color=#75715e>       */</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>ConnectOptions</color> <color=#f8f8f2>connectOpts</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>ConnectOptions</color><color=#f8f8f2>()</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setTcpNoDelay</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setReceiveBufferSize</color><color=#f8f8f2>(</color><color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setOpenTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>openTimeout</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setBlocking</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color>
+          <color=#f8f8f2>repImpl</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>getChannelFactory</color><color=#f8f8f2>()</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>connect</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMaster</color><color=#f8f8f2>(),</color> <color=#f8f8f2>connectOpts</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>replicaFeederChannel</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>NamedChannelWithTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeoutMs</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>doServiceHandshake</color><color=#f8f8f2>(</color><color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ConnectException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * A network problem, or the node went down between the time we</color>
+<color=#75715e>       * learned it was the master and we tried to connect.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>NETWORK_RETRIES</color><color=#f8f8f2>,</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ServiceConnectFailedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The feeder may not have established the Feeder Service</color>
+<color=#75715e>       * as yet. For example, the transition to the master may not have</color>
+<color=#75715e>       * been completed. Wait longer.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getResponse</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>Response</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_SERVICE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>SERVICE_UNAVAILABLE_RETRIES</color><color=#f8f8f2>,</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the replay statistics associated with the Replica.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the statistics.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getReplayStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Get the protocl statistics for this replica. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getProtocolStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>protoStats</color> <color=#f92672>=</color> <color=#f8f8f2>aggProtoStats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* Guard against concurrent modification. */</color>
+    <color=#f8f8f2>Protocol</color> <color=#f8f8f2>prot</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protocol</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prot</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* These statistics are not ye a part of the agg statistics. */</color>
+      <color=#f8f8f2>protoStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>prot</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>protoStats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Get the consistency tracker stats for this replica. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getTrackerStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Reset the stats associated with this Replica. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>resetStats</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>aggProtoStats</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>protocol</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>resetStats</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>resetStats</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Defines the possible types of exits that can be requested from the ReplayThread. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>enum</color> <color=#f8f8f2>ReplayExitType</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>IMMEDIATE</color><color=#f8f8f2>,</color> <color=#75715e>/* An immediate exit; ignore queued requests. */</color>
+    <color=#f8f8f2>SOFT</color> <color=#75715e>/* Process pending requests in queue, then exit */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The thread responsible for the replay of messages delivered over the replication stream.</color>
+<color=#75715e>   * Reading and replay are done in separate threads for two reasons:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1) It allows the two activities to make independent progress. The network can be read and</color>
+<color=#75715e>   * messages assembled even if the replay activity has stalled. 2) The two threads permit use of</color>
+<color=#75715e>   * two cores to perform the replay thus making it less likely that cpu is the replay bottleneck.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The inputs and outputs of this thread are schematically described as:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>replayQueue -> ReplayThread -> outputQueue</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>It's the second component of the three thread structure outlined in the Replica's class</color>
+<color=#75715e>   * level comment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>class</color> <color=#a6e22e>ReplayThread</color> <color=#66d9ef>extends</color> <color=#f8f8f2>StoppableThread</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Thread exit exception. It's null if the thread exited due to an exception. It's the</color>
+<color=#75715e>     * responsibility of the main replica thread to propagate the exception across the thread</color>
+<color=#75715e>     * boundary in this case.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>exception</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/** Set asynchronously when a shutdown is being requested. */</color>
+    <color=#66d9ef>volatile</color> <color=#f8f8f2>ReplayExitType</color> <color=#f8f8f2>exitRequest</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The queue poll interval, 1 second */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>QUEUE_POLL_INTERVAL_NS</color> <color=#f92672>=</color> <color=#ae81ff>1000000000l</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>ReplayThread</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"ReplayThread"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#a6e22e>initiateSoftShutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Use immediate, since the stream will continue to be read. */</color>
+      <color=#f8f8f2>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replay thread started. Message queue size:"</color> <color=#f92672>+</color> <color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>remainingCapacity</color><color=#f8f8f2>());</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dbTreeCacheClearingOpCount</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTreeCacheClearingOpCount</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>opCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>pollIntervalNs</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getPollIntervalNs</color><color=#f8f8f2>(</color><color=#f8f8f2>QUEUE_POLL_INTERVAL_NS</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>poll</color><color=#f8f8f2>(</color><color=#f8f8f2>pollIntervalNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>NANOSECONDS</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>((</color><color=#f8f8f2>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color>
+              <color=#f92672>||</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdownOrInvalid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>ReplayExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>flushPendingAcks</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>startNs</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>flushPendingAcks</color><color=#f8f8f2>(</color><color=#f8f8f2>startNs</color><color=#f8f8f2>);</color>
+
+          <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>assertSync</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Timeout on poll. */</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>assert</color> <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>replayHook</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>messageOp</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>SHUTDOWN_REQUEST</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#f8f8f2>processShutdown</color><color=#f8f8f2>((</color><color=#f8f8f2>ShutdownRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>processHeartbeat</color><color=#f8f8f2>((</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>dbCache</color><color=#f8f8f2>.</color><color=#a6e22e>tick</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Check for test mimicking network partition. */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dontProcessStream</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>replayEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>startNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Note: the consistency tracking is more obscure than</color>
+<color=#75715e>             * it needs to be, because the commit/abort VLSN is set</color>
+<color=#75715e>             * in Replay.replayEntry() and is then used below. An</color>
+<color=#75715e>             * alternative would be to promote the following</color>
+<color=#75715e>             * conditional to a level above, so commit/abort</color>
+<color=#75715e>             * operations get their own replay method which does</color>
+<color=#75715e>             * the consistency tracking.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(((</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>).</color><color=#a6e22e>isTxnEnd</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>txnEndVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getLastReplayedVLSN</color><color=#f8f8f2>();</color>
+              <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>trackTxnEnd</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color>
+            <color=#f8f8f2>consistencyTracker</color><color=#f8f8f2>.</color><color=#a6e22e>trackVLSN</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>testDelayMs</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>testDelayMs</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>opCount</color><color=#f92672>++</color> <color=#f92672>%</color> <color=#f8f8f2>dbTreeCacheClearingOpCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>clearDbTreeCache</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Bring it to the attention of the main thread by freeing</color>
+<color=#75715e>         * up the "offer" wait right away.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>replayQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Get the attention of the main replica thread in case it's</color>
+<color=#75715e>         * waiting in a read on the socket channel.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"closing replicaFeederChannel = "</color> <color=#f92672>+</color> <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replay thread exiting with exception:"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Logger</color> <color=#a6e22e>getLogger</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>RepFeederHandshakeConfig</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ReplicaFeederHandshakeConfig</color> <color=#f8f8f2>{</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Clock</color> <color=#a6e22e>getClock</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getClock</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NodeType</color> <color=#a6e22e>getNodeType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeType</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepGroupImpl</color> <color=#a6e22e>getGroup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NamedChannel</color> <color=#a6e22e>getNamedChannel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>replicaFeederChannel</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Tracks the consistency of this replica wrt the Master. It provides the mechanisms that will</color>
+<color=#75715e>   * cause a beginTransaction() or a joinGroup() to wait until the specified consistency policy is</color>
+<color=#75715e>   * satisfied.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ConsistencyTracker</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>NULL_VLSN_SEQUENCE</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Initialized by the Feeder handshake and updated by commit replays.</color>
+<color=#75715e>     * All access to lastReplayedXXXX must be synchronized on the</color>
+<color=#75715e>     * ConsistencyTracker itself.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastReplayedTxnVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterTxnEndTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>l</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Updated by heartbeats */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterTxnEndVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterNow</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>l</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicaStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLagConsistencyWaits</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_LAG_CONSISTENCY_WAITS</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLagConsistencyWaitMs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_LAG_CONSISTENCY_WAIT_MS</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nVLSNConsistencyWaits</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_VLSN_CONSISTENCY_WAITS</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nVLSNConsistencyWaitMs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_VLSN_CONSISTENCY_WAIT_MS</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>OrderedLatches</color> <color=#f8f8f2>vlsnLatches</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>OrderedLatches</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Note that this assumes that NULL_VLSN is -1, and that</color>
+<color=#75715e>           * the vlsns ascend.</color>
+<color=#75715e>           */</color>
+          <color=#a6e22e>@Override</color>
+          <color=#66d9ef>boolean</color> <color=#a6e22e>tripPredicate</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>keyVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>tripVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>keyVLSN</color> <color=#f92672><=</color> <color=#f8f8f2>tripVLSN</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>};</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>OrderedLatches</color> <color=#f8f8f2>lagLatches</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>OrderedLatches</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#a6e22e>@Override</color>
+          <color=#66d9ef>boolean</color> <color=#a6e22e>tripPredicate</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>keyLag</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>currentLag</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>currentLag</color> <color=#f92672><=</color> <color=#f8f8f2>keyLag</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>};</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Invoked each time after a replica syncup so that the Replica can re-establish it's</color>
+<color=#75715e>     * consistency vis a vis the master and what part of the replication stream it considers as</color>
+<color=#75715e>     * having been replayed.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param matchedTxnVLSN the replica state corresponds to this txn</color>
+<color=#75715e>     * @param matchedTxnEndTime the time at which this txn was committed or aborted on the master</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>void</color> <color=#a6e22e>reinit</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>matchedTxnVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>matchedTxnEndTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>matchedTxnVLSN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastReplayedTxnVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>matchedTxnVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>masterTxnEndTime</color> <color=#f92672>=</color> <color=#f8f8f2>matchedTxnEndTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMasterTxnEndVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>masterTxnEndVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logStats</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>logStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Replica stats - Lag waits: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLagConsistencyWaits</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" Lag wait time: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLagConsistencyWaitMs</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>"ms. "</color>
+                <color=#f92672>+</color> <color=#e6db74>" VLSN waits: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nVLSNConsistencyWaits</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" Lag wait time: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nVLSNConsistencyWaitMs</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>"ms."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Calculates the time lag in ms at the Replica. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>currentLag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>masterNow</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>l</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Have not seen a heartbeat, can't determine the time lag in</color>
+<color=#75715e>         * its absence. It's the first message sent by the feeder after</color>
+<color=#75715e>         * completion of the handshake.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>lag</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedTxnVLSN</color> <color=#f92672><</color> <color=#f8f8f2>masterTxnEndVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lag</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedTxnVLSN</color> <color=#f92672>==</color> <color=#f8f8f2>masterTxnEndVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The lag is determined by the transactions (if any) that are</color>
+<color=#75715e>         * further downstream, assume the worst.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>lag</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>masterNow</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* commit leapfrogged the heartbeat */</color>
+        <color=#f8f8f2>lag</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>masterNow</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>lag</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Frees all the threads that are waiting on latches.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param exception the exception to be thrown to explain the reason behind the latches being</color>
+<color=#75715e>     *     forced.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>forceTripLatches</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>exception</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>exception</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>vlsnLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>,</color> <color=#f8f8f2>exception</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>lagLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>exception</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>trackTxnEnd</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Replay</color><color=#f8f8f2>.</color><color=#a6e22e>TxnInfo</color> <color=#f8f8f2>lastReplayedTxn</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getLastReplayedTxn</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>lastReplayedTxnVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastReplayedTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnVLSN</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>masterTxnEndTime</color> <color=#f92672>=</color> <color=#f8f8f2>lastReplayedTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterTxnEndTime</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>lastReplayedTxnVLSN</color> <color=#f92672>></color> <color=#f8f8f2>masterTxnEndVLSN</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>masterTxnEndTime</color> <color=#f92672>>=</color> <color=#f8f8f2>masterNow</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>masterTxnEndVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastReplayedTxnVLSN</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>masterNow</color> <color=#f92672>=</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Advances both replica VLSN and commit time, trip qualifying</color>
+<color=#75715e>       * latches in both sets.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>vlsnLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedTxnVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>lagLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLag</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>trackVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>replay</color><color=#f8f8f2>.</color><color=#a6e22e>getLastReplayedVLSN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>vlsnLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>trackHeartbeat</color><color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color> <color=#f8f8f2>heartbeat</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>masterTxnEndVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>heartbeat</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentTxnEndVLSN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>masterNow</color> <color=#f92672>=</color> <color=#f8f8f2>heartbeat</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterNow</color><color=#f8f8f2>();</color>
+      <color=#75715e>/* Trip just the time lag latches. */</color>
+      <color=#f8f8f2>lagLatches</color><color=#f8f8f2>.</color><color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLag</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>lagAwait</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>currentLag</color> <color=#f92672>=</color> <color=#f8f8f2>currentLag</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lag</color> <color=#f92672>=</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>getPermissibleLag</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentLag</color> <color=#f92672><=</color> <color=#f8f8f2>lag</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>waitStart</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#f8f8f2>waitLagLatch</color> <color=#f92672>=</color> <color=#f8f8f2>lagLatches</color><color=#f8f8f2>.</color><color=#a6e22e>getOrCreate</color><color=#f8f8f2>(</color><color=#f8f8f2>lag</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>await</color><color=#f8f8f2>(</color><color=#f8f8f2>waitLagLatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nLagConsistencyWaits</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>nLagConsistencyWaitMs</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>waitStart</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Wait until the log record identified by VLSN has gone by. */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>awaitVLSN</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicaConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>long</color> <color=#f8f8f2>waitStart</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#f8f8f2>waitVLSNLatch</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>compareVLSN</color> <color=#f92672>=</color>
+            <color=#f8f8f2>(</color><color=#f8f8f2>consistencyPolicy</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>CommitPointConsistencyPolicy</color><color=#f8f8f2>)</color>
+                <color=#f92672>?</color> <color=#f8f8f2>lastReplayedTxnVLSN</color>
+                <color=#f8f8f2>:</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672><=</color> <color=#f8f8f2>compareVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>waitVLSNLatch</color> <color=#f92672>=</color> <color=#f8f8f2>vlsnLatches</color><color=#f8f8f2>.</color><color=#a6e22e>getOrCreate</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>await</color><color=#f8f8f2>(</color><color=#f8f8f2>waitVLSNLatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>);</color>
+      <color=#75715e>/* Stats after the await, so the counts and times are related. */</color>
+      <color=#f8f8f2>nVLSNConsistencyWaits</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>nVLSNConsistencyWaitMs</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>waitStart</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Wait on the given countdown latch and generate the appropriate exception upon timeout.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @throws InterruptedException</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>await</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#f8f8f2>consistencyLatch</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicaConsistencyPolicy</color> <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>consistencyLatch</color><color=#f8f8f2>.</color><color=#a6e22e>awaitOrException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>getTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>),</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Timed out. */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>rimpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>inactive</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>rimpl</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>().</color><color=#a6e22e>isActive</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>rnName</color> <color=#f92672>=</color> <color=#f8f8f2>rimpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaConsistencyException</color><color=#f8f8f2>(</color><color=#f8f8f2>consistencyPolicy</color><color=#f8f8f2>,</color> <color=#f8f8f2>rnName</color><color=#f8f8f2>,</color> <color=#f8f8f2>inactive</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>resetStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Shutdown the consistency tracker. This is typically done as part of the shutdown of a</color>
+<color=#75715e>     * replication node. It counts down all open latches, so the threads waiting on them can make</color>
+<color=#75715e>     * progress. It's the responsibility of the waiting threads to check whether the latch countdown</color>
+<color=#75715e>     * was due to a shutdown, and take appropriate action.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>savedShutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getSavedShutdownException</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Don't wrap in another level of EnvironmentFailureException</color>
+<color=#75715e>       * if we have one in hand already. It can confuse any catch</color>
+<color=#75715e>       * handlers which are expecting a specific exception e.g.</color>
+<color=#75715e>       * RollBackException while waiting for read consistency.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>latchException</color> <color=#f92672>=</color>
+          <color=#f8f8f2>(</color><color=#f8f8f2>savedShutdownException</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>)</color>
+              <color=#f92672>?</color> <color=#f8f8f2>((</color><color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>)</color> <color=#f8f8f2>savedShutdownException</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>:</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Node: "</color> <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" was shut down."</color><color=#f8f8f2>,</color> <color=#f8f8f2>savedShutdownException</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>forceTripLatches</color><color=#f8f8f2>(</color><color=#f8f8f2>latchException</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Manages a set of ordered latches. They are ordered by the key value. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>OrderedLatches</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ExceptionAwareCountDownLatch</color><color=#f92672>></color> <color=#f8f8f2>latchMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>tripPredicate</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>tripValue</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>OrderedLatches</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#a6e22e>getOrCreate</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#f8f8f2>latch</color> <color=#f92672>=</color> <color=#f8f8f2>latchMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latch</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>latch</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExceptionAwareCountDownLatch</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>latchMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>latch</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>latch</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Trip all latches until the first latch that will not trip.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param tripValue</color>
+<color=#75715e>     * @param exception the exception to be thrown by the waiter upon exit from the await. It can be</color>
+<color=#75715e>     *     null if no exception need be thrown.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>trip</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>tripValue</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>exception</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>latchMap</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Long</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>latchMap</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>tripPredicate</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>tripValue</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* It will fail on the rest as well. */</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#75715e>/* Set the waiters free. */</color>
+        <color=#f8f8f2>ExceptionAwareCountDownLatch</color> <color=#f8f8f2>latch</color> <color=#f92672>=</color> <color=#f8f8f2>latchMap</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>latch</color><color=#f8f8f2>.</color><color=#a6e22e>releaseAwait</color><color=#f8f8f2>(</color><color=#f8f8f2>exception</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Thrown to indicate that the Replica must retry connecting to the same master, after some period</color>
+<color=#75715e>   * of time.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>RetryException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>RetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color> <color=#f92672>=</color> <color=#f8f8f2>retries</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color> <color=#f92672>=</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Failed after retries: "</color> <color=#f92672>+</color> <color=#f8f8f2>retries</color> <color=#f92672>+</color> <color=#e6db74>" with retry interval: "</color> <color=#f92672>+</color> <color=#f8f8f2>retrySleepMs</color> <color=#f92672>+</color> <color=#e6db74>"ms."</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ConnectRetryException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates that an election is needed before the hard recovery can proceed. Please see SR 20572</color>
+<color=#75715e>   * for a motivating scenario and NetworkPartitionHealingTest for an example.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>HardRecoveryElectionException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>masterNameIdPair</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastTxnEnd</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>HardRecoveryElectionException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>masterNameIdPair</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastTxnEnd</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>masterNameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>masterNameIdPair</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastTxnEnd</color> <color=#f92672>=</color> <color=#f8f8f2>lastTxnEnd</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>matchpointVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** The master that needs to be verified with an election. */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getMaster</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>masterNameIdPair</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Need election preceding hard recovery to verify master:"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>masterNameIdPair</color>
+          <color=#f92672>+</color> <color=#e6db74>" last txn end:"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>lastTxnEnd</color>
+          <color=#f92672>+</color> <color=#e6db74>" matchpoint VLSN:"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets a test hook for installation into Replica class instances to be created in the future.</color>
+<color=#75715e>   * This is needed when the test hook must be installed before the {@code ReplicatedEnvironment}</color>
+<color=#75715e>   * handle constructor returns, so that a test may influence the replay of the sync-up transaction</color>
+<color=#75715e>   * backlog.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setInitialReplayHook</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>utilint</color><color=#f8f8f2>.</color><color=#a6e22e>TestHook</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>initialReplayHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set a test hook which is executed when the ReplicaFeederSyncup finishes. This differs from the</color>
+<color=#75715e>   * static method ReplicaFeederSyncup.setGlobalSyncupHook in that it sets the hook for a specific</color>
+<color=#75715e>   * node, whereas the other method is static and sets it globally.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is required when a test is trying to set the hook for only one node, and the</color>
+<color=#75715e>   * node already exists. The other method is useful when a test is trying to set the hook before a</color>
+<color=#75715e>   * node exists.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setReplicaFeederSyncupHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>syncupHook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>replicaFeederSyncupHook</color> <color=#f92672>=</color> <color=#f8f8f2>syncupHook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#a6e22e>getReplicaFeederSyncupHook</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicaFeederSyncupHook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

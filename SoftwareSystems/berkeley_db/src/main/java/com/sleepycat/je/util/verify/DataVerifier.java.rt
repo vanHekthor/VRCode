@@ -1,0 +1,288 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.util.verify</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Environment</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.VerifyConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.util.DbVerifyLog</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.CronScheduleParser</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.PollCondition</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.StoppableThread</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Timer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.TimerTask</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Periodically perform checksum verification, Btree verification, or both, depending on {@link</color>
+<color=#75715e> * com.sleepycat.je.EnvironmentConfig#VERIFY_LOG} and {@link</color>
+<color=#75715e> * com.sleepycat.je.EnvironmentConfig#VERIFY_BTREE}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The first-time start time and the period of the verification is determined by {@link</color>
+<color=#75715e> * com.sleepycat.je.EnvironmentConfig#VERIFY_SCHEDULE}.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DataVerifier</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Timer</color> <color=#f8f8f2>timer</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VerifyTask</color> <color=#f8f8f2>verifyTask</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verifyLog</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verifyBtree</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DbVerifyLog</color> <color=#f8f8f2>dbLogVerifier</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BtreeVerifier</color> <color=#f8f8f2>dbTreeVerifier</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>verifyDelay</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>verifyInterval</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>cronSchedule</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>shutdownRequest</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>VERIFIER_SCHEDULE</color> <color=#f92672>=</color> <color=#e6db74>"test.je.env.verifierSchedule"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>DataVerifier</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>timer</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>Timer</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>makeDaemonThreadName</color><color=#f8f8f2>(</color><color=#f8f8f2>Environment</color><color=#f8f8f2>.</color><color=#a6e22e>DATA_CORRUPTION_VERIFIER_NAME</color><color=#f8f8f2>),</color>
+            <color=#66d9ef>true</color> <color=#75715e>/*isDaemon*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dbLogVerifier</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbVerifyLog</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dbTreeVerifier</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>BtreeVerifier</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Applies the new configuration, then cancels and reschedules the verify task as needed. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>configVerifyTask</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>updateConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>shutdownRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cancel</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cronSchedule</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>verifyTask</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VerifyTask</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Use Timer.scheduleAtFixedRate to instead of</color>
+<color=#75715e>           * Timer.schedule, since this is a long running task and</color>
+<color=#75715e>           * the next task is NOT expected to be scheduled for</color>
+<color=#75715e>           * 24 hours later, it is expected to be scheduled at</color>
+<color=#75715e>           * a fixed time.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>timer</color><color=#f8f8f2>.</color><color=#a6e22e>scheduleAtFixedRate</color><color=#f8f8f2>(</color><color=#f8f8f2>verifyTask</color><color=#f8f8f2>,</color> <color=#f8f8f2>verifyDelay</color><color=#f8f8f2>,</color> <color=#f8f8f2>verifyInterval</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>cancel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verifyTask</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>verifyTask</color><color=#f8f8f2>.</color><color=#a6e22e>cancel</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Stop verifier as soon as possible when it is disabled via</color>
+<color=#75715e>     * EnvironmentMutableConfig.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>dbLogVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setStopVerifyFlag</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dbTreeVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setStopVerifyFlag</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>requestShutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownRequest</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>cancel</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>timer</color><color=#f8f8f2>.</color><color=#a6e22e>cancel</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>requestShutdown</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#ae81ff>30000</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>PollCondition</color> <color=#f8f8f2>cond</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>PollCondition</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeoutMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#a6e22e>@Override</color>
+          <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>condition</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Copy verifyTask since it may change in another thread. */</color>
+            <color=#66d9ef>final</color> <color=#f8f8f2>VerifyTask</color> <color=#f8f8f2>task</color> <color=#f92672>=</color> <color=#f8f8f2>verifyTask</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>task</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>task</color><color=#f8f8f2>.</color><color=#a6e22e>isRunning</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>};</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>cond</color><color=#f8f8f2>.</color><color=#a6e22e>await</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Unable to shutdown data verifier after "</color> <color=#f92672>+</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>+</color> <color=#e6db74>"ms"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getVerifyDelay</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>verifyDelay</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getVerifyInterval</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>verifyInterval</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>VerifyTask</color> <color=#a6e22e>getVerifyTask</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>verifyTask</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getCronSchedule</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cronSchedule</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Applies the new configuration and returns whether it changed. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>updateConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If set to false (which is not the default).</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>ENV_RUN_VERIFIER</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cronSchedule</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>cronSchedule</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>verifyDelay</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>verifyInterval</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>newCronSchedule</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_SCHEDULE</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the data verifier schedule is set by system property and</color>
+<color=#75715e>       * it is not set through the JE source code explicitly, then</color>
+<color=#75715e>       * the system property will be used.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * This is used for JE unit test and JE standalone test.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>sysPropVerifySchedule</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>getProperty</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFIER_SCHEDULE</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>sysPropVerifySchedule</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>isSpecified</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_SCHEDULE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newCronSchedule</color> <color=#f92672>=</color> <color=#f8f8f2>sysPropVerifySchedule</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>CronScheduleParser</color><color=#f8f8f2>.</color><color=#a6e22e>checkSame</color><color=#f8f8f2>(</color><color=#f8f8f2>cronSchedule</color><color=#f8f8f2>,</color> <color=#f8f8f2>newCronSchedule</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>CronScheduleParser</color> <color=#f8f8f2>csp</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>CronScheduleParser</color><color=#f8f8f2>(</color><color=#f8f8f2>newCronSchedule</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>verifyDelay</color> <color=#f92672>=</color> <color=#f8f8f2>csp</color><color=#f8f8f2>.</color><color=#a6e22e>getDelayTime</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>verifyInterval</color> <color=#f92672>=</color> <color=#f8f8f2>csp</color><color=#f8f8f2>.</color><color=#a6e22e>getInterval</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>cronSchedule</color> <color=#f92672>=</color> <color=#f8f8f2>newCronSchedule</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>class</color> <color=#a6e22e>VerifyTask</color> <color=#66d9ef>extends</color> <color=#f8f8f2>TimerTask</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isRunning</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>VerifyTask</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configMgr</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>verifyLog</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_LOG</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>verifyBtree</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_BTREE</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>dbLogVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setReadDelay</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_LOG_READ_DELAY</color><color=#f8f8f2>),</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>VerifyConfig</color> <color=#f8f8f2>btreeVerifyConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VerifyConfig</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setVerifySecondaries</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_SECONDARIES</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setVerifyDataRecords</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_DATA_RECORDS</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setVerifyObsoleteRecords</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_OBSOLETE_RECORDS</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setBatchSize</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_BTREE_BATCH_SIZE</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setBatchDelay</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_BTREE_BATCH_DELAY</color><color=#f8f8f2>),</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dbTreeVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setBtreeVerifyConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>btreeVerifyConfig</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * 1. Why call dbTreeVerifier.setVerifyFlag here, rather than</color>
+<color=#75715e>       * immediately after call cancel in configVerifyTask?</color>
+<color=#75715e>       *    If we do that, then maybe before BtreeVerifier really gets</color>
+<color=#75715e>       *  the stop status of the flag, we set the status of the flag</color>
+<color=#75715e>       *  to be OK again. Then the previous task can not be stopped</color>
+<color=#75715e>       *  as soon as possible.</color>
+<color=#75715e>       *    If we do here, this means that one new task has already</color>
+<color=#75715e>       *    started, so the previous task has already been stopped.</color>
+<color=#75715e>       * 2. Why use synchronized?</color>
+<color=#75715e>       *    Consider the following scenario:</color>
+<color=#75715e>       *           shutdown Thread                 task Thread</color>
+<color=#75715e>       *</color>
+<color=#75715e>       *                                         !shutdownRequest</color>
+<color=#75715e>       *</color>
+<color=#75715e>       *      shutdownRequest = true</color>
+<color=#75715e>       *      dbTreeVerifier.setStopVerifyFlag</color>
+<color=#75715e>       *</color>
+<color=#75715e>       *                                     dbTreeVerifier.setVerifyFlag</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>DataVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>shutdownRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbLogVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setStopVerifyFlag</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>dbTreeVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>setStopVerifyFlag</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the scheduled execution time of the scheduled run lags</color>
+<color=#75715e>       * very far from the current time due to the long-time current</color>
+<color=#75715e>       * verification, the scheduled run is just skipped.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>scheduledExecutionTime</color><color=#f8f8f2>()</color>
+          <color=#f92672>>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>VERIFY_MAX_TARDINESS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>isRunning</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>success</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>updateConfig</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verifyLog</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbLogVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>verifyAll</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verifyBtree</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbTreeVerifier</color><color=#f8f8f2>.</color><color=#a6e22e>verifyAll</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>success</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>efe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Do nothing. Just cancel this timer in finally. */</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>StoppableThread</color><color=#f8f8f2>.</color><color=#a6e22e>handleUncaughtException</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(),</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>(),</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>success</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>requestShutdown</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>isRunning</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

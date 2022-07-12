@@ -1,0 +1,1078 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.bind.tuple.LongBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileProtector</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileProtector.ProtectedFileSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNRange.VLSNRangeBinding</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.BasicLocker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.Locker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.Txn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.NoSuchElementException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.SortedMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.TreeMap</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN.NULL_VLSN</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * See @link{VLSNIndex} for an overview of the mapping system. The VLSNTracker packages the</color>
+<color=#75715e> * VLSNRange and the cached, in-memory VLSNBuckets.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The tracker has a notion of the "currentBucket", which is the one receiving updates. All other</color>
+<color=#75715e> * cached buckets are finished and are awaiting a write to the database. Those finished buckets will</color>
+<color=#75715e> * only be updated in special circumstances, such as log cleaning or replication stream truncation,</color>
+<color=#75715e> * when we can assume that there will no readers viewing the buckets.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>class</color> <color=#a6e22e>VLSNTracker</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The first mapping that is is the tracker cache.  */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The last VLSN that is stored on disk. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A cache of buckets that are not on disk. The map key is the bucket's</color>
+<color=#75715e>   * first VLSN.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The range should always be updated through assignment to a new</color>
+<color=#75715e>   * VLSNRange, to ensure that the values stay consistent. The current bucket</color>
+<color=#75715e>   * mutex must be taken in order to update this value, so that the current</color>
+<color=#75715e>   * bucket is updated before the range is updated.  When reading range</color>
+<color=#75715e>   * fields, the caller must be sure to get a reference to a single range</color>
+<color=#75715e>   * instance, so that there's no danger of getting inconsistent values.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rangeTruncated</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * ProtectedFileRange protects files in 'range' from being deleted. The</color>
+<color=#75715e>   * range start is changed during initialization and when the head of the</color>
+<color=#75715e>   * index is truncated. It is changed while synchronized on 'this' to</color>
+<color=#75715e>   * guarantees that files are not deleted while the range head is locked.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>ProtectedFileRange</color> <color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * In the future, we may want to vary stride, maxMappings and maxDistance</color>
+<color=#75715e>   * dynamically, in reaction to efficient the mappings look.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>stride</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nBucketsCreated</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Create an VLSNTracker, with the range initialized from the mapping db.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>VLSNTracker</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>stride</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>statistics</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>stride</color> <color=#f92672>=</color> <color=#f8f8f2>stride</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>maxMappings</color> <color=#f92672>=</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>maxDistance</color> <color=#f92672>=</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nBucketsCreated</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNIndexStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>N_BUCKETS_CREATED</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Protect all files initially. The range lower bound will be advanced</color>
+<color=#75715e>     * later during initialization. This special ProtectedFileRange does</color>
+<color=#75715e>     * not impact LogSizeStats -- see FileProtector.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileProtector</color> <color=#f8f8f2>fileProtector</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileProtector</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>protectedFileRange</color> <color=#f92672>=</color>
+        <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>protectFileRange</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>FileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>VLSN_INDEX_NAME</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color> <color=#75715e>/*rangeStart*/</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*protectVlsnIndex*/</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>setVLSNIndexProtectedFileRange</color><color=#f8f8f2>(</color><color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Read the current range information. */</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LongBinding</color><color=#f8f8f2>.</color><color=#a6e22e>longToEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSNRange</color><color=#f8f8f2>.</color><color=#a6e22e>RANGE_KEY</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>makeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>locker</color><color=#f8f8f2>,</color> <color=#f8f8f2>CursorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getCursorImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>).</color><color=#a6e22e>setAllowEviction</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* initialize the range from the database. */</color>
+        <color=#f8f8f2>VLSNRangeBinding</color> <color=#f8f8f2>rangeBinding</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSNRangeBinding</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>rangeBinding</color><color=#f8f8f2>.</color><color=#a6e22e>entryToObject</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>NOTFOUND</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* No mappings exist before. */</color>
+        <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>VLSNRange</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"VLSNTracker init: status="</color> <color=#f92672>+</color> <color=#f8f8f2>status</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Create an empty VLSNTracker. Used during recovery.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>VLSNTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>stride</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>stride</color> <color=#f92672>=</color> <color=#f8f8f2>stride</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>maxMappings</color> <color=#f92672>=</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>maxDistance</color> <color=#f92672>=</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protectedFileRange</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Set up a temporary stat group for use during recovery */</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>statistics</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSNIndexStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNIndexStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBucketsCreated</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNIndexStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>N_BUCKETS_CREATED</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>initEmpty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>initEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>VLSNRange</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return a bucket for reading a mapping for this VLSN. If vlsn is > lastOnDisk, a bucket is</color>
+<color=#75715e>   * guaranteed to be returned.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>VLSNBucket</color> <color=#a6e22e>getGTEBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* The bucket is in the database, not the cache. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>pivot</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>head</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>headMap</color><color=#f8f8f2>(</color><color=#f8f8f2>pivot</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>prevBucket</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>prevBucket</color> <color=#f92672>=</color> <color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevBucket</color><color=#f8f8f2>.</color><color=#a6e22e>owns</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>prevBucket</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If the key is not in the headMap, we must return the next bucket</color>
+<color=#75715e>     * with mappings that follow on.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>tail</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>tailMap</color><color=#f8f8f2>(</color><color=#f8f8f2>pivot</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>bucket</color> <color=#f92672>=</color> <color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucket</color><color=#f8f8f2>.</color><color=#a6e22e>owns</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>bucket</color><color=#f8f8f2>.</color><color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>))</color>
+          <color=#f8f8f2>:</color> <color=#e6db74>"VLSN "</color> <color=#f92672>+</color> <color=#f8f8f2>vlsn</color> <color=#f92672>+</color> <color=#e6db74>" got wrong bucket "</color> <color=#f92672>+</color> <color=#f8f8f2>bucket</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>bucket</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"VLSN "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>vlsn</color>
+            <color=#f92672>+</color> <color=#e6db74>" should be held within this tracker. "</color>
+            <color=#f92672>+</color> <color=#66d9ef>this</color>
+            <color=#f92672>+</color> <color=#e6db74>" prevBucket="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>prevBucket</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the bucket which holds a mapping for this VLSN. If there is no such bucket, get the one</color>
+<color=#75715e>   * directly preceding it. If this VLSN is >= firstTrackedVLSN, then we should be able to guarantee</color>
+<color=#75715e>   * that a bucket is returned.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>VLSNBucket</color> <color=#a6e22e>getLTEBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>pivot</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>head</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>headMap</color><color=#f8f8f2>(</color><color=#f8f8f2>pivot</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>head</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We shouldn't get here. Get the tail purely for creating a debugging</color>
+<color=#75715e>     * message.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>tail</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>tailMap</color><color=#f8f8f2>(</color><color=#f8f8f2>pivot</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>nextBucket</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nextBucket</color> <color=#f92672>=</color> <color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>tail</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"VLSN "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>vlsn</color>
+            <color=#f92672>+</color> <color=#e6db74>" should be held within this tracker. "</color>
+            <color=#f92672>+</color> <color=#66d9ef>this</color>
+            <color=#f92672>+</color> <color=#e6db74>" nextBucket="</color>
+            <color=#f92672>+</color> <color=#f8f8f2>nextBucket</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Record a new VLSN->LSN mapping. We guarantee that the first and last VLSNs in the range have a</color>
+<color=#75715e>   * mapping. If a VLSN comes out of order, we will discard it, and will not update the range.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>track</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>currentBucket</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * This VLSN is a laggard. It belongs to a bucket that has already</color>
+<color=#75715e>       * gone to disk. Since on disk buckets can't be modified, throw</color>
+<color=#75715e>       * this mapping away. Do be sure to update the range in case</color>
+<color=#75715e>       * lastSync or lastTxnEnd should be updated as a result of this</color>
+<color=#75715e>       * mapping.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>updateRange</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Nothing in the tracker, add a new bucket. */</color>
+      <color=#f8f8f2>currentBucket</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>VLSNBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>stride</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nBucketsCreated</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>currentBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>currentBucket</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Find the last bucket. Only the last bucket is updateable. */</color>
+      <color=#f8f8f2>currentBucket</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This VLSN is a laggard that was preceded by an earlier mapping which</color>
+<color=#75715e>     * came unseasonably early. This VLSN can't fit into the current</color>
+<color=#75715e>     * bucket, and since we only want to update the last bucket, we'll</color>
+<color=#75715e>     * throw this mapping away.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentBucket</color><color=#f8f8f2>.</color><color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>updateRange</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>currentBucket</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Couldn't put the mapping in this bucket. Close it and move to a</color>
+<color=#75715e>       * new one.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>currentBucket</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>VLSNBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>stride</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nBucketsCreated</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>currentBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>currentBucket</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>currentBucket</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Couldn't put VLSN "</color> <color=#f92672>+</color> <color=#f8f8f2>vlsn</color> <color=#f92672>+</color> <color=#e6db74>" into "</color> <color=#f92672>+</color> <color=#f8f8f2>currentBucket</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>updateRange</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Only update the firstTrackedVLSN if this mapping is really resident</color>
+<color=#75715e>     * in a bucket. Don't update it if it's an out-of-order, skipped</color>
+<color=#75715e>     * mapping.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>==</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Update the range with a newly arrived VLSN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateRange</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Get a reference to the volatile range field so that we always see</color>
+<color=#75715e>     * consistent values.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>currentRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>currentRange</color><color=#f8f8f2>.</color><color=#a6e22e>getUpdateForNewMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryTypeNum</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flush the tracker cache to disk. Ideally, we'd allow concurrent VLSN put() calls while a flush</color>
+<color=#75715e>   * to database is happening. To do that, we need a more sophisticated synchronization scheme that</color>
+<color=#75715e>   * defines the immutable vs. mutable portion of the tracker cache. See SR [#17689]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>flushToDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>flushRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * No mappings to write out, but it's possible that the range</color>
+<color=#75715e>       * changed due to a truncation, in which case we must update the</color>
+<color=#75715e>       * database. RangeTruncated is used to reduce the chance that</color>
+<color=#75715e>       * we are doing unnecessary writes of the range record to the db.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rangeTruncated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>flushRange</color><color=#f8f8f2>.</color><color=#a6e22e>writeToDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>txn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>rangeTruncated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Save information about the portion of the cache that we are trying</color>
+<color=#75715e>     * to flush. Close off the last bucket, so the flush portion becomes</color>
+<color=#75715e>     * immutable. In the past, this was in a synchronization block.</color>
+<color=#75715e>     * This isn't strictly needed right now, since the method is currently</color>
+<color=#75715e>     * fully synchronized, but is a good practice, and will be</color>
+<color=#75715e>     * necessary if future changes make it possible to have concurrent</color>
+<color=#75715e>     * puts.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>lastBucket</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>lastBucket</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Write the flush portion to disk. Ideally, this portion would be done</color>
+<color=#75715e>     * without synchronization on the tracker, to permit concurrent reads</color>
+<color=#75715e>     * and writes to the tracker. Note that because there is no</color>
+<color=#75715e>     * synchronization, the buckets must be flushed to disk in vlsn order,</color>
+<color=#75715e>     * so that the vlsn index always looks consistent. There should be no</color>
+<color=#75715e>     * gaps in the bucket range. This assumption permits concurrent access</color>
+<color=#75715e>     * by VLSNIndex.getGTEBucketFromDatabase.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>currentLastVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>key</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>target</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Do some sanity checking before we write this bucket to disk. */</color>
+      <color=#f8f8f2>validateBeforeWrite</color><color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>,</color> <color=#f8f8f2>flushRange</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentLastVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>target</color> <color=#f92672>==</color> <color=#f8f8f2>lastBucket</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>writeToDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>txn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>currentLastVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>flushRange</color><color=#f8f8f2>.</color><color=#a6e22e>writeToDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>mappingDbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>txn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>rangeTruncated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Update the tracker to remove the parts that have been written to</color>
+<color=#75715e>     * disk. Update firstTrackedVLSN, lastOnDiskVLSN, and clear the bucket</color>
+<color=#75715e>     * cache.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * In the current implementation, bucketCache is guaranteed not to</color>
+<color=#75715e>     * change, so we can just clear the cache. If we had written the</color>
+<color=#75715e>     * buckets out without synchronization, the cache might have gained</color>
+<color=#75715e>     * mappings, and we wouuld have to be careful to set the</color>
+<color=#75715e>     * firstTrackedVLSN to be the first VLSN of the remaining buckets, and</color>
+<color=#75715e>     * to set lastTrackedVLSN to be the last VLSN in flushRange.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * We would also have to explicitly call SortedMap.remove() to remove</color>
+<color=#75715e>     * the written buckets. Do not use TreeMap.tailSet, which would</color>
+<color=#75715e>     * inadvertently leave us with the semantics of a SubMap, which has</color>
+<color=#75715e>     * mandated key ranges. With rollbacks, we may end up adding buckets</color>
+<color=#75715e>     * that are "repeats" in the future.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Do some sanity checking before the write, to help prevent any corruption. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>validateBeforeWrite</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>target</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>flushRange</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>currentLastVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isLastBucket</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>))</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>currentLastVLSN</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"target bucket overlaps previous bucket. "</color>
+              <color=#f92672>+</color> <color=#e6db74>"currentLastVLSN= "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>currentLastVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" target="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>flushRange</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>())</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"target bucket exceeds flush range. "</color> <color=#f92672>+</color> <color=#e6db74>"range= "</color> <color=#f92672>+</color> <color=#f8f8f2>flushRange</color> <color=#f92672>+</color> <color=#e6db74>" target="</color> <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLastBucket</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>target</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>flushRange</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>())</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"end of last bucket should match end of range. "</color>
+                <color=#f92672>+</color> <color=#e6db74>"range= "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>flushRange</color>
+                <color=#f92672>+</color> <color=#e6db74>" target="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>target</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initially the protectedFileRange is set to the file of the range start. It is advanced later</color>
+<color=#75715e>   * when the range head is truncated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>initProtectedFileRange</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>firstFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>.</color><color=#a6e22e>advanceRange</color><color=#f8f8f2>(</color><color=#f8f8f2>firstFile</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see VLSNIndex#protectRangeHead */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#a6e22e>protectRangeHead</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>lockerName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Protect all files in the range. Because we are synchronized, we know</color>
+<color=#75715e>     * that protectedFileRange will not be advanced and the range head will</color>
+<color=#75715e>     * remain stable.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>getFileProtector</color><color=#f8f8f2>()</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>protectFileRange</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>lockerName</color><color=#f8f8f2>,</color> <color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeStart</color><color=#f8f8f2>(),</color> <color=#66d9ef>true</color> <color=#75715e>/*protectVlsnIndex*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the file at the lower bound of the current range. This method does not synchronize. */</color>
+  <color=#66d9ef>long</color> <color=#a6e22e>getProtectedRangeStartFile</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeStart</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Try to advance the VLSNIndex ProtectedFileRange and truncate the head of the tracker's range,</color>
+<color=#75715e>   * so that bytesNeeded can be freed by deleting files in this range.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return {deleteEnd, deleteFileNum} pair if the range was changed, or null if no change is</color>
+<color=#75715e>   *     currently needed/possible. -- deleteEnd is the last VLSN to be truncated. -- deleteFileNum</color>
+<color=#75715e>   *     the file having deleteEnd as its last VLSN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>tryTruncateFromHead</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogItemCache</color> <color=#f8f8f2>logItemCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Do not allow the index to become empty. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>preserveVlsn</color> <color=#f92672>=</color>
+        <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color>
+            <color=#f92672>-</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VLSN_INDEX_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>preserveVlsn</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Determine the vlsn/file after which to truncate the range. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>truncateInfo</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileProtector</color><color=#f8f8f2>().</color><color=#a6e22e>checkVLSNIndexTruncation</color><color=#f8f8f2>(</color><color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>preserveVlsn</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>truncateInfo</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * It is possible that after checkVLSNIndexTruncation returns, a file</color>
+<color=#75715e>     * in the range we expect to delete becomes protected. This is safe,</color>
+<color=#75715e>     * because we know that a syncup will not begin while synchronized on</color>
+<color=#75715e>     * the VLSNTracker, and feeders always advance their range (never</color>
+<color=#75715e>     * retreat). It is also still beneficial to truncate the index because</color>
+<color=#75715e>     * we expect the other protection for such a file to be removed soon,</color>
+<color=#75715e>     * and then the file can be deleted quickly.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>truncateFromHead</color><color=#f8f8f2>(</color><color=#f8f8f2>truncateInfo</color><color=#f8f8f2>.</color><color=#a6e22e>first</color><color=#f8f8f2>(),</color> <color=#f8f8f2>truncateInfo</color><color=#f8f8f2>.</color><color=#a6e22e>second</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logItemCache</color><color=#f8f8f2>)</color>
+        <color=#f92672>?</color> <color=#f8f8f2>truncateInfo</color>
+        <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Truncate the head of the tracker's range, and advance the ProtectedFileRange accordingly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if range is changed, or false if no change is needed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>truncateFromHead</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>deleteEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogItemCache</color> <color=#f8f8f2>logItemCache</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* The caller should pass a non-null VLSN, but check for safety. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Check the VLSN found in the deleted file against the existing</color>
+<color=#75715e>     * mappings. The range should not be empty, and doing the truncation</color>
+<color=#75715e>     * should not remove the last sync point. We assume that once this</color>
+<color=#75715e>     * environment has received any portion of the replication stream, it</color>
+<color=#75715e>     * will maintain a minimum set of VLSNs.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>oldRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* deleteEnd has already been cast out of the index. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Didn't expect current range to be empty. "</color> <color=#f92672>+</color> <color=#e6db74>" End of delete range = "</color> <color=#f92672>+</color> <color=#f8f8f2>deleteEnd</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>getLastSync</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>getLastSync</color><color=#f8f8f2>())</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Can't log clean away last matchpoint. DeleteEnd= "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>deleteEnd</color>
+              <color=#f92672>+</color> <color=#e6db74>" lastSync="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>getLastSync</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Sanity checks are over and we are committed to changing the range.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Clear the LogItemCache in case it contains entries with VLSNs being</color>
+<color=#75715e>     * truncated. This seems extremely unlikely, since the cache is a small</color>
+<color=#75715e>     * number of entries at the end of the VLSN range. But perhaps it is</color>
+<color=#75715e>     * simplest to clear it in order to guarantee safely, and incur the</color>
+<color=#75715e>     * infrequent cost of a few cache misses.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logItemCache</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logItemCache</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Advance the ProtectedFileRange to allow files in the truncated</color>
+<color=#75715e>     * portion to be deleted. deleteFileNum is the file having deleteEnd as</color>
+<color=#75715e>     * its highest VLSN. The VLSN range will now start with deleteEnd+1, so</color>
+<color=#75715e>     * now we only need to protect files starting at deleteFileNum+1.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>.</color><color=#a6e22e>advanceRange</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteFileNum</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Update the in-memory, cached portion of the index.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Update range first, to prevent others from attempting to read the</color>
+<color=#75715e>     * truncated portions. Update the firstTrackedLSN last, after the</color>
+<color=#75715e>     * buckets are removed; getLTEBucket relies on the firstTrackedLSN</color>
+<color=#75715e>     * value.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>shortenFromHead</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Ensure that the range is written to the db even if the resulting</color>
+<color=#75715e>     * number of buckets is 0.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>rangeTruncated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * afterDelete may not == range.getFirst, becayse range.getFirst may</color>
+<color=#75715e>     * be NULL_VLSN if the entire vlsn index has been deleted.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>afterDelete</color> <color=#f92672>=</color> <color=#f8f8f2>deleteEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Check if the cached buckets needs to be modified. Suppose vlsns 1-8</color>
+<color=#75715e>     * are on disk, and vlsns 12->40 are in the tracker cache, with an out</color>
+<color=#75715e>     * of order gap from 9 - 11.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * case 1: deleteEnd <= 8, Do not need to truncate anything in the</color>
+<color=#75715e>     *  bucket cacke, but we may have to make a ghost bucket to fill the</color>
+<color=#75715e>     *  gap.</color>
+<color=#75715e>     * case 2: deleteEnd == 11, we don't need to modify the cache or</color>
+<color=#75715e>     *         create a ghost bucket.</color>
+<color=#75715e>     * case 3: deleteEnd >8 and < 11 is in the gap, we need to create a</color>
+<color=#75715e>     *         ghost bucket to hold the beginning of the range..</color>
+<color=#75715e>     * case 4: deleteEnd >= 12, we need to modify the bucket cache.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * case 1:  the buckets in the tracker cache are unaffected, all</color>
+<color=#75715e>       * the pertinent mappings are on disk.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>afterDelete</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>checkForGhostBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>afterDelete</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* case 2: The tracker is lined up perfectly with the new range. */</color>
+      <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>afterDelete</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * case 3: we have to make a ghost bucket.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>checkForGhostBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * case 4: we have to prune the buckets.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>owningBucket</color> <color=#f92672>=</color> <color=#f8f8f2>getLTEBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteEnd</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>retainBucketKey</color> <color=#f92672>=</color> <color=#f8f8f2>owningBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getNext</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>tail</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * We need to chop off part of the bucket cache. Find the portion</color>
+<color=#75715e>       * to retain.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>tail</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>tailMap</color><color=#f8f8f2>(</color><color=#f8f8f2>retainBucketKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>checkForGhostBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>tail</color><color=#f8f8f2>,</color> <color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#f8f8f2>tail</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchElementException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkForGhostBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>buckets</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/*</color>
+<color=#75715e>     * The range has just been truncated. If the first bucket's first vlsn</color>
+<color=#75715e>     * != the first in range, insert a GhostBucket.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>firstKey</color> <color=#f92672>=</color> <color=#f8f8f2>buckets</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>firstBucket</color> <color=#f92672>=</color> <color=#f8f8f2>buckets</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>firstKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstRangeVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstBucketVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>firstBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstBucketVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>firstRangeVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>nextFile</color> <color=#f92672>=</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>getFollowingFileNum</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteFileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/* forward */</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lastPossibleLsn</color> <color=#f92672>=</color> <color=#f8f8f2>firstBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>firstBucketVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>placeholder</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>GhostBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>firstRangeVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>nextFile</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#f8f8f2>lastPossibleLsn</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buckets</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>firstRangeVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>placeholder</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Remove the mappings for VLSNs >= deleteStart. This should only be used at syncup, or recovery.</color>
+<color=#75715e>   * We can assume no new mappings are coming in, but the VLSNIndex may be read during this time;</color>
+<color=#75715e>   * checkpoints continue to happen during rollbacks. Since syncup is always at a sync-able log</color>
+<color=#75715e>   * entry, and since we don't roll back past a commit, we can assume that the lastSync can be</color>
+<color=#75715e>   * changed to deleteStart.getPrev(), and lastTxnEnd is unchanged. The VLSNRange itself is updated</color>
+<color=#75715e>   * before the tracker and on-disk buckets are pruned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The VLSNIndex guarantees that the beginning and end vlsns in the range have mappings so LTE</color>
+<color=#75715e>   * and GTE search operations work. When truncating the mappings in the tracker, check to see if</color>
+<color=#75715e>   * the new end vlsn has a mapping, since that may not happen if the buckets are cut in the middle,</color>
+<color=#75715e>   * or have a gap due to out of order mapping. For example, suppose mapping for vlsn 20 came before</color>
+<color=#75715e>   * the mappings for vlsn 17, 18 and 19. The buckets would have this gap: Bucket A: vlsns 10-16</color>
+<color=#75715e>   * Bucket B: vlsns 20-25 Bucket C: vlsns 26 - 30 If the new end of vlsn range is 11-14, 17, 18,</color>
+<color=#75715e>   * 19, 21 - 24, or 27-29, we have to end the vlsn tracker with a new mapping of (vlsn</color>
+<color=#75715e>   * (deleteStart-1) -> prevLsn) to cap off the buckets.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Cases: End of range is in the gap -- either 17, 18, 19 1. on disk buckets exist, but don't</color>
+<color=#75715e>   * encompass the gap: bucket A on disk 2. all buckets are in the tracker cache: bucket A in</color>
+<color=#75715e>   * tracker 3. on disk buckets encompass the gap: bucket A and B on disk.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>truncateFromTail</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>deleteStart</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Update the range first, it will define the range that the vlsnIndex</color>
+<color=#75715e>     * covers. Then adjust any mappings held in the bucket cache. Don't</color>
+<color=#75715e>     * update the lastOnDiskVLSN marker, which says what is on disk. Since</color>
+<color=#75715e>     * the on-disk portion may also get truncated, the caller will update</color>
+<color=#75715e>     * the lastOnDiskVLSN field when it inspects the database.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>oldRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>shortenFromEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteStart</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Ensure that the range is written to the db even if the resulting</color>
+<color=#75715e>     * number of buckets is 0.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>rangeTruncated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* No mappings in this tracker */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteStart</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Everything in this tracker should be removed. In addition, the</color>
+<color=#75715e>       * caller may be removing some items from the database.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We need to do some pruning of the bucket in the cache. Find the</color>
+<color=#75715e>     * buckets in the bucketCache that have mappings >= deleteStart, and</color>
+<color=#75715e>     * remove their mappings. First establish the headset of buckets that</color>
+<color=#75715e>     * should be preserved.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>targetBucket</color> <color=#f92672>=</color> <color=#f8f8f2>getGTEBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteStart</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>targetKey</color> <color=#f92672>=</color> <color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* The newCache has buckets that should be preserved. */</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>newCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>headMap</color><color=#f8f8f2>(</color><color=#f8f8f2>targetKey</color><color=#f8f8f2>));</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Prune any mappings >= deleteStart out of targetBucket. If it has any</color>
+<color=#75715e>     * mappings left, add it to newCache.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>removeFromTail</color><color=#f8f8f2>(</color><color=#f8f8f2>deleteStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevLsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>empty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>targetBucket</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#f8f8f2>newCache</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now all truncated mappings have been removed from the index. Check</color>
+<color=#75715e>     * that the end point of the vlsn range is represented in this</color>
+<color=#75715e>     * tracker. Since vlsn mappings can  come out of order, it's</color>
+<color=#75715e>     * possible that the buckets have a gap, and that truncation will</color>
+<color=#75715e>     * cleave the bucket cache just at a point where a mapping is</color>
+<color=#75715e>     * missing. For example, vlsn mappings come in this order:</color>
+<color=#75715e>     *           vlsn 16, vlsn 18, vlsn 17</color>
+<color=#75715e>     * causing the buckets to have this gap:</color>
+<color=#75715e>     *           bucket N: vlsn 10 - 16</color>
+<color=#75715e>     *           bucket N+1: vlsn 18 - 20</color>
+<color=#75715e>     * and that the vlsn range is truncated with a deleteStart of vlsn 18.</color>
+<color=#75715e>     * The new end range becomes 17, but the buckets do not have a</color>
+<color=#75715e>     * mapping for vlsn 17. If so, create a mapping now.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * If we are at this point, we know that the tracker should contain</color>
+<color=#75715e>     * a mapping for the last VLSN in the range. Fix it now, so the</color>
+<color=#75715e>     * datastructure is as tidy as possible.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>needEndMapping</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>needEndMapping</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>lastBucket</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>needEndMapping</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>())</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needEndMapping</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>addEndMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>(),</color> <color=#f8f8f2>prevLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by the VLSNIndex to see if we have to add a bucket in the tracker after pruning the</color>
+<color=#75715e>   * on-disk storage. The get{LTE,GTE}Bucket methods assume that there are mappings for the first</color>
+<color=#75715e>   * and last VLSN in the range. But since out of order vlsn mappings can cause non-contiguous</color>
+<color=#75715e>   * buckets, the pruning may have lost the end mapping. [#23491]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>ensureRangeEndIsMapped</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * if lastOnDiskVLSN < lastVLSN < firstTrackedVLSN or</color>
+<color=#75715e>     *    lastOnDiskVLSN < lastVLSN and firstTrackedVLSN is null</color>
+<color=#75715e>     * then we need to add a mapping for lastVLSN->lastLsn. Otherwise a</color>
+<color=#75715e>     * mapping already exists.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The on-disk vlsn mappings aren't sufficient to cover the</color>
+<color=#75715e>       * lastVLSN. There needs to be a mapping in the tracker for the</color>
+<color=#75715e>       * end point of the range.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * There are mappings in the tracker, so we can assume</color>
+<color=#75715e>         * that they cover the end point, because truncateFromTail()</color>
+<color=#75715e>         * should have adjusted for that. But assert to be sure!</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Expected this tracker to cover vlsn "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>lastVLSN</color>
+                  <color=#f92672>+</color> <color=#e6db74>" after truncateFromTail. LastOnDiskVLSN= "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>lastOnDiskVLSN</color>
+                  <color=#f92672>+</color> <color=#e6db74>" tracker="</color>
+                  <color=#f92672>+</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * There are no mappings in the tracker. The on disk mappings were</color>
+<color=#75715e>       * pruned, and a gap was created between what was on disk and what</color>
+<color=#75715e>       * is in the tracker cache. Add a mapping.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>addEndMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Add a bucket holding a lastVLSN -> lastLsn mapping */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addEndMapping</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Assert that it's in the range */</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>())</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>:</color> <color=#e6db74>"lastVLSN="</color> <color=#f92672>+</color> <color=#f8f8f2>lastVLSN</color> <color=#f92672>+</color> <color=#e6db74>" lastLsn = "</color> <color=#f92672>+</color> <color=#f8f8f2>lastLsn</color> <color=#f92672>+</color> <color=#e6db74>" range="</color> <color=#f92672>+</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>addBucket</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>VLSNBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lastLsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>stride</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxMappings</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxDistance</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>addBucket</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nBucketsCreated</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>addBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>addBucket</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Attempt to replace the mappings in this vlsnIndex for deleteStart->lastVLSN with those from the</color>
+<color=#75715e>   * recovery mapper. Since we do not supply a prevLsn argument, we may not be able to "cap" the</color>
+<color=#75715e>   * truncated vlsn bucket the same what that we can in truncateFromTail. Because of that, we may</color>
+<color=#75715e>   * need to remove mappings that are < deleteStart.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For example, suppose a bucket holds mappings 10 -> 101 15 -> 201 18 -> 301 If deleteStart ==</color>
+<color=#75715e>   * 17, we will have to delete all the way to vlsn 15.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The maintenance of VLSNRange.lastSync and lastTxnEnd are simplified because of assumptions</color>
+<color=#75715e>   * we can make because we are about to append mappings found by the recovery tracker that begin at</color>
+<color=#75715e>   * deleteStart. If lastSync and lastTxnEnd are <= deleteStart, we know that they will either stay</color>
+<color=#75715e>   * the same, or be replaced by lastSync and lastTxnEnd from the recoveryTracker. Even we delete</color>
+<color=#75715e>   * mappings that are < deleteStart, we know that we did not roll back past an abort or commit, so</color>
+<color=#75715e>   * that we do not have to updated the lastSync or lastTxnEnd value.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>prunedLastOnDiskVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNRecoveryTracker</color> <color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>oldRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>oldRange</color><color=#f8f8f2>.</color><color=#a6e22e>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>range</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>recoveryFirst</color> <color=#f92672>=</color> <color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>().</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>prunedLastOnDiskVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Find the buckets in the bucketCache that have mappings >=</color>
+<color=#75715e>     * recoveryFirst, and remove their mappings. First establish the</color>
+<color=#75715e>     * headset of buckets that should be preserved. At this point, we</color>
+<color=#75715e>     * have already pruned the database, so the bucket set may not</color>
+<color=#75715e>     * be fully contiguous -- we may have pruned away mappings that</color>
+<color=#75715e>     * would normally be in the database.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Just take all the recovery tracker's mappings */</color>
+      <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>bucketCache</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>targetBucket</color> <color=#f92672>=</color> <color=#f8f8f2>getGTEBucket</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryFirst</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>targetKey</color> <color=#f92672>=</color> <color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* The newCache holds buckets that should be preserved. */</color>
+      <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSNBucket</color><color=#f92672>></color> <color=#f8f8f2>newCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>headMap</color><color=#f8f8f2>(</color><color=#f8f8f2>targetKey</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Prune any mappings >= recoveryFirst out of targetBucket. If it</color>
+<color=#75715e>       * has any mappings left, add it to newCache.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>removeFromTail</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>empty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newCache</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>targetBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>targetBucket</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>newCache</color><color=#f8f8f2>.</color><color=#a6e22e>putAll</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>bucketCache</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>bucketCache</color> <color=#f92672>=</color> <color=#f8f8f2>newCache</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>firstBucket</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>firstBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSNRecoveryTracker</color> <color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This method assume that there is no overlap between this tracker</color>
+<color=#75715e>     * and the recovery tracker. Everything in this tracker should precede</color>
+<color=#75715e>     * the recovery tracker.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getFirstTracked</color><color=#f8f8f2>())</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Expected this tracker to precede recovery tracker. "</color>
+                <color=#f92672>+</color> <color=#e6db74>"This tracker= "</color>
+                <color=#f92672>+</color> <color=#66d9ef>this</color>
+                <color=#f92672>+</color> <color=#e6db74>" recoveryTracker = "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>putAll</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>bucketCache</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>currentRange</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>currentRange</color><color=#f8f8f2>.</color><color=#a6e22e>getUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>recoveryTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>firstBucket</color> <color=#f92672>=</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>firstTrackedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>firstBucket</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>VLSNRange</color> <color=#a6e22e>getRange</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" firstTracked="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" lastOnDiskVLSN="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>bucket</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>bucket</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit test support. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>verify</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>verify</color><color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Check that all the buckets are in order. */</color>
+    <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f92672>></color> <color=#f8f8f2>firstVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f92672>></color> <color=#f8f8f2>lastVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>VLSNBucket</color> <color=#f8f8f2>b</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bucketCache</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>verifyBucketBoundaries</color><color=#f8f8f2>(</color><color=#f8f8f2>firstVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>).</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"firstBucketVLSN = "</color> <color=#f92672>+</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" should equal "</color> <color=#f92672>+</color> <color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastBucketVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>lastBucketVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>err</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"lastBucketVLSN = "</color> <color=#f92672>+</color> <color=#f8f8f2>lastBucketVLSN</color> <color=#f92672>+</color> <color=#e6db74>" should equal "</color> <color=#f92672>+</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used to check bucket boundaries for both the in-memory flush list and</color>
+<color=#75715e>   * the on-disk database buckets. Buckets may not be adjacent, but must be</color>
+<color=#75715e>   * in order.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>verifyBucketBoundaries</color><color=#f8f8f2>(</color><color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f92672>></color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f92672>></color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>first</color> <color=#f92672>=</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>prevLast</color> <color=#f92672>=</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>first</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>prevLast</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>())</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Boundary problem: bucket "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>i</color>
+                <color=#f92672>+</color> <color=#e6db74>" first "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>first</color>
+                <color=#f92672>+</color> <color=#e6db74>" follows bucket.last "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>prevLast</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>VLSN</color> <color=#a6e22e>getFirstTracked</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>firstTrackedVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>VLSN</color> <color=#a6e22e>getLastOnDisk</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>setLastOnDiskVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastOnDisk</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lastOnDiskVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastOnDisk</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * For unit test support only. Can only be called when replication stream</color>
+<color=#75715e>   * is quiescent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isFlushedToDisk</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastOnDiskVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>protectedFileRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>FileProtector</color> <color=#f8f8f2>fileProtector</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileProtector</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>removeFileProtection</color><color=#f8f8f2>(</color><color=#f8f8f2>protectedFileRange</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>fileProtector</color><color=#f8f8f2>.</color><color=#a6e22e>setVLSNIndexProtectedFileRange</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

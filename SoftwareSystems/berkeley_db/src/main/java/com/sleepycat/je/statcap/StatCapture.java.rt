@@ -1,0 +1,315 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.statcap</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.CustomStats</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentMutableConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.StatsConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvConfigObserver</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.utilint.StatLogger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map.Entry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>StatCapture</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DaemonThread</color> <color=#66d9ef>implements</color> <color=#f8f8f2>EnvConfigObserver</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>STATFILENAME</color> <color=#f92672>=</color> <color=#e6db74>"je.stat"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>STATFILEEXT</color> <color=#f92672>=</color> <color=#e6db74>"csv"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>CUSTOMGROUPNAME</color> <color=#f92672>=</color> <color=#e6db74>"Custom"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DELIMITER</color> <color=#f92672>=</color> <color=#e6db74>","</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DELIMITERANDSPACE</color> <color=#f92672>=</color> <color=#e6db74>", "</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatManager</color> <color=#f8f8f2>statMgr</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SortedSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>statProjection</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>statsConfig</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Integer</color> <color=#f8f8f2>statKey</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>StatLogger</color> <color=#f8f8f2>stlog</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StringBuffer</color> <color=#f8f8f2>values</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuffer</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#f8f8f2>currentHeader</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>JvmStats</color> <color=#f8f8f2>jvmstats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JvmStats</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>CustomStats</color> <color=#f8f8f2>customStats</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>customStatHeader</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Exception of last outputStats() call or null if call was successful.</color>
+<color=#75715e>   * Used to limit the number of errors logged.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>lastCallException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>StatCapture</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>environment</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>waitTime</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>CustomStats</color> <color=#f8f8f2>customStats</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SortedSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>statProjection</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>StatManager</color> <color=#f8f8f2>statMgr</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>waitTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>environment</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>environment</color><color=#f8f8f2>.</color><color=#a6e22e>addConfigObserver</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>statMgr</color> <color=#f92672>=</color> <color=#f8f8f2>statMgr</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>statKey</color> <color=#f92672>=</color> <color=#f8f8f2>statMgr</color><color=#f8f8f2>.</color><color=#a6e22e>registerStatContext</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>customStats</color> <color=#f92672>=</color> <color=#f8f8f2>customStats</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>statProjection</color> <color=#f92672>=</color> <color=#f8f8f2>statProjection</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Note that we fetch all stats, not just fast stats. Since the stat</color>
+<color=#75715e>     * retrieval frequency is one minute and this is done by a background</color>
+<color=#75715e>     * thread, there is no reason not to include all stats.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>statsConfig</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatsConfig</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>statsConfig</color><color=#f8f8f2>.</color><color=#a6e22e>setClear</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Add jvm and custom statistics to the projection list. */</color>
+    <color=#f8f8f2>jvmstats</color><color=#f8f8f2>.</color><color=#a6e22e>addVMStatDefs</color><color=#f8f8f2>(</color><color=#f8f8f2>statProjection</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>customStats</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>customFldNames</color> <color=#f92672>=</color> <color=#f8f8f2>customStats</color><color=#f8f8f2>.</color><color=#a6e22e>getFieldNames</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>customStatHeader</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>String</color><color=#f92672>[</color><color=#f8f8f2>customFldNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>customFldNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>customStatHeader</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>CUSTOMGROUPNAME</color> <color=#f92672>+</color> <color=#e6db74>":"</color> <color=#f92672>+</color> <color=#f8f8f2>customFldNames</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>statProjection</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>customStatHeader</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>customStatHeader</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>envConfigUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>collectStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>stlog</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called whenever the DaemonThread wakes up from a sleep. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>onWakeup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>collectStats</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>outputStats</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>requestShutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>requestShutdown</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Check if env is valid outside of synchronized call to</color>
+<color=#75715e>     * outputStats(). It is possible that a call to outputStats</color>
+<color=#75715e>     * caused the invalidation and we would deadlock since that</color>
+<color=#75715e>     * thread is holding the lock for this object and waiting for</color>
+<color=#75715e>     * this thread to shutdown.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>collectStats</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>outputStats</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>outputStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>collectStats</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>stats</color> <color=#f92672>=</color> <color=#f8f8f2>getStats</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>stats</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentHeader</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>setLength</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"time"</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>nameit</color> <color=#f92672>=</color> <color=#f8f8f2>statProjection</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color> <color=#f8f8f2>nameit</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>String</color> <color=#f8f8f2>statname</color> <color=#f92672>=</color> <color=#f8f8f2>nameit</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DELIMITER</color> <color=#f92672>+</color> <color=#f8f8f2>statname</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>stlog</color><color=#f8f8f2>.</color><color=#a6e22e>setHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>currentHeader</color> <color=#f92672>=</color> <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>setLength</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>StatUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getDate</color><color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()));</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>nameit</color> <color=#f92672>=</color> <color=#f8f8f2>statProjection</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color> <color=#f8f8f2>nameit</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>();</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>statname</color> <color=#f92672>=</color> <color=#f8f8f2>nameit</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>statname</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>val</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DELIMITER</color> <color=#f92672>+</color> <color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DELIMITERANDSPACE</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>stlog</color><color=#f8f8f2>.</color><color=#a6e22e>log</color><color=#f8f8f2>(</color><color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>values</color><color=#f8f8f2>.</color><color=#a6e22e>setLength</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>lastCallException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastCallException</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Error accessing statistics capture file "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILENAME</color>
+                <color=#f92672>+</color> <color=#e6db74>"."</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILEEXT</color>
+                <color=#f92672>+</color> <color=#e6db74>" IO Exception: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>lastCallException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastCallException</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Error accessing or writing statistics capture file  "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILENAME</color>
+                <color=#f92672>+</color> <color=#e6db74>"."</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILEEXT</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color>
+                <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>lastCallException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>StatGroup</color><color=#f92672>></color> <color=#f8f8f2>envStats</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>StatGroup</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>statMgr</color><color=#f8f8f2>.</color><color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>statsConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>statKey</color><color=#f8f8f2>).</color><color=#a6e22e>getStatGroups</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>StatGroup</color><color=#f92672>></color> <color=#f8f8f2>rsg</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepStatGroups</color><color=#f8f8f2>(</color><color=#f8f8f2>statsConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>statKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rsg</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>envStats</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>rsg</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>envStats</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>jvmstats</color><color=#f8f8f2>.</color><color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>statsConfig</color><color=#f8f8f2>));</color>
+
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>statsMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>StatGroup</color> <color=#f8f8f2>sg</color> <color=#f8f8f2>:</color> <color=#f8f8f2>envStats</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Entry</color><color=#f92672><</color><color=#f8f8f2>StatDefinition</color><color=#f8f8f2>,</color> <color=#f8f8f2>Stat</color><color=#f92672><?>></color> <color=#f8f8f2>e</color> <color=#f8f8f2>:</color> <color=#f8f8f2>sg</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>().</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>mapName</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>sg</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>":"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()).</color><color=#a6e22e>intern</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>Stat</color><color=#f92672><?></color> <color=#f8f8f2>stat</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>stat</color><color=#f8f8f2>.</color><color=#a6e22e>isNotSet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>statsMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>mapName</color><color=#f8f8f2>,</color> <color=#e6db74>" "</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>val</color> <color=#f92672>=</color> <color=#f8f8f2>stat</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/* get stats back as strings. */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>str</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>val</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Float</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>val</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Double</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>str</color> <color=#f92672>=</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"%.2f"</color><color=#f8f8f2>,</color> <color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>val</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>Number</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>str</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(((</color><color=#f8f8f2>Number</color><color=#f8f8f2>)</color> <color=#f8f8f2>val</color><color=#f8f8f2>).</color><color=#a6e22e>longValue</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>val</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>str</color> <color=#f92672>=</color> <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>val</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>str</color> <color=#f92672>=</color> <color=#e6db74>" "</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>statsMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>mapName</color><color=#f8f8f2>,</color> <color=#f8f8f2>str</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>customStats</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>vals</color> <color=#f92672>=</color> <color=#f8f8f2>customStats</color><color=#f8f8f2>.</color><color=#a6e22e>getFieldValues</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>vals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>statsMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>customStatHeader</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>,</color> <color=#f8f8f2>vals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>statsMap</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>envConfigUpdate</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentMutableConfig</color> <color=#f8f8f2>unused</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setWaitTime</color><color=#f8f8f2>(</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STATS_COLLECT_INTERVAL</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReadOnly</color><color=#f8f8f2>()</color>
+        <color=#f92672>||</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isMemOnly</color><color=#f8f8f2>()</color>
+        <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STATS_COLLECT</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>stlog</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxFiles</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STATS_MAX_FILES</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>fileRowCount</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STATS_FILE_ROW_COUNT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>stlog</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>statdir</color> <color=#f92672>=</color> <color=#f8f8f2>configMgr</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>STATS_FILE_DIRECTORY</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>statDir</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>statdir</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>statdir</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#e6db74>""</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>statDir</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironmentHome</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>statDir</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>statdir</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>statDir</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* TODO: require the user to create the directory. */</color>
+          <color=#f8f8f2>statDir</color><color=#f8f8f2>.</color><color=#a6e22e>mkdirs</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>statDir</color><color=#f8f8f2>.</color><color=#a6e22e>isDirectory</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Specified statistic log directory "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>statDir</color><color=#f8f8f2>.</color><color=#a6e22e>getAbsolutePath</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" is not a directory."</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>stlog</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>statDir</color><color=#f8f8f2>,</color> <color=#f8f8f2>STATFILENAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>STATFILEEXT</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxFiles</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileRowCount</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>" Error accessing statistics capture file "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILENAME</color>
+                <color=#f92672>+</color> <color=#e6db74>"."</color>
+                <color=#f92672>+</color> <color=#f8f8f2>STATFILEEXT</color>
+                <color=#f92672>+</color> <color=#e6db74>" IO Exception: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>stlog</color><color=#f8f8f2>.</color><color=#a6e22e>setFileCount</color><color=#f8f8f2>(</color><color=#f8f8f2>maxFiles</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>stlog</color><color=#f8f8f2>.</color><color=#a6e22e>setRowCount</color><color=#f8f8f2>(</color><color=#f8f8f2>fileRowCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

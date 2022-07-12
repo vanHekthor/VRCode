@@ -1,0 +1,411 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.TTL</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException.unexpectedException</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Options for calling methods that write (insert, update or delete) records.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <h3><a name="ttl">Time-To-Live</a></h3></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When performing a 'put' operation, a TTL may be specified using {@link #setTTL(int, TimeUnit)}</color>
+<color=#75715e> * or {@link #setTTL(int)}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>By default, the TTL property is zero, meaning there is no automatic expiration. A non-zero TTL</color>
+<color=#75715e> * may be specified to cause an inserted record to expire. The expiration time may also be changed</color>
+<color=#75715e> * for an existing record by updating the record and specifying a different TTL, including</color>
+<color=#75715e> * specifying zero to prevent the record from expiring. However, the TTL of an existing record is</color>
+<color=#75715e> * updated only if {@link #setUpdateTTL(boolean)} is explicitly set to true. When deleting a record,</color>
+<color=#75715e> * the TTL parameter is ignored.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Records expire on day or hour boundaries, depending on the {@code timeUnit} parameter. At the</color>
+<color=#75715e> * time of the write operation, the TTL parameter is used to compute the record's expiration time by</color>
+<color=#75715e> * first converting it from days (or hours) to milliseconds, and then adding it to the current</color>
+<color=#75715e> * system time. If the resulting expiration time is not evenly divisible by the number of</color>
+<color=#75715e> * milliseconds in one day (or hour), it is rounded up to the nearest day (or hour).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Passing TimeUnit.DAYS, rather than TimeUnit.HOURS, for the timeUnit parameter is recommended</color>
+<color=#75715e> * to minimize storage requirements (memory and disk). Because the expiration time is stored in the</color>
+<color=#75715e> * JE Btree internally, when using the TTL feature, the additional memory and disk space required</color>
+<color=#75715e> * for storing Btree internal nodes (INs) is twice as much when using TimeUnit.HOURS as when using</color>
+<color=#75715e> * TimeUnit.DAYS. Using TimeUnit.DAYS adds about 5% to the space needed for INs, while</color>
+<color=#75715e> * TimeUnit.HOURS adds about 10%.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that JE stores the expiration time of the record and not the original TTL value that was</color>
+<color=#75715e> * specified. The expiration time of a record is available when reading (or writing) records via</color>
+<color=#75715e> * {@link OperationResult#getExpirationTime()}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A summary of the behavior of expired records is as follows.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>Space for expired records will be purged in the background by the JE cleaner, and expired</color>
+<color=#75715e> *       records will be filtered out of queries even if they have not been purged.</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *   <li>Expired records are removed individually: there is no guarantee that records with the same</color>
+<color=#75715e> *       expiration time will be removed simultaneously.</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *   <li>Records with expiration times support repeatable-read semantics in most cases, but with</color>
+<color=#75715e> *       some exceptions (described below).</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A more detailed description is below, including some information on how expired records are</color>
+<color=#75715e> * handled internally.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>Expired records will be purged in order to reclaim disk space. This happens in background</color>
+<color=#75715e> *       over time, and there is no guarantee that the space for a record will be reclaimed at any</color>
+<color=#75715e> *       particular time. Purging of expired records occurs during the normal JE cleaning process.</color>
+<color=#75715e> *       The goals of the purging process are:</color>
+<color=#75715e> *       <ol></color>
+<color=#75715e> *         <li>to minimize the cost of purging;</color>
+<color=#75715e> *         <li>to keep disk utilization below the {@link EnvironmentConfig#CLEANER_MIN_UTILIZATION}</color>
+<color=#75715e> *             threshold, as usual, but taking into account expired data; and</color>
+<color=#75715e> *         <li>to reclaim expired data gradually and avoid spikes in cleaning on day and hour</color>
+<color=#75715e> *             boundaries.</color>
+<color=#75715e> *       </ol></color>
+<color=#75715e> *   <li>Expired records that have not been purged will be filtered out of queries and will not be</color>
+<color=#75715e> *       returned to the application. In a replicated environment, purging and filtering occur</color>
+<color=#75715e> *       independently on each node. For queries to return consistent results on all nodes, the</color>
+<color=#75715e> *       system clocks on all nodes must be synchronized.</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *   <li>Repeatable-read semantics are supported for records that expire after being read. If a lock</color>
+<color=#75715e> *       of any kind is held on a record and the record expires, when accessing it again using the</color>
+<color=#75715e> *       same transaction or cursor, it will be accessed as if it is not expired. In other words,</color>
+<color=#75715e> *       locking a record prevents it from expiring, from the viewpoint of that transaction or</color>
+<color=#75715e> *       cursor. However, there are some caveats and exceptions to this rule:</color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>A lock by one transaction or cursor will not prevent a record from being seen as</color>
+<color=#75715e> *             expired when accessing it using a different transaction or cursor.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>In the unlikely event that the system clock is changed, locking a record may not</color>
+<color=#75715e> *             guarantee that the record's data has not been purged, if the data is not read at the</color>
+<color=#75715e> *             time the record is locked. This is because the record's key and its data are purged</color>
+<color=#75715e> *             independently. It is possible to lock a record without reading its data by passing</color>
+<color=#75715e> *             null for the 'data' parameter. If a record is locked in this manner, and the data was</color>
+<color=#75715e> *             previously purged because the system clock was changed, then one of the following may</color>
+<color=#75715e> *             occur, even when using the same transaction or cursor that was used to lock the</color>
+<color=#75715e> *             record:</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *             <ul></color>
+<color=#75715e> *               <li>If the record is read again with a non-null data parameter, the operation may</color>
+<color=#75715e> *                   fail (return null) because the data cannot be read.</color>
+<color=#75715e> *                   <p></color>
+<color=#75715e> *               <li>If a partial update is attempted (passing a {@link</color>
+<color=#75715e> *                   DatabaseEntry#setPartial(int,int,boolean) partial} 'data' parameter), the</color>
+<color=#75715e> *                   operation may fail (return null) because the pre-existing data cannot be read.</color>
+<color=#75715e> *                   <p></color>
+<color=#75715e> *             </ul></color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> *   <li>Even when multiple records have the same expiration time, JE does not provide a way for</color>
+<color=#75715e> *       them to expire atomically, as could be done by explicitly deleting multiple records in a</color>
+<color=#75715e> *       single transaction. This restriction is for performance reasons; if records could expire</color>
+<color=#75715e> *       atomically, they could not be purged efficiently using the JE cleaning process. Instead,</color>
+<color=#75715e> *       each record expires individually, as if each were deleted in a separate transaction. This</color>
+<color=#75715e> *       means that even when a set of records is inserted or updated atomically, a query may return</color>
+<color=#75715e> *       some but not not all of the records, when any of the records expire at a time very close to</color>
+<color=#75715e> *       the time of the query. This is because the system clock is checked for each record</color>
+<color=#75715e> *       individually at the time it is read by the query, and because expired records may be purged</color>
+<color=#75715e> *       by other threads.</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *   <li>There are several special cases of the above rule that involve access to primary and</color>
+<color=#75715e> *       secondary databases. Because a given primary record and its associated secondary records</color>
+<color=#75715e> *       are normal records in most respects, this set of records does not expire atomically. For</color>
+<color=#75715e> *       most read and write operations, JE treats the expiration of any record in this set as if</color>
+<color=#75715e> *       all records have expired, and in these cases there is no special behavior to consider. For</color>
+<color=#75715e> *       example:</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>As long as the primary and secondary databases are transactional, JE ensures that the</color>
+<color=#75715e> *             expiration times of a given primary record and all its associated secondary records</color>
+<color=#75715e> *             are the same.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>When reading a primary record via a secondary key, JE first reads the secondary</color>
+<color=#75715e> *             record and then the primary. If either record expires during this process, both</color>
+<color=#75715e> *             records are treated as expired.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>When updating or deleting a primary record, JE first reads the primary record to</color>
+<color=#75715e> *             obtain the secondary keys and then deletes/updates/inserts the secondary records as</color>
+<color=#75715e> *             needed. If a secondary record expires during this process, this will not cause a</color>
+<color=#75715e> *             {@link SecondaryIntegrityException}, as would normally happen when an expected</color>
+<color=#75715e> *             associated record is missing.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>When a primary and/or secondary record expires after being read, with few exceptions,</color>
+<color=#75715e> *             repeatable-read semantics are supported as described above, i.e., locks prevent</color>
+<color=#75715e> *             expiration from the viewpoint of the locking transaction or cursor. Exceptions to</color>
+<color=#75715e> *             this rule are described below.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> *       However, there are several cases where such treatment by JE is not practical, and the user</color>
+<color=#75715e> *       should be aware of special behavior when primary or secondary records expire. These are not</color>
+<color=#75715e> *       common use cases, but it is important to be aware of them. In the cases described below,</color>
+<color=#75715e> *       let us assume a primary database has two associated secondary databases, and a particular</color>
+<color=#75715e> *       primary record with primary key X has two secondary records with keys A and B, one in each</color>
+<color=#75715e> *       secondary database.</color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>After a transaction or cursor reads and locks the primary record via primary key X,</color>
+<color=#75715e> *             reading via primary key X again with the same transaction or cursor will also be</color>
+<color=#75715e> *             successful even if the record has expired, i.e., repeatable-read is supported.</color>
+<color=#75715e> *             However, if the record expires and the same transaction or cursor attempts to read</color>
+<color=#75715e> *             via key A or B, the record will not be found. This is because the secondary records</color>
+<color=#75715e> *             for key A and B were not locked and they expire independently of the primary record.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>Similarly, after a transaction or cursor reads and locks the primary record via</color>
+<color=#75715e> *             secondary key A successfully, reading via key A again with the same transaction or</color>
+<color=#75715e> *             cursor will also be successful even if the record has expired. Reading via primary</color>
+<color=#75715e> *             key X will also be successful, even if the record has expired, because the primary</color>
+<color=#75715e> *             record was locked. However, if the record expires and the same transaction or cursor</color>
+<color=#75715e> *             attempts to read via key B, the record will not be found. This is because the</color>
+<color=#75715e> *             secondary record for key B was not locked and it expires independently of the primary</color>
+<color=#75715e> *             record and the secondary record for key A.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *         <li>When reading via a secondary database, it is possible to read the only the secondary</color>
+<color=#75715e> *             key and primary key (which are both contained in the secondary record), but not the</color>
+<color=#75715e> *             primary record, by passing null for the 'data' parameter. In this case the primary</color>
+<color=#75715e> *             record is not locked. Therefore, if the record expires and the same transaction or</color>
+<color=#75715e> *             cursor attempts to read the primary record (via any secondary key or the primary</color>
+<color=#75715e> *             key), the record will not be found.</color>
+<color=#75715e> *         <li>When a record expires, if its database serves as a {@link</color>
+<color=#75715e> *             SecondaryConfig#setForeignKeyDatabase foreign key database}, the {@link</color>
+<color=#75715e> *             SecondaryConfig#setForeignKeyDeleteAction foreign key delete action} will not be</color>
+<color=#75715e> *             enforced. Therefore, setting a TTL for a record in a foreign key database is not</color>
+<color=#75715e> *             recommended. The same is true when using the DPL and a foreign key database is</color>
+<color=#75715e> *             specified using {@link com.sleepycat.persist.model.SecondaryKey#relatedEntity()}.</color>
+<color=#75715e> *             <p></color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> *       <p></color>
+<color=#75715e> *   <li>When JE detects what may be an internal integrity error, it tries to determine whether an</color>
+<color=#75715e> *       expired record, rather than a true integrity error, is the underlying cause. To prevent</color>
+<color=#75715e> *       internal errors when small changes in the system clock time are made, if a record has</color>
+<color=#75715e> *       expired within {@link EnvironmentConfig#ENV_TTL_CLOCK_TOLERANCE} (two hours, by default),</color>
+<color=#75715e> *       JE treats the record as deleted and no exception is thrown.</color>
+<color=#75715e> *       <p>When an integrity error does cause an exception to be thrown, the record's expiration</color>
+<color=#75715e> *       time will be included in the exception message and this can help to diagnose the problem.</color>
+<color=#75715e> *       This includes the following exceptions:</color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>{@link SecondaryIntegrityException}</color>
+<color=#75715e> *         <li>{@link EnvironmentFailureException} with LOG_FILE_NOT_FOUND in the message.</color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> *       <p>In cases where the clock has been changed by more than one hour and integrity exceptions</color>
+<color=#75715e> *       occur because of this, it may be possible to avoid the exceptions by setting the {@link</color>
+<color=#75715e> *       EnvironmentConfig#ENV_TTL_CLOCK_TOLERANCE} configuration parameter to a larger value.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In order to use the TTL feature in a ReplicatedEnvironment, all nodes must be upgraded to JE</color>
+<color=#75715e> * 7.0 or later. If one or more nodes in a group uses an earlier version, an IllegalStateException</color>
+<color=#75715e> * will be thrown when attempting a put operation with a non-zero TTL. Also, once records with a</color>
+<color=#75715e> * non-zero TTL have been written, a node using an earlier version of JE may not join the group; if</color>
+<color=#75715e> * this is attempted, the node will fail during open with an EnvironmentFailureException.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @since 7.0</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>WriteOptions</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>ttl</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>ttlUnit</color> <color=#f92672>=</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>DAYS</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>updateTtl</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Constructs a WriteOptions object with default values for all properties. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>WriteOptions</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>clone</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>WriteOptions</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>CloneNotSupportedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the {@code CacheMode} to be used for the operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>By default this property is null, meaning that the default specified using {@link</color>
+<color=#75715e>   * Cursor#setCacheMode}, {@link DatabaseConfig#setCacheMode} or {@link</color>
+<color=#75715e>   * EnvironmentConfig#setCacheMode} will be used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cacheMode is the {@code CacheMode} used for the operation, or null to use the Cursor,</color>
+<color=#75715e>   *     Database or Environment default.</color>
+<color=#75715e>   * @return 'this'.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>setCacheMode</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>CacheMode</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cacheMode</color> <color=#f92672>=</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the {@code CacheMode} to be used for the operation, or null if the Cursor, Database or</color>
+<color=#75715e>   * Environment default will be used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #setCacheMode(CacheMode)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>CacheMode</color> <color=#a6e22e>getCacheMode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cacheMode</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the Time-To-Live property for a 'put' operation, using {@code TimeUnit.Days} as the TTL</color>
+<color=#75715e>   * unit.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param ttl the number of days after the current time on which the record will automatically</color>
+<color=#75715e>   *     expire, or zero for no automatic expiration. May not be negative.</color>
+<color=#75715e>   * @return 'this'.</color>
+<color=#75715e>   * @see <a href="#ttl">Time-To-Live</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>setTTL</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ttl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>ttl</color> <color=#f92672>=</color> <color=#f8f8f2>ttl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>ttlUnit</color> <color=#f92672>=</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>DAYS</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the Time-To-Live property for a 'put' operation, using the given {@code TimeUnit}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param ttl the number of days or hours after the current time on which the record will</color>
+<color=#75715e>   *     automatically expire, or zero for no automatic expiration. May not be negative.</color>
+<color=#75715e>   * @param timeUnit is TimeUnit.DAYS or TimeUnit.HOURS. TimeUnit.DAYS is recommended to minimize</color>
+<color=#75715e>   *     storage requirements (memory and disk).</color>
+<color=#75715e>   * @return 'this'.</color>
+<color=#75715e>   * @see <a href="#ttl">Time-To-Live</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>setTTL</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ttl</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>ttl</color> <color=#f92672>=</color> <color=#f8f8f2>ttl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>ttlUnit</color> <color=#f92672>=</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the Time-To-Live property for a 'put' operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #setTTL(int)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getTTL</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ttl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the Time-To-Live time unit for a 'put' operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #setTTL(int, TimeUnit)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>TimeUnit</color> <color=#a6e22e>getTTLUnit</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ttlUnit</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the update-TTL property for a 'put' operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If this property is true and the operation updates a record, the specified TTL will be used</color>
+<color=#75715e>   * to assign a new expiration time for the record, or to clear the record's expiration time if the</color>
+<color=#75715e>   * specified TTL is zero.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If this parameter is false and the operation updates a record, the record's expiration time</color>
+<color=#75715e>   * will not be changed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the operation inserts a record, this parameter is ignored and the specified TTL is always</color>
+<color=#75715e>   * applied.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>By default, this property is false.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param updateTtl is whether to assign (or clear) the expiration time when updating an existing</color>
+<color=#75715e>   *     record.</color>
+<color=#75715e>   * @return 'this'.</color>
+<color=#75715e>   * @see <a href="#ttl">Time-To-Live</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>setUpdateTTL</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>updateTtl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>updateTtl</color> <color=#f92672>=</color> <color=#f8f8f2>updateTtl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the update-TTL property for a 'put' operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #setUpdateTTL(boolean)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getUpdateTTL</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>updateTtl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A convenience method to set the TTL based on a given expiration time and the current system</color>
+<color=#75715e>   * time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Given a desired expiration time and {@link TimeUnit} (DAYS or HOURS), sets the TTL to a</color>
+<color=#75715e>   * value that will cause a record to expire at or after the given time, if the record is stored at</color>
+<color=#75715e>   * the current time. The intended use case is to determine the TTL when writing a record and the</color>
+<color=#75715e>   * desired expiration time, rather than the TTL, is known.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method determines the TTL by taking the difference between the current time and the</color>
+<color=#75715e>   * given time, converting it from milliseconds to days (or hours), and rounding up if it is not</color>
+<color=#75715e>   * evenly divisible by the number of milliseconds in one day (or hour).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A special use case is when the expiration time was previously obtained from {@link</color>
+<color=#75715e>   * OperationResult#getExpirationTime()}, for example, when performing an export followed by an</color>
+<color=#75715e>   * import. To support this, null can be passed for the timeUnit parameter and the time unit will</color>
+<color=#75715e>   * be determined as follows.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li>This method first converts the expiration time to a TTL in hours, as described above. If</color>
+<color=#75715e>   *       the expiration time was obtained by calling {@link OperationResult#getExpirationTime},</color>
+<color=#75715e>   *       then it will be evenly divisible by the number of milliseconds in one hour and no</color>
+<color=#75715e>   *       rounding will occur.</color>
+<color=#75715e>   *   <li>If the resulting TTL in hours is an even multiple of 24, {@code DAYS} is used; otherwise,</color>
+<color=#75715e>   *       {@code HOURS} is used. For example, when performing an import, if the original expiration</color>
+<color=#75715e>   *       time was specified in {@code DAYS}, and obtained by calling {@link</color>
+<color=#75715e>   *       OperationResult#getExpirationTime}, the unit derived by this method will also be {@code</color>
+<color=#75715e>   *       DAYS}.</color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that when a particular time unit is desired, null should not be passed for the timeUnit</color>
+<color=#75715e>   * parameter. Normally {@link TimeUnit#DAYS} is recommended instead of {@link TimeUnit#HOURS}, to</color>
+<color=#75715e>   * minimize storage requirements (memory and disk). When the desired unit is known, the unit</color>
+<color=#75715e>   * should be passed explicitly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param expirationTime is the desired expiration time in milliseconds (UTC), or zero for no</color>
+<color=#75715e>   *     automatic expiration.</color>
+<color=#75715e>   * @param timeUnit is {@link TimeUnit#DAYS} or {@link TimeUnit#HOURS}, or null to derive the time</color>
+<color=#75715e>   *     unit as described above.</color>
+<color=#75715e>   * @throws IllegalArgumentException if ttlUnits is not DAYS, HOURS or null.</color>
+<color=#75715e>   * @see <a href="#ttl">Time-To-Live</a></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>WriteOptions</color> <color=#a6e22e>setExpirationTime</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>expirationTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expirationTime</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>setTTL</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>hours</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeUnit</color> <color=#f92672>==</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>DAYS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>hours</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeUnit</color> <color=#f92672>==</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>HOURS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>hours</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeUnit</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>hours</color> <color=#f92672>=</color> <color=#f8f8f2>TTL</color><color=#f8f8f2>.</color><color=#a6e22e>isSystemTimeInHours</color><color=#f8f8f2>(</color><color=#f8f8f2>expirationTime</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>timeUnit</color> <color=#f92672>=</color> <color=#f8f8f2>hours</color> <color=#f92672>?</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>HOURS</color> <color=#f8f8f2>:</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>DAYS</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"ttlUnits not allowed: "</color> <color=#f92672>+</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>setTTL</color><color=#f8f8f2>(</color><color=#f8f8f2>TTL</color><color=#f8f8f2>.</color><color=#a6e22e>systemTimeToExpiration</color><color=#f8f8f2>(</color><color=#f8f8f2>expirationTime</color> <color=#f92672>-</color> <color=#f8f8f2>TTL</color><color=#f8f8f2>.</color><color=#a6e22e>currentSystemTime</color><color=#f8f8f2>(),</color> <color=#f8f8f2>hours</color><color=#f8f8f2>),</color> <color=#f8f8f2>timeUnit</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,767 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Pair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The FileProtector is primarily responsible for protecting files from being deleted due to log</color>
+<color=#75715e> * cleaning, when they are needed for other purposes. As such it is a gatekeeper for reading files.</color>
+<color=#75715e> * In addition it maintains certain metadata: - the size of each file, which is needed for</color>
+<color=#75715e> * calculating disk usage; - the first and last VLSNs in each reserved file, which are needed for</color>
+<color=#75715e> * maintaining the VLSNIndex; - the total size of active and reserved files, for disk usage</color>
+<color=#75715e> * statistics.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>All files are in three categories: + Active: readable by all. The minimum set of files needed</color>
+<color=#75715e> * to function. + Reserved: should be read only by feeders and low level utilities. They have been</color>
+<color=#75715e> * cleaned and will not become active again. They can be "condemned" and deleted if they are not</color>
+<color=#75715e> * being read. + Condemned: not readable and effectively invisible. They will be deleted ASAP. They</color>
+<color=#75715e> * will not become active or reserved again. A file is typically in the Condemned category for a</color>
+<color=#75715e> * very short time, while being deleted.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Reserved files can be temporarily protected, i.e., prevented from being condemned and deleted.</color>
+<color=#75715e> * Only reserved files can be condemned and deleted. All active files are implicitly protected, but</color>
+<color=#75715e> * are also protected explicitly by consumers because they may become reserved while being consumed.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Consumers of the File Protection Service ----------------------------------------</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ DiskOrderedScanner (DiskOrderedCursor and DatabaseCount) - Protects all currently active</color>
+<color=#75715e> * files. By currently active we mean active at the time they are protected. If they become reserved</color>
+<color=#75715e> * during the scan, they must continue to be protected. - Also protects any new files written during</color>
+<color=#75715e> * the scan.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ DbBackup: - Protects-and-lists all currently active files, or a subset of the currently</color>
+<color=#75715e> * active files in the case of an incremental backup. - Provides API to remove files from protected</color>
+<color=#75715e> * set as they are copied, to allow file deletion.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ NetworkRestore: - Protects-and-lists all currently active files using DbBackup. - Also</color>
+<color=#75715e> * protects the two newest reserved files at the time that the active files are protected. - Removes</color>
+<color=#75715e> * files from protected set as they are copied, to allow file deletion.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Syncup: - Protects all files (active and reserved) in an open ended range starting with the</color>
+<color=#75715e> * file of the VLSNIndex range start. Barren files (with no replicable entries) are not protected.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Feeder: - Protects all files (active and reserved) in an open ended range starting with the</color>
+<color=#75715e> * file of the current VLSN. Barren files (with no replicable entries) are not protected. - Advances</color>
+<color=#75715e> * lower bound of protected range as VLSN advances, to allow file deletion.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>+ Cleaner: - Transforms active files into reserved files after cleaning them. - Condemns and</color>
+<color=#75715e> * deletes reserved files to honor disk limits. Truncates head of VLSNIndex when necessary to stay</color>
+<color=#75715e> * with disk thresholds.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Syncup, Feeders and the VLSNIndex --------------------------------- During syncup, a</color>
+<color=#75715e> * ProtectedFileRange is used to protect files in the entire range of the VLSNIndex. Syncup must</color>
+<color=#75715e> * also prevent head truncation of the VLSNIndex itself because the file readers (used by both</color>
+<color=#75715e> * master and replica) use the VLSNIndex to position in the file at various times.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A feeder file reader also protect all files from the current VLSN onward using a</color>
+<color=#75715e> * ProtectedFileRange. We rely on syncup to initialize the feeder's ProtectedFileRange safely, while</color>
+<color=#75715e> * the syncup ProtectedFileRange is in effect. The feeder reader will advance the lower bound of its</color>
+<color=#75715e> * ProtectedFileRange as it reads forward to allow files to be deleted. It also uses the VLNSIndex</color>
+<color=#75715e> * to skip over gaps in the file, although it is unclear whether this is really necessary.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Therefore the syncup and feeder ProtectedFileRanges are special in that they also prevent head</color>
+<color=#75715e> * truncation of the VLSNIndex.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The cleaner truncates the head of the VLSNIndex to allow deletion of files when necessary to</color>
+<color=#75715e> * stay within disk usage limits. This truncation must not be allowed when a syncup is in progress,</color>
+<color=#75715e> * and must not be allowed to remove the portion of the VLSN range used by a feeder. This is</color>
+<color=#75715e> * enforced using a special ProtectedFileRange (vlsnIndexRange) that protects the entire VLSNIndex</color>
+<color=#75715e> * range. The vlsnIndexRange is advanced when necessary to delete files that it protects, but only</color>
+<color=#75715e> * if those files are not protected by syncup or feeders. See {@link #checkVLSNIndexTruncation},</color>
+<color=#75715e> * {@link com.sleepycat.je.rep.vlsn.VLSNTracker#tryTruncateFromHead} and {@link</color>
+<color=#75715e> * com.sleepycat.je.rep.vlsn.VLSNTracker#protectRangeHead}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>We takes pains to avoid synchronizing on FileProtector while truncating the VLSNIndex head,</color>
+<color=#75715e> * which is a relatively expensive operation. (The FileProtector is meant to be used by multiple</color>
+<color=#75715e> * threads without a lot of blocking and should perform only a fairly small amount of work while</color>
+<color=#75715e> * synchronized.) The following approach is used to truncate the VLSNIndex head safely:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- To prevent disk usage limit violations, Cleaner.manageDiskUsage first tries to delete</color>
+<color=#75715e> * reserved files without truncating the VLSNIndex. If this is not sufficient, it then tries to</color>
+<color=#75715e> * truncate the VLSNIndex head. If the VLSNIndex head can be truncated, then it tries again to</color>
+<color=#75715e> * delete reserved files, since more files should then be unprotected.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- VLSNTracker synchronization is used to protect the VLSNIndex range. The vlsnIndexRange</color>
+<color=#75715e> * ProtectedFileRange is advanced only while synchronized on the VLSNTracker.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- VLSNTracker.tryTruncateFromHead (which is synchronized) calls</color>
+<color=#75715e> * FileProtector.checkVLSNIndexTruncation to determine where to truncate the index. Reserved files</color>
+<color=#75715e> * can be removed from the VLSNIndex range only if they are not protected by syncup and feeders.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- The VLSNTracker range is then truncated, and the vlsnIndexRange is advanced to allow file</color>
+<color=#75715e> * deletion, all while synchronized on the tracker.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- When a syncup starts, it adds a ProtectedFileRange with the same startFile as the</color>
+<color=#75715e> * vlsnIndexRange. This is done while synchronized on the VLSNTracker and it prevents the</color>
+<color=#75715e> * vlsnIndexRange from advancing during the syncup.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>-- When a syncup is successful, on the master the Feeder is initialized and it adds a</color>
+<color=#75715e> * ProtectedFileRange to protect the range of the VLSNIndex that it is reading. This is done BEFORE</color>
+<color=#75715e> * removing the ProtectedFileRange that was added at the start of the syncup. This guarantees that</color>
+<color=#75715e> * the files and VLSNIndex range used by the feeder will not be truncated/deleted.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that the special vlsnIndexRange ProtectedFileRange is excluded from LogSizeStats to avoid</color>
+<color=#75715e> * confusion and because this ProtectedFileRange does not ultimately prevent VLSNIndex head</color>
+<color=#75715e> * truncation or file deletion.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Barren Files ------------ Files with no replicable entries do not need to be protected by</color>
+<color=#75715e> * syncup or feeeders. See {@link #protectFileRange(String, long, boolean)}. Barren files may be</color>
+<color=#75715e> * created when cleaning is occurring but app writes are not, for example, when recovering from a</color>
+<color=#75715e> * cache size configuration error. In this situation it is important to delete the barren files to</color>
+<color=#75715e> * reclaim disk space.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Such "barren" files are identified by having null begin/end VLSNs. The begin/end VLSNs for a</color>
+<color=#75715e> * file are part of the cleaner metadata that is collected when the cleaner processes a file. These</color>
+<color=#75715e> * VLSNs are for replicable entries only, not migrated entries that happen to contain a VLSN.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>FileProtector</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* Prefixes for ProtectedFileSet names. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BACKUP_NAME</color> <color=#f92672>=</color> <color=#e6db74>"Backup"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DATABASE_COUNT_NAME</color> <color=#f92672>=</color> <color=#e6db74>"DatabaseCount"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DISK_ORDERED_CURSOR_NAME</color> <color=#f92672>=</color> <color=#e6db74>"DiskOrderedCursor"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>FEEDER_NAME</color> <color=#f92672>=</color> <color=#e6db74>"Feeder"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SYNCUP_NAME</color> <color=#f92672>=</color> <color=#e6db74>"Syncup"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>VLSN_INDEX_NAME</color> <color=#f92672>=</color> <color=#e6db74>"VLSNIndex"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>NETWORK_RESTORE_NAME</color> <color=#f92672>=</color> <color=#e6db74>"NetworkRestore"</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ReservedFileInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>endVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ReservedFileInfo</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>endVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>size</color> <color=#f92672>=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>endVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>endVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Access active files only via getActiveFiles. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReservedFileInfo</color><color=#f92672>></color> <color=#f8f8f2>reservedFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>condemnedFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtectedFileSet</color><color=#f92672>></color> <color=#f8f8f2>protectedFileSets</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/* Is null if the env is not replicated. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ProtectedFileRange</color> <color=#f8f8f2>vlsnIndexRange</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>FileProtector</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addFileProtection</color><color=#f8f8f2>(</color><color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>protectedFileSets</color><color=#f8f8f2>.</color><color=#a6e22e>putIfAbsent</color><color=#f8f8f2>(</color><color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"ProtectedFileSets already present name="</color> <color=#f92672>+</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Removes protection by the given ProtectedFileSet to allow files to be deleted. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>removeFileProtection</color><color=#f8f8f2>(</color><color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>oldPfs</color> <color=#f92672>=</color> <color=#f8f8f2>protectedFileSets</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldPfs</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"ProtectedFileSet not found name="</color> <color=#f92672>+</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldPfs</color> <color=#f92672>!=</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"ProtectedFileSet mismatch name="</color> <color=#f92672>+</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Calls {@link #protectFileRange(String, long, boolean)} passing false for protectVlsnIndex. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>ProtectedFileRange</color> <color=#a6e22e>protectFileRange</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>protectFileRange</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a ProtectedFileRange that protects files with numbers GTE a lower bound. The upper</color>
+<color=#75715e>   * bound is open ended. The protectVlsnIndex param should be true for feeder/syncup file</color>
+<color=#75715e>   * protection only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param rangeStart is the first file to be protected in the range.</color>
+<color=#75715e>   * @param protectVlsnIndex is whether to prevent the VLSNIndex head from advancing, which also</color>
+<color=#75715e>   *     implies that barren files (with no replicable entries) are not protected.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>ProtectedFileRange</color> <color=#a6e22e>protectFileRange</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ProtectedFileRange</color> <color=#f8f8f2>fileRange</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ProtectedFileRange</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>,</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>addFileProtection</color><color=#f8f8f2>(</color><color=#f8f8f2>fileRange</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileRange</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Calls {@link #protectActiveFiles(String, int, boolean)} passing 0 for nReservedFiles and true</color>
+<color=#75715e>   * for protectNewFiles.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>ProtectedActiveFileSet</color> <color=#a6e22e>protectActiveFiles</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>protectActiveFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a ProtectedActiveFileSet that protects all files currently active at the time of</color>
+<color=#75715e>   * construction. These files are protected even if they later become reserved. Note that this does</color>
+<color=#75715e>   * not include the last file at the time of construction. Additional files can also be protected</color>
+<color=#75715e>   * -- see params.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param nReservedFiles if greater than zero, this number of the newest (highest numbered)</color>
+<color=#75715e>   *     reserved files are also protected.</color>
+<color=#75715e>   * @param protectNewFiles if true, the last file and any new files created later are also</color>
+<color=#75715e>   *     protected.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>ProtectedActiveFileSet</color> <color=#a6e22e>protectActiveFiles</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nReservedFiles</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectNewFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>protectedFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeSet</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nReservedFiles</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>nReservedFiles</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color> <color=#f8f8f2>:</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>descendingKeySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>n</color> <color=#f92672>-=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>n</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>rangeStart</color> <color=#f92672>=</color>
+        <color=#f8f8f2>protectNewFiles</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>last</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>))</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ProtectedActiveFileSet</color> <color=#f8f8f2>pfs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ProtectedActiveFileSet</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>,</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>addFileProtection</color><color=#f8f8f2>(</color><color=#f8f8f2>pfs</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get new file info lazily to prevent synchronization and work in the CRUD code path when a new</color>
+<color=#75715e>   * files is added.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>getActiveFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Add all existing files when the env is first opened (except for the</color>
+<color=#75715e>     * last file -- see below). This is a relatively expensive but one-time</color>
+<color=#75715e>     * initialization.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color><color=#f92672>[]</color> <color=#f8f8f2>files</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getAllFileNumbers</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>files</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>files</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>fileObj</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>));</color>
+
+        <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileObj</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Add new files that have appeared. This is very quick, because no</color>
+<color=#75715e>     * synchronization is required to get the last file number. Do not</color>
+<color=#75715e>     * add the last file, since its length may still be changing.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastFile</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getNextLsn</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>firstNewFile</color> <color=#f92672>=</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>firstNewFile</color><color=#f8f8f2>;</color> <color=#f8f8f2>file</color> <color=#f92672><</color> <color=#f8f8f2>lastFile</color><color=#f8f8f2>;</color> <color=#f8f8f2>file</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>fileObj</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/* New files should be active before being reserved and deleted. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>fileObj</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isMemOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"File 0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" lastFile="</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>lastFile</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileObj</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Moves a file from active status to reserved status. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>reserveFile</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>endVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Only active files (not the last file) may be"</color>
+              <color=#f92672>+</color> <color=#e6db74>" cleaned/reserved file=0x"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" exists="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>isFileValid</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" reserved="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" nextLsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>getNextLsn</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReservedFileInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#f8f8f2>endVLSN</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>prevInfo</color> <color=#f92672>=</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>prevInfo</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the number of active files, including the last file. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>int</color> <color=#a6e22e>getNActiveFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>count</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>().</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color>
+        <color=#f92672>||</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>getCurrentFileNum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>count</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>count</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the number of reserved files. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>int</color> <color=#a6e22e>getNReservedFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a copy of the reserved files along with the total size. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>>></color> <color=#a6e22e>getReservedFileInfo</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color> <color=#f8f8f2>:</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>>></color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeSet</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether the given file is active, including the last file whether or not it has been</color>
+<color=#75715e>   * created on disk yet. If false is returned, the file is reserved or deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isActiveOrNewFile</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>file</color> <color=#f92672>></color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>lastKey</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the given file is in the reserved file set. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReservedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a previously condemned file or condemns the oldest unprotected reserved file and</color>
+<color=#75715e>   * returns it. If the returned file cannot be deleted by the caller, {@link #putBackCondemnedFile}</color>
+<color=#75715e>   * should be called so the file deletion can be retried later.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param fromFile the lowest file number to return. Used to iterate over reserved files that are</color>
+<color=#75715e>   *     protected.</color>
+<color=#75715e>   * @return {file, size} pair or null if a condemned file is not available.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>takeCondemnedFile</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fromFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>condemnedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>condemnedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>condemnedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Pair</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>fileLoop</color><color=#f8f8f2>:</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReservedFileInfo</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color>
+        <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>tailMap</color><color=#f8f8f2>(</color><color=#f8f8f2>fromFile</color><color=#f8f8f2>).</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>pfs</color> <color=#f8f8f2>:</color> <color=#f8f8f2>protectedFileSets</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>isProtected</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color> <color=#f8f8f2>fileLoop</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>Pair</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Puts back a condemned file after a file returned by {@link #takeCondemnedFile} could not be</color>
+<color=#75715e>   * deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>putBackCondemnedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>oldSize</color> <color=#f92672>=</color> <color=#f8f8f2>condemnedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>oldSize</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>LogSizeStats</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>activeSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>reservedSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>protectedSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>protectedSizeMap</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LogSizeStats</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>activeSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>reservedSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>protectedSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>protectedSizeMap</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>activeSize</color> <color=#f92672>=</color> <color=#f8f8f2>activeSize</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reservedSize</color> <color=#f92672>=</color> <color=#f8f8f2>reservedSize</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSize</color> <color=#f92672>=</color> <color=#f8f8f2>protectedSize</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protectedSizeMap</color> <color=#f92672>=</color> <color=#f8f8f2>protectedSizeMap</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns sizes occupied by active, reserved and protected files. */</color>
+  <color=#66d9ef>synchronized</color> <color=#f8f8f2>LogSizeStats</color> <color=#a6e22e>getLogSizeStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+<color=#75715e>//    /* Calculate active size. */</color>
+<color=#75715e>//    final NavigableMap<Long, Long> activeFiles = getActiveFiles();</color>
+<color=#75715e>//    long activeSize = 0;</color>
+<color=#75715e>//</color>
+<color=#75715e>//    for (final long size : activeFiles.values()) {</color>
+<color=#75715e>//      activeSize += size;</color>
+<color=#75715e>//    }</color>
+<color=#75715e>//</color>
+<color=#75715e>//    /* Add size of last file, which is not included in activeFiles. */</color>
+<color=#75715e>//    final long lastFileNum = activeFiles.isEmpty() ? 0 : activeFiles.lastKey() + 1;</color>
+<color=#75715e>//</color>
+<color=#75715e>//    final File lastFile = new File(envImpl.getFileManager().getFullFileName(lastFileNum));</color>
+<color=#75715e>//</color>
+<color=#75715e>//    if (lastFile.exists()) {</color>
+<color=#75715e>//      activeSize += lastFile.length();</color>
+<color=#75715e>//    }</color>
+<color=#75715e>//</color>
+<color=#75715e>//    /* Calculate reserved and protected sizes. */</color>
+<color=#75715e>//    long reservedSize = 0;</color>
+<color=#75715e>//    long protectedSize = 0;</color>
+<color=#75715e>//    final Map<String, Long> protectedSizeMap = new HashMap<>();</color>
+<color=#75715e>//</color>
+<color=#75715e>//    for (final Map.Entry<Long, ReservedFileInfo> entry : reservedFiles.entrySet()) {</color>
+<color=#75715e>//</color>
+<color=#75715e>//      final Long file = entry.getKey();</color>
+<color=#75715e>//      final ReservedFileInfo info = entry.getValue();</color>
+<color=#75715e>//      reservedSize += info.size;</color>
+<color=#75715e>//      boolean isProtected = false;</color>
+<color=#75715e>//</color>
+<color=#75715e>//      for (final ProtectedFileSet pfs : protectedFileSets.values()) {</color>
+<color=#75715e>//</color>
+<color=#75715e>//        if (pfs == vlsnIndexRange || !pfs.isProtected(file, info)) {</color>
+<color=#75715e>//          continue;</color>
+<color=#75715e>//        }</color>
+<color=#75715e>//</color>
+<color=#75715e>//        isProtected = true;</color>
+<color=#75715e>//</color>
+<color=#75715e>//        protectedSizeMap.compute(pfs.getName(), (k, v) -> ((v != null) ? v : 0) + info.size);</color>
+<color=#75715e>//      }</color>
+<color=#75715e>//</color>
+<color=#75715e>//      if (isProtected) {</color>
+<color=#75715e>//        protectedSize += info.size;</color>
+<color=#75715e>//      }</color>
+<color=#75715e>//    }</color>
+<color=#75715e>//</color>
+<color=#75715e>//    return new LogSizeStats(activeSize, reservedSize, protectedSize, protectedSizeMap);</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Java 1.8"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the ProtectedFileRange that protects files in VLSNIndex range from being deleted. The</color>
+<color=#75715e>   * range start is changed during VLSNIndex initialization and when the head of the index is</color>
+<color=#75715e>   * truncated. It is changed while synchronized on VLSNTracker so that changes to the range and</color>
+<color=#75715e>   * changes to the files it protects are made atomically. This is important for {@link</color>
+<color=#75715e>   * com.sleepycat.je.rep.vlsn.VLSNTracker#protectRangeHead}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setVLSNIndexProtectedFileRange</color><color=#f8f8f2>(</color><color=#f8f8f2>ProtectedFileRange</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>vlsnIndexRange</color> <color=#f92672>=</color> <color=#f8f8f2>pfs</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Determines whether the VLSNIndex ProtectedFileRange should be advanced to reclaim bytesNeeded.</color>
+<color=#75715e>   * This is possible if one or more reserved files are not protected by syncup and feeders. The</color>
+<color=#75715e>   * range of files to be truncated must be at the head of the ordered set of reserved files, and</color>
+<color=#75715e>   * the highest numbered file must contain a VLSN so we know where to truncate the VLSNIndex.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param bytesNeeded the number of bytes we need to free.</color>
+<color=#75715e>   * @param preserveVLSN is the boundary above which the VLSN range may not advance. The deleteEnd</color>
+<color=#75715e>   *     returned will be less than preserveVLSN.</color>
+<color=#75715e>   * @return {deleteEnd, deleteFileNum} pair if the protected file range should be advanced, or null</color>
+<color=#75715e>   *     if advancing is not currently possible. -- deleteEnd is the last VLSN to be truncated. --</color>
+<color=#75715e>   *     deleteFileNum the file having deleteEnd as its last VLSN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>checkVLSNIndexTruncation</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>preserveVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Determine how many reserved files we need to delete, and find the</color>
+<color=#75715e>     * last file/VLSN in that set of files, which is the truncation point.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>truncateVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>truncateFile</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>deleteBytes</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>fileLoop</color><color=#f8f8f2>:</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReservedFileInfo</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>pfs</color> <color=#f8f8f2>:</color> <color=#f8f8f2>protectedFileSets</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pfs</color> <color=#f92672>==</color> <color=#f8f8f2>vlsnIndexRange</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>protectVlsnIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pfs</color><color=#f8f8f2>.</color><color=#a6e22e>isProtected</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color> <color=#f8f8f2>fileLoop</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVlsn</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>endVLSN</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>lastVlsn</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastVlsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>preserveVLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>truncateVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastVlsn</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>truncateFile</color> <color=#f92672>=</color> <color=#f8f8f2>file</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>deleteBytes</color> <color=#f92672>+=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleteBytes</color> <color=#f92672>>=</color> <color=#f8f8f2>bytesNeeded</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>truncateVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>Pair</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>truncateVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>truncateFile</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A ProtectedFileSet is used to prevent a set of files from being deleted. Implementations must</color>
+<color=#75715e>   * meet two special requirements:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1. After a ProtectedFileSet is added using {@link #addFileProtection}, its set of protected</color>
+<color=#75715e>   * files (the set for which {@link #isProtected} returns true) may only be changed by shrinking</color>
+<color=#75715e>   * the set. Files may not be added to the set of protected files. (One exception is that newly</color>
+<color=#75715e>   * created files are effectively to a file set defined as an opened ended range.)</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2. Shrinking the protected set can be done without synchronization on FileProtector.</color>
+<color=#75715e>   * However, implementations should ensure that changes made in one thread are visible to all</color>
+<color=#75715e>   * threads.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The intention is to allow protecting a set of files that are to be processed in some way,</color>
+<color=#75715e>   * and allow easily shrinking this set as the files are processed, so that the processed files may</color>
+<color=#75715e>   * be deleted. Changes to the protected set should be visible to all threads so that periodic disk</color>
+<color=#75715e>   * space reclamation tasks can delete unprotected files ASAP. {@link ProtectedFileRange} is a</color>
+<color=#75715e>   * simple class that meets these requirements.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtectedFileSet</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>ProtectedFileSet</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>name</color> <color=#f92672>=</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protectVlsnIndex</color> <color=#f92672>=</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Identifies protecting entity, used in LogSizeStats. Must be unique across all file sets added</color>
+<color=#75715e>     * to the FileProtector.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Whether the given file is protected. */</color>
+    <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isProtected</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"ProtectedFileSet:"</color> <color=#f92672>+</color> <color=#f8f8f2>name</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A ProtectedFileSet created using {@link #protectFileRange}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Protection may be removed dynamically to allow file deletion using {@link #advanceRange}.</color>
+<color=#75715e>   * The current lower bound can be obtained using {@link #getRangeStart()}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtectedFileRange</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectBarrenFiles</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ProtectedFileRange</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeStart</color> <color=#f92672>=</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>protectBarrenFiles</color> <color=#f92672>=</color> <color=#f92672>!</color><color=#f8f8f2>protectVlsnIndex</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isProtected</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>file</color> <color=#f92672>>=</color> <color=#f8f8f2>rangeStart</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>protectBarrenFiles</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>endVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the current rangeStart. This method is not synchronized and rangeStart is volatile to</color>
+<color=#75715e>     * allow checking this value without blocking.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getRangeStart</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Moves the lower bound of the protected file range forward. Used to allow file deletion as</color>
+<color=#75715e>     * protected files are processed.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>advanceRange</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rangeStart</color> <color=#f92672><</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Attempted to advance to a new rangeStart=0x"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>rangeStart</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" that precedes the old rangeStart=0x"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeStart</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeStart</color> <color=#f92672>=</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A ProtectedFileSet created using {@link #protectActiveFiles}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Protection may be removed dynamically to allow file deletion using {@link</color>
+<color=#75715e>   * #truncateHead(long)}, {@link #truncateTail(long)} and {@link #removeFile(Long)}. A copy of the</color>
+<color=#75715e>   * currently protected files can be obtained using {@link #getProtectedFiles()}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ProtectedActiveFileSet</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ProtectedActiveFileSet</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*protectVlsnIndex*/</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protectedFiles</color> <color=#f92672>=</color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeStart</color> <color=#f92672>=</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isProtected</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReservedFileInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>rangeStart</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>file</color> <color=#f92672>>=</color> <color=#f8f8f2>rangeStart</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Returns a copy of the currently protected files, not including any new files. */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#f8f8f2>NavigableSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>getProtectedFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeSet</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>protectedFiles</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes protection for files GT lastProtectedFile. Protection of new files is not impacted.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>truncateTail</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lastProtectedFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>protectedFiles</color> <color=#f92672>=</color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>headSet</color><color=#f8f8f2>(</color><color=#f8f8f2>lastProtectedFile</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Removes protection for files LT firstProtectedFile. Protection of new files is not impacted.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>truncateHead</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>firstProtectedFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>protectedFiles</color> <color=#f92672>=</color> <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>tailSet</color><color=#f8f8f2>(</color><color=#f8f8f2>firstProtectedFile</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Removes protection for a given file. */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>removeFile</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>protectedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * This only works if protected files are removed in sequence, but</color>
+<color=#75715e>       * that's good enough -- new files will rarely need to be deleted.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>rangeStart</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>rangeStart</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For debugging. */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>verifyFileSizes</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fm</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color><color=#f92672>[]</color> <color=#f8f8f2>numArray</color> <color=#f92672>=</color> <color=#f8f8f2>fm</color><color=#f8f8f2>.</color><color=#a6e22e>getAllFileNumbers</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>NavigableMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>activeFiles</color> <color=#f92672>=</color> <color=#f8f8f2>getActiveFiles</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>numArray</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>numArray</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>trueSize</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fm</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>n</color><color=#f8f8f2>)).</color><color=#a6e22e>length</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>n</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>activeSize</color> <color=#f92672>=</color> <color=#f8f8f2>activeFiles</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>n</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeSize</color> <color=#f92672>!=</color> <color=#f8f8f2>trueSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"active file %,d size %,d but true size %,d %n"</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>,</color> <color=#f8f8f2>activeSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>trueSize</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>n</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>reservedSize</color> <color=#f92672>=</color> <color=#f8f8f2>reservedFiles</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>n</color><color=#f8f8f2>).</color><color=#a6e22e>size</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reservedSize</color> <color=#f92672>!=</color> <color=#f8f8f2>trueSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"reserved file %,d size %,d but true size %,d %n"</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>,</color> <color=#f8f8f2>reservedSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>trueSize</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"true file %x size %,d missing in FileProtector%n"</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>,</color> <color=#f8f8f2>trueSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,854 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.subscription</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ChannelTimeoutTask</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.FeederManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ReplicaOutputThread</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.Protocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshake</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshakeConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.SubscriberFeederSyncup</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Timer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ArrayBlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** Main thread created by Subscription to stream log entries from feeder */</color>
+<color=#66d9ef>class</color> <color=#a6e22e>SubscriptionThread</color> <color=#66d9ef>extends</color> <color=#f8f8f2>StoppableThread</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SubscriptionConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SubscriptionStat</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* communication queues and working threads */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>outputQueue</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Object</color><color=#f92672>></color> <color=#f8f8f2>inputQueue</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>SubscriptionProcessMessageThread</color> <color=#f8f8f2>messageProcThread</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* communication channel between subscriber and feeder */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>NamedChannelWithTimeout</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* task to register channel with timeout */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ChannelTimeoutTask</color> <color=#f8f8f2>channelTimeoutTask</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* protocol used to communicate with feeder */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* requested VLSN from which to stream log entries */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>reqVLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * volatile because it can be concurrently accessed by the subscription</color>
+<color=#75715e>   * thread itself in checkOutputThread(), and another thread trying to</color>
+<color=#75715e>   * shut down subscription by calling shutdown()</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>SubscriptionOutputThread</color> <color=#f8f8f2>outputThread</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>SubscriptionStatus</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* stored exception */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>storedException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * For unit test only. The hook will be called by unit test to inject an</color>
+<color=#75715e>   * exception into msg queue, which to be processed by the callback function</color>
+<color=#75715e>   * defined in unit test.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>SubscriptionThread</color><color=#f92672>></color> <color=#f8f8f2>exceptionHandlingTestHook</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>SubscriptionThread</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>ReplicatedEnvironment</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>reqVLSN</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SubscriptionConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>SubscriptionStat</color> <color=#f8f8f2>stats</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getNonNullRepImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>),</color> <color=#e6db74>"Subscription Main"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>setUncaughtExceptionHandler</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>SubscriptionThreadExceptionHandler</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reqVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>reqVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>config</color> <color=#f92672>=</color> <color=#f8f8f2>config</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>stats</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logger</color> <color=#f92672>=</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>namedChannel</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* init subscription input and output queue */</color>
+    <color=#f8f8f2>inputQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getInputMessageQueueSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>outputQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getOutputMessageQueueSize</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>INIT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>exceptionHandlingTestHook</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns subscription status to client</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return subscription status</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>SubscriptionStatus</color> <color=#a6e22e>getStatus</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns stored exception</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return stored exception</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Exception</color> <color=#a6e22e>getStoredException</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>storedException</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>Logger</color> <color=#a6e22e>getLogger</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Start subscription from VLSN "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>reqVLSN</color>
+            <color=#f92672>+</color> <color=#e6db74>" from feeder at "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>":"</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederPort</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxRetry</color> <color=#f92672>=</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getMaxConnectRetries</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>auxThreadCreated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>numRetry</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isShutdown</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>initializeConnection</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>auxThreadCreated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Create auxiliary msg processing "</color> <color=#f92672>+</color> <color=#e6db74>"and output threads"</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>auxThreadCreated</color> <color=#f92672>=</color> <color=#f8f8f2>createAuxThread</color><color=#f8f8f2>();</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>auxThreadCreated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#75715e>/* subscription succeed, start streaming data */</color>
+              <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>;</color>
+              <color=#f8f8f2>loopInternal</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_ERROR</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ConnectionException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>numRetry</color> <color=#f92672>==</color> <color=#f8f8f2>maxRetry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+                <color=#e6db74>"Reaching the max retry "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>maxRetry</color>
+                    <color=#f92672>+</color> <color=#e6db74>" to connect feeder "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+                    <color=#f92672>+</color> <color=#e6db74>", shut down subscription"</color>
+                    <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+            <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>CONNECTION_ERROR</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>numRetry</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+                <color=#e6db74>"Fail to connect feeder at "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+                    <color=#f92672>+</color> <color=#e6db74>" sleep for "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getRetrySleepMs</color><color=#f8f8f2>()</color>
+                    <color=#f92672>+</color> <color=#e6db74>" ms and re-connect again"</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getRetrySleepMs</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>ure</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>ure</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Subscription exited due to security check "</color> <color=#f92672>+</color> <color=#e6db74>"failure: "</color> <color=#f92672>+</color> <color=#f8f8f2>ure</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SECURITY_CHECK_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageProcThread</color><color=#f8f8f2>.</color><color=#a6e22e>isAlive</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* let message processing thread finish up */</color>
+          <color=#f8f8f2>messageProcThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>ie</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* ignore since we will shut down, just log */</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"exception in shutting down msg proc "</color>
+                  <color=#f92672>+</color> <color=#e6db74>"thread "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>ie</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>ie</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"received group shutdown "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>GRP_SHUTDOWN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"unable to subscribe from requested VLSN "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>reqVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>VLSN_NOT_AVAILABLE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"unable to sync up with feeder due to EFE "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"interrupted exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InternalException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>storedException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"internal exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>SubscriptionStatus</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_ERROR</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdown</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For unit test</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param exceptionHandlingTestHook test hook</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setExceptionHandlingTestHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>SubscriptionThread</color><color=#f92672>></color> <color=#f8f8f2>exceptionHandlingTestHook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionHandlingTestHook</color> <color=#f92672>=</color> <color=#f8f8f2>exceptionHandlingTestHook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets subscription status</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param s subscription status</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>setStatus</color><color=#f8f8f2>(</color><color=#f8f8f2>SubscriptionStatus</color> <color=#f8f8f2>s</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>status</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** shutdown the subscriber and all auxiliary threads, close channel to the Feeder. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Note start of shutdown and return if already requested */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownDone</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* shutdown aux threads */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageProcThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>messageProcThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"message processing thread has shut down."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Ignore so shutdown can continue */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"error in shutdown msg proc thread: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>", continue shutdown the"</color>
+                <color=#f92672>+</color> <color=#e6db74>" subscription thread."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>messageProcThread</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>outputThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"output thread has shut down."</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Ignore we will clean up via killing IO channel anyway. */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"error in shutdown output thread: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>", continue shutdown "</color>
+                <color=#f92672>+</color> <color=#e6db74>"subscription thread."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>outputThread</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>inputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>channelTimeoutTask</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>channelTimeoutTask</color><color=#f8f8f2>.</color><color=#a6e22e>cancel</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"queues cleared and channel closed, subscription "</color> <color=#f92672>+</color> <color=#e6db74>"thread has completely shut down"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enqueue message received from feeder into input queue</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param message message received from feeder</color>
+<color=#75715e>   * @throws InterruptedException if enqueue is interrupted</color>
+<color=#75715e>   * @throws GroupShutdownException if receive shutdown message from feeder</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isShutdown</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#75715e>/* stop enqueue msg if thread is shutdown */</color> <color=#f92672>!</color><color=#f8f8f2>inputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>offer</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>SubscriptionConfig</color><color=#f8f8f2>.</color><color=#a6e22e>QUEUE_POLL_INTERVAL_MS</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Offer timed out. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>messageProcThread</color><color=#f8f8f2>.</color><color=#a6e22e>isAlive</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Thread consuming input queue is gone, start"</color> <color=#f92672>+</color> <color=#e6db74>" shutdown process"</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>(),</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getHighVLSN</color><color=#f8f8f2>(),</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* count the overflow and retry */</color>
+        <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getNumReplayQueueOverflow</color><color=#f8f8f2>().</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create connection to feeder and execute handshake</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InternalException if unable to connect to source node due to protocol error</color>
+<color=#75715e>   * @throws EnvironmentFailureException if fail to handshake with source, or source does not have</color>
+<color=#75715e>   *     enough log to start streaming</color>
+<color=#75715e>   * @throws ConnectionException if unable to connect to source node</color>
+<color=#75715e>   * @throws ReplicationSecurityException if authentication failure</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeConnection</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* open a channel to feeder */</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Subscription "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>" start open channel and handshake with feeder"</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>openChannel</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>ReplicaFeederHandshake</color> <color=#f8f8f2>handshake</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaFeederHandshake</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>SubFeederHandshakeConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeType</color><color=#f8f8f2>()));</color>
+
+      <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>handshake</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* check if negociated protocol version is high enough */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>minReqVersion</color> <color=#f92672>=</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getMinProtocolVersion</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>minReqVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>ProtocolException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"HA protocol version ("</color>
+                <color=#f92672>+</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>") is "</color>
+                <color=#f92672>+</color> <color=#e6db74>"lower than minimal required version ("</color>
+                <color=#f92672>+</color> <color=#f8f8f2>minReqVersion</color>
+                <color=#f92672>+</color> <color=#e6db74>")"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"subscription "</color> <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" sync-up with feeder at vlsn: "</color> <color=#f92672>+</color> <color=#f8f8f2>reqVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>SubscriberFeederSyncup</color> <color=#f8f8f2>syncup</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>SubscriberFeederSyncup</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>namedChannel</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>protocol</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederFilter</color><color=#f8f8f2>(),</color>
+              <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getStreamMode</color><color=#f8f8f2>(),</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>startVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>syncup</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#f8f8f2>reqVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"sync-up with feeder done, start vlsn: "</color> <color=#f92672>+</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>startVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>setStartVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* read heartbeat and respond */</color>
+        <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>(),</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT_ACK</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Subscription "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" successfully connect to feeder at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>":"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederPort</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>", reqVLSN: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>reqVLSN</color>
+                <color=#f92672>+</color> <color=#e6db74>", start VLSN: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InsufficientLogException</color><color=#f8f8f2>((</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reqVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Unable to connect due to "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>",  will retry later."</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSleepBeforeRetryMs</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#e6db74>"Fail to handshake with feeder: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>ProtocolException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>msg</color> <color=#f92672>=</color>
+          <color=#f8f8f2>(</color><color=#e6db74>"Unable to connect to feeder "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" due to protocol exception "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Create auxiliary message processing and output thread */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>createAuxThread</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>inputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* start output thread over data channel to send response to feeder */</color>
+    <color=#f8f8f2>outputThread</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>SubscriptionOutputThread</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>this</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>outputQueue</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>protocol</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getAuthenticator</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>stats</color><color=#f8f8f2>);</color>
+    <color=#75715e>/*</color>
+<color=#75715e>     * output thread can be shutdown and set to null anytime, thus</color>
+<color=#75715e>     * use a cached copy to ensure it is alive before start it</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>SubscriptionOutputThread</color> <color=#f8f8f2>cachedOutputThread</color> <color=#f92672>=</color> <color=#f8f8f2>outputThread</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cachedOutputThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cachedOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"output thread created for subscription "</color> <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>());</color>
+      <color=#75715e>/* start thread to consume data in input queue */</color>
+      <color=#f8f8f2>messageProcThread</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>SubscriptionProcessMessageThread</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>inputQueue</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>,</color> <color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>messageProcThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"message processing thread created for subscription "</color> <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"subscription "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" "</color>
+              <color=#f92672>+</color> <color=#e6db74>"just shut down, no need to create auxiliary "</color>
+              <color=#f92672>+</color> <color=#e6db74>"threads"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Open a data channel to feeder</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return created name channel</color>
+<color=#75715e>   * @throws ConnectionException unable to connect due to error and need retry</color>
+<color=#75715e>   * @throws InternalException fail to handshake with feeder</color>
+<color=#75715e>   * @throws ReplicationSecurityException if unauthorized to stream from feeder</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>NamedChannel</color> <color=#a6e22e>openChannel</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Replication env is unavailable."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>DataChannelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>ConnectOptions</color> <color=#f8f8f2>connectOpts</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>DataChannelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>ConnectOptions</color><color=#f8f8f2>()</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setTcpNoDelay</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>TCP_NO_DELAY</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setReceiveBufferSize</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getReceiveBufferSize</color><color=#f8f8f2>())</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setOpenTimeout</color><color=#f8f8f2>((</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getStreamOpenTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>MILLISECONDS</color><color=#f8f8f2>))</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setBlocking</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>BLOCKING_MODE_CHANNEL</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>DataChannel</color> <color=#f8f8f2>channel</color> <color=#f92672>=</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getChannelFactory</color><color=#f8f8f2>().</color><color=#a6e22e>connect</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getInetSocketAddress</color><color=#f8f8f2>(),</color> <color=#f8f8f2>connectOpts</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>doServiceHandshake</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getAuthInfo</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"channel opened to service "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color>
+              <color=#f92672>+</color> <color=#e6db74>"@"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"[address: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHostAddr</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" port: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederPort</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>PRE_HEARTBEAT_TIMEOUT</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>channelTimeoutTask</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChannelTimeoutTask</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Timer</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>namedChannel</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>NamedChannelWithTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>channelTimeoutTask</color><color=#f8f8f2>,</color> <color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeoutMs</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* retry if unable to connect to feeder */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Fail to open channel to feeder "</color> <color=#f92672>+</color> <color=#e6db74>"due to "</color> <color=#f92672>+</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>", will retry later"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSleepBeforeRetryMs</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>ServiceConnectFailedException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The feeder may not have established the Feeder Service</color>
+<color=#75715e>       * as yet. For example, the transition to the master may not have</color>
+<color=#75715e>       * been completed.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getResponse</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>Response</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_SERVICE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Service exception: "</color> <color=#f92672>+</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>", wait longer and will retry "</color> <color=#f92672>+</color> <color=#e6db74>"later"</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSleepBeforeRetryMs</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getResponse</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>Response</color><color=#f8f8f2>.</color><color=#a6e22e>INVALID</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationSecurityException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Security check failure:"</color> <color=#f92672>+</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Subscription "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"failed to handshake for service "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color>
+              <color=#f92672>+</color> <color=#e6db74>" with feeder "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Subscription "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>" has successfully created a channel to feeder at "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>":"</color>
+            <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederPort</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal loop to dequeue message from channel to the feeder, process shutdown and heartbeat</color>
+<color=#75715e>   * messages, and relay data operations to the input queue to be consumed by input thread.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InternalException if error in reading messages from channel or enqueue message into</color>
+<color=#75715e>   *     input queue</color>
+<color=#75715e>   * @throws GroupShutdownException if receive shutdown message from feeder</color>
+<color=#75715e>   * @throws ReplicationSecurityException if output thread exits due to security check failure. In</color>
+<color=#75715e>   *     this case the main subscription need to exit without retry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>loopInternal</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Start reading messages from feeder "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>":"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederPort</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isShutdown</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>checkOutputThread</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Subscription "</color> <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getSubNodeName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" has nothing stream, exit loop."</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>exceptionHandlingTestHook</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getNumMsgReceived</color><color=#f8f8f2>().</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+        <color=#f8f8f2>BinaryProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>MessageOp</color> <color=#f8f8f2>messageOp</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"receive heartbeat from "</color> <color=#f92672>+</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT_ACK</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>SHUTDOWN_REQUEST</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Receive shutdown request from feeder "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>", shutdown subscriber"</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * create a shutdown request, make it in the queue so</color>
+<color=#75715e>           * client is able to see that in callback, and throw an</color>
+<color=#75715e>           * exception.</color>
+<color=#75715e>           *</color>
+<color=#75715e>           * The message processing thread will exit when seeing a</color>
+<color=#75715e>           * GroupShutdownException</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>ShutdownRequest</color> <color=#f8f8f2>req</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>ShutdownRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>Exception</color> <color=#f8f8f2>exp</color> <color=#f92672>=</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                  <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                  <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederHost</color><color=#f8f8f2>(),</color>
+                  <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getHighVLSN</color><color=#f8f8f2>(),</color>
+                  <color=#f8f8f2>req</color><color=#f8f8f2>.</color><color=#a6e22e>getShutdownTimeMs</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>exp</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>exp</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* a regular data entry message */</color>
+          <color=#f8f8f2>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>pending</color> <color=#f92672>=</color> <color=#f8f8f2>inputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pending</color> <color=#f92672>></color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getMaxPendingInput</color><color=#f8f8f2>().</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>getMaxPendingInput</color><color=#f8f8f2>().</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>pending</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Max pending request log items:"</color> <color=#f92672>+</color> <color=#f8f8f2>pending</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>GroupShutdownException</color> <color=#f92672>|</color> <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>exp</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* throw to caller, let caller deal with it */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>exp</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* other exception is thrown as IE */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks status of output thread and propagates RSE to main loop. If output thread exited due to</color>
+<color=#75715e>   * RSE, the main thread need to capture it to set the subscription status correctly. For other</color>
+<color=#75715e>   * exceptions, output thread uses the traditional mechanism to notify the main subscription</color>
+<color=#75715e>   * thread: simply shut down channel.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkOutputThread</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InternalException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * output thread can be shutdown and set to null anytime, thus</color>
+<color=#75715e>     * use a cached copy to avoid NPE after the first check</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>SubscriptionOutputThread</color> <color=#f8f8f2>cachedOutputThread</color> <color=#f92672>=</color> <color=#f8f8f2>outputThread</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* output thread already gone */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cachedOutputThread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * if output thread is set to null only when subscription thread</color>
+<color=#75715e>       * shut down. If we reach here, it means the subscription thread</color>
+<color=#75715e>       * is shut down right after isShutdown check in loopInternal().</color>
+<color=#75715e>       * We simply return and subscription thread would detect the shut</color>
+<color=#75715e>       * down in next check of isShutdown in loopInternal().</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"output thread no longer exists"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cachedOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>()</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ReplicationSecurityException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationSecurityException</color> <color=#f8f8f2>rse</color> <color=#f92672>=</color>
+          <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationSecurityException</color><color=#f8f8f2>)</color> <color=#f8f8f2>cachedOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Output thread exited due to security check "</color> <color=#f92672>+</color> <color=#e6db74>"failure: "</color> <color=#f92672>+</color> <color=#f8f8f2>rse</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>rse</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Enqueue an ack message in output queue</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param xid txn id to enqueue</color>
+<color=#75715e>   * @throws IOException if fail to queue the msg</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>xid</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>xid</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>ie</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If interrupted while waiting, have the higher levels treat</color>
+<color=#75715e>       * it like an IOE and exit the thread.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color><color=#e6db74>"Ack I/O interrupted"</color><color=#f8f8f2>,</color> <color=#f8f8f2>ie</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*-----------------------------------*/</color>
+  <color=#75715e>/*-         Inner Classes           -*/</color>
+  <color=#75715e>/*-----------------------------------*/</color>
+
+  <color=#75715e>/** Subscriber-Feeder handshake config */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>SubFeederHandshakeConfig</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ReplicaFeederHandshakeConfig</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>SubFeederHandshakeConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>Clock</color> <color=#a6e22e>getClock</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>Clock</color><color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getClockSkewMs</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>NodeType</color> <color=#a6e22e>getNodeType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>NamedChannel</color> <color=#a6e22e>getNamedChannel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* create a group impl from group name and group uuid */</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepGroupImpl</color> <color=#a6e22e>getGroup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>repGroupImpl</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>RepGroupImpl</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupName</color><color=#f8f8f2>(),</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>/* unknown group uuid */</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrentJEVersion</color><color=#f8f8f2>());</color>
+
+      <color=#75715e>/* use uuid if specified, otherwise unknown uuid will be used */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupUUID</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repGroupImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setUUID</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupUUID</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repGroupImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Thrown to indicate that the Subscriber must retry connecting to the same master, after some</color>
+<color=#75715e>   * period of time.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>ConnectionException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>ConnectionException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color> <color=#f92672>=</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Get thread sleep time before retry</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @return sleep time in ms</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#a6e22e>getRetrySleepMs</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Failed to connect, will retry after sleeping "</color> <color=#f92672>+</color> <color=#f8f8f2>retrySleepMs</color> <color=#f92672>+</color> <color=#e6db74>" ms"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Handle exceptions uncaught in SubscriptionThread */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>SubscriptionThreadExceptionHandler</color> <color=#66d9ef>implements</color> <color=#f8f8f2>UncaughtExceptionHandler</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>uncaughtException</color><color=#f8f8f2>(</color><color=#f8f8f2>Thread</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>severe</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Error { "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" } in SubscriptionThread {"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>t</color>
+              <color=#f92672>+</color> <color=#e6db74>" } was uncaught.\nstack trace:\n"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

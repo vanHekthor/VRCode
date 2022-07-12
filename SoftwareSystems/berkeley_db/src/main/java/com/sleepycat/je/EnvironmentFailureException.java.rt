@@ -1,0 +1,434 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentFailureReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.PrintStream</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Indicates that a failure has occurred that could impact the {@code Environment} as a whole. For</color>
+<color=#75715e> * failures that impact only the current operation and/or transaction, see {@link</color>
+<color=#75715e> * OperationFailureException}). For an overview of all exceptions thrown by JE, see {@link</color>
+<color=#75715e> * DatabaseException}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Depending on the nature of the failure, this exception may indicate that {@link</color>
+<color=#75715e> * Environment#close} must be called. The application should catch {@code</color>
+<color=#75715e> * EnvironmentFailureException} and then call {@link Environment#isValid}. If {@code false} is</color>
+<color=#75715e> * returned, all {@code Environment} handles (instances) must be closed and re-opened in order to</color>
+<color=#75715e> * run recovery and continue operating. If {@code true} is returned, the {@code Environment} can</color>
+<color=#75715e> * continue operating without being closed and re-opened. Also note that {@link Environment#isValid}</color>
+<color=#75715e> * may be called at any time, not just during exception handling.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The use of the {@link Environment#isValid} method allows JE to determine dynamically whether</color>
+<color=#75715e> * the failure requires recovery or not, and allows for this determination to change in future</color>
+<color=#75715e> * releases. Over time, internal improvements to error handling may allow more error conditions to</color>
+<color=#75715e> * be handled without invalidating the {@code Environment}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>(Although this exception class extends {@link RunRecoveryException}, it does not always</color>
+<color=#75715e> * indicate that recovery is necessary, as described above. {@code RunRecoveryException} has been</color>
+<color=#75715e> * deprecated and {@code EnvironmentFailureException} should be used instead.)</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If an {@code EnvironmentFailureException} consistently occurs soon after opening the</color>
+<color=#75715e> * Environment, this may indicate a persistent problem. It may indicate a system problem or a</color>
+<color=#75715e> * persistent storage problem. In this case, human intervention is normally required and restoring</color>
+<color=#75715e> * from a backup may be necessary.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that subclasses of {@code EnvironmentFailureException} indicate how to handle the</color>
+<color=#75715e> * exception in more specific ways.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>If {@code Thread.interrupt} is called for a thread performing JE operations, a {@link</color>
+<color=#75715e> *       ThreadInterruptedException} is thrown. Since interrupting a thread is intentional, it does</color>
+<color=#75715e> *       not indicate a persistent problem and human intervention is not normally required.</color>
+<color=#75715e> *   <li>If an {@code IOException} occurs while writing to the JE log, a {@link LogWriteException}</color>
+<color=#75715e> *       is thrown. Although an {@code IOException} can occur for different reasons, it is a hint</color>
+<color=#75715e> *       that the disk may be full and applications may wish to attempt recovery after making more</color>
+<color=#75715e> *       disk space available.</color>
+<color=#75715e> *   <li>For replicated environments, see the subclasses of {@code EnvironmentFailureException} in</color>
+<color=#75715e> *       the {@link com.sleepycat.je.rep} package for more information. Such exceptions may require</color>
+<color=#75715e> *       special handling.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If {@link Environment#close} is not called after an {@code EnvironmentFailureException}</color>
+<color=#75715e> * invalidates the {@code Environment}, all subsequent method calls for the {@code Environment} will</color>
+<color=#75715e> * throw the same exception. This provides more than one opportunity to catch and handle the</color>
+<color=#75715e> * specific exception subclass that caused the failure.</color>
+<color=#75715e> */</color>
+<color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"deprecation"</color><color=#f8f8f2>)</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>EnvironmentFailureException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RunRecoveryException</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Classes that extend EnvironmentFailureException should be aware that</color>
+<color=#75715e>   * their constructors should not be seen as atomic. If the failure reason</color>
+<color=#75715e>   * mandates it, the environment may be invalidated. At invalidation time,</color>
+<color=#75715e>   * the exception is saved within the environment as the precipitating</color>
+<color=#75715e>   * failure, and may be seen and used by other threads, and the sub class</color>
+<color=#75715e>   * instance may be seen before construction is complete. The subclass</color>
+<color=#75715e>   * should take care if it has any fields that are initialized in the</color>
+<color=#75715e>   * constructor, after the call to super().</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Any overloadings of getMessage() should also assume that they may be</color>
+<color=#75715e>   * called asynchronously before the subclass if fully initialized.</color>
+<color=#75715e>   */</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>alreadyThrown</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Only used by makeJavaErrorWrapper. */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>reason</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reason</color> <color=#f92672>=</color> <color=#f8f8f2>reason</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Only used by unexpectedState and unexpectedException. */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#66d9ef>null</color> <color=#75715e>/*envImpl*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>makeMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>),</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>reason</color> <color=#f92672>=</color> <color=#f8f8f2>reason</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reason</color><color=#f8f8f2>.</color><color=#a6e22e>invalidatesEnvironment</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the environment exists, invalidate it. Note that there are</color>
+<color=#75715e>       * cases, such as if an exception occurred during recovery, that</color>
+<color=#75715e>       * the environment will not exist.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>reason</color><color=#f8f8f2>.</color><color=#a6e22e>envShouldExist</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>envImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidate</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>makeMsg</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>(</color><color=#ae81ff>300</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>' '</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cause</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>' '</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>reason</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>reason</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use the current environment status for reporting in the exception</color>
+<color=#75715e>     * message.  This is more information than simply whether this</color>
+<color=#75715e>     * exception caused an invalidate, since previous exceptions may have</color>
+<color=#75715e>     * occurred.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reason</color><color=#f8f8f2>.</color><color=#a6e22e>invalidatesEnvironment</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" Environment is invalid and must be closed."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Only for use by wrapSelf methods.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>cause</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>reason</color> <color=#f92672>=</color> <color=#f8f8f2>cause</color><color=#f8f8f2>.</color><color=#a6e22e>reason</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Must be overridden by every concrete subclass to return an instance of its own class,</color>
+<color=#75715e>   *     constructed with the given msg and this exception as parameters, e.g.: return new</color>
+<color=#75715e>   *     MyClass(msg, this);</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>wrapSelf</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>class</color> <color=#f92672>==</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color>
+        <color=#f8f8f2>:</color> <color=#e6db74>"Missing overriding "</color> <color=#f92672>+</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>".wrapSelf() method"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Remember that this was already thrown. That way, if we re-throw it because another</color>
+<color=#75715e>   *     handle uses the environment after the fatal throw, the message is more clear.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setAlreadyThrown</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>alreadyThrown</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>alreadyThrown</color> <color=#f92672>=</color> <color=#f8f8f2>alreadyThrown</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Don't allocate memory after a Java Error occurs.  Note that for</color>
+<color=#75715e>     * a Java Error, addErrorMessage is never called, so super.getMessage</color>
+<color=#75715e>     * will not allocate memory either.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reason</color> <color=#f92672>==</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>JAVA_ERROR</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>alreadyThrown</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#e6db74>"Environment invalid because of previous exception: "</color> <color=#f92672>+</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#a6e22e>getReason</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>reason</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Whether the EnvironmentFailureException indicates that the log is corrupt, meaning that a</color>
+<color=#75715e>   * network restore (or restore from backup) should be performed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method currently returns true only when corruption has been detected and is persistent.</color>
+<color=#75715e>   * This may have been detected by verifying checksums in the disk data log, and in this case the</color>
+<color=#75715e>   * corruption indicates a media/disk failure. The checksum error may have been detected when</color>
+<color=#75715e>   * accessing data normally via the JE API, or by the background data verifier (see {@link</color>
+<color=#75715e>   * EnvironmentConfig#VERIFY_LOG}). Or a persistent Btree corruption may have been detected by the</color>
+<color=#75715e>   * data verifier (see {@link EnvironmentConfig#VERIFY_BTREE}) or by the {@link</color>
+<color=#75715e>   * Environment#verify(VerifyConfig, PrintStream)} or {@link Database#verify(VerifyConfig)}</color>
+<color=#75715e>   * methods. This method will returns true in all such cases.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Additionally, when a persistent corruption is detected and the Environment is open for</color>
+<color=#75715e>   * read-write access, a marker file named 7fffffff.jdb is created in the Environment directory</color>
+<color=#75715e>   * that will prevent re-opening the environment. If an attempt is made to re-open the Environment,</color>
+<color=#75715e>   * the original EnvironmentFailureException will be thrown. This is meant to safeguard against</color>
+<color=#75715e>   * using a corrupt environment when the original exception is accidentally overlooked. While the</color>
+<color=#75715e>   * marker file can be deleted to allow re-opening the environment, this is normally unsafe and is</color>
+<color=#75715e>   * not recommended.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if the environment is corrupt.</color>
+<color=#75715e>   * @since 7.3</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isCorrupted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>reason</color> <color=#f92672>==</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CHECKSUM</color>
+        <color=#f92672>||</color> <color=#f8f8f2>reason</color> <color=#f92672>==</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>BTREE_CORRUPTION</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden May ONLY be used for EnvironmentImpl.preallocatedEFE.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>makeJavaErrorWrapper</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>JAVA_ERROR</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Promotes the given cause exception and message to an EnvironmentFailureException.</color>
+<color=#75715e>   *     <p>If the cause is not an EnvironmentFailureException, wraps the cause exception in an</color>
+<color=#75715e>   *     EnvironmentFailureException along with the message. If the cause is an</color>
+<color=#75715e>   *     EnvironmentFailureException, adds the message to it.</color>
+<color=#75715e>   * @return the resulting EnvironmentFailureException.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>promote</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cause</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>)</color> <color=#f8f8f2>cause</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>addErrorMessage</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>reason</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that an unexpected exception was caught internally.</color>
+<color=#75715e>   *     Used in place of an assert, when an exception is preferred. Used when the Environment</color>
+<color=#75715e>   *     should *not* be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_EXCEPTION</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that an unexpected exception was caught internally.</color>
+<color=#75715e>   *     Used in place of an assert, when an exception is preferred. Used when the Environment</color>
+<color=#75715e>   *     *should* be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_EXCEPTION_FATAL</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that an unexpected exception was caught internally.</color>
+<color=#75715e>   *     Used in place of an assert, when an exception is preferred. Used when the Environment</color>
+<color=#75715e>   *     should *not* be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_EXCEPTION</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that an unexpected exception was caught internally.</color>
+<color=#75715e>   *     Used in place of an assert, when an exception is preferred. Used when the Environment</color>
+<color=#75715e>   *     *should* be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_EXCEPTION_FATAL</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that unexpected internal state was detected. Used in</color>
+<color=#75715e>   *     place of an assert, when an exception is preferred. Used when the Environment should *not*</color>
+<color=#75715e>   *     be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedState</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that unexpected internal state was detected. Used in</color>
+<color=#75715e>   *     place of an assert, when an exception is preferred. Used when the Environment *should* be</color>
+<color=#75715e>   *     invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE_FATAL</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*message*/</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that unexpected internal state was detected. Used in</color>
+<color=#75715e>   *     place of an assert, when an exception is preferred. Used when the Environment should *not*</color>
+<color=#75715e>   *     be invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Creates an exception indicating that unexpected internal state was detected. Used in</color>
+<color=#75715e>   *     place of an assert, when an exception is preferred. Used when the Environment *should* be</color>
+<color=#75715e>   *     invalidated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>UNEXPECTED_STATE_FATAL</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Convenience method that throws an UNEXPECTED_STATE exception (non-fatal) if the given</color>
+<color=#75715e>   *     condition is false.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>assertState</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>cond</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Implementation in assertState(boolean,String) is repeated to reduce</color>
+<color=#75715e>     * assertion overhead.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>cond</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>unexpectedState</color><color=#f8f8f2>((</color><color=#f8f8f2>String</color><color=#f8f8f2>)</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Convenience method that throws an UNEXPECTED_STATE exception (non-fatal) if the given</color>
+<color=#75715e>   *     condition is false.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>assertState</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>cond</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Implementation in assertState(boolean) is repeated to reduce</color>
+<color=#75715e>     * assertion overhead.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>cond</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

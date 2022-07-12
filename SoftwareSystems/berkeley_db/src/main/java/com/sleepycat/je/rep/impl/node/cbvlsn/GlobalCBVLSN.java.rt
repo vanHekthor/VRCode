@@ -1,0 +1,428 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.cbvlsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.JEVersion</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.OperationFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.NetworkRestore</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.RepNode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNIndex</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNRange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.MIN_RETAINED_VLSNS</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams.REP_STREAM_TIMEOUT</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN.NULL_VLSN</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The GlobalCBVLSN was used prior to JE 7.5 for ensuring that nodes do not delete files needed for</color>
+<color=#75715e> * feeding other nodes. The methods in this class are disabled if the GlobalCBVLSN is defunct -- see</color>
+<color=#75715e> * below.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In version 7.5 and greater we instead retain all files up to the disk limits just in case they</color>
+<color=#75715e> * are needed for replication, and the GlobalCBVLSN is no longer needed. The {@link</color>
+<color=#75715e> * com.sleepycat.je.cleaner.FileProtector} is used for preventing file deletion on a local node. See</color>
+<color=#75715e> * [#25220] in the JE 7.5 change log for a list of related external changes.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The global and local CBVLSNs are completely defunct (no longer maintained) in a rep group</color>
+<color=#75715e> * where all nodes are running JE 7.5 or greater. In a mixed version group of new (7.5 or later) and</color>
+<color=#75715e> * old (pre-7.5) nodes, we must continue to maintain the GlobalCBVLSN for the sake of the old nodes.</color>
+<color=#75715e> * If we did not do this, for example, the following scenario could occur:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre></color>
+<color=#75715e> *  - RF-3, N1 is new, N2 and N3 are old.</color>
+<color=#75715e> *  - N1 is the master, N2 is an up-to-date replica, N3 is a lagging replica.</color>
+<color=#75715e> *  - N2 deletes files that would be needed to feed N3, because the GlobalVLSN</color>
+<color=#75715e> *    is not updated and therefore N2 doesn't know that N3 is lagging.</color>
+<color=#75715e> *  - N1 goes down, N2 is elected master</color>
+<color=#75715e> *  - N3 requires a network restore because N2 doesn't have the files that N3</color>
+<color=#75715e> *    needs for syncup.</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The c.s.je.rep.impl.node.cbvlsn package contains most of the code for maintaining the CBVLSN.</color>
+<color=#75715e> * This code is isolated here for two reasons:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>To make it clear that it is not in play for groups of all new nodes. We don't have to think</color>
+<color=#75715e> *       about the CBVLSN at all in this case.</color>
+<color=#75715e> *   <li>To make it easier to eventually remove this code entirely, when backward compatibility with</color>
+<color=#75715e> *       JE 7.4 and earlier is dropped.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When it is not yet defunct, the GlobalCBVLSN class represents this node's view of the global</color>
+<color=#75715e> * CBVLSN. Each node has its own view of the global CBVLSN, based upon its local replicated copy of</color>
+<color=#75715e> * the rep group db. There is a single instance of the GlobalCBVLSN and it exists for the lifetime</color>
+<color=#75715e> * of the RepNode.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A global CBVLSN is a per-environment value, and is safeguarded from decreasing during the</color>
+<color=#75715e> * lifetime of a single RepImpl. Because nodes crash and re-sync, and new nodes join, it's possible</color>
+<color=#75715e> * that the persisted local cbvlsns can decrease, and drag the global cbvlsn value down, but those</color>
+<color=#75715e> * decreases are ignored during the lifetime of the global CBVLSN instance.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>On pre-7.5 nodes, the global CBVLSN is used by:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>As a barrier to file deletion by the Cleaner.</color>
+<color=#75715e> *   <li>The Feeder which only serves log records in the interval: [GlobalCBVLSN .. VLSNRange.last]</color>
+<color=#75715e> *   <li>The Replica which uses the interval [GlobalCBVLSN .. VLSNRange.last] at syncup time.</color>
+<color=#75715e> * </ul></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>GlobalCBVLSN</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The GlobalCBVLSN is defunct when all nodes in the group are running this</color>
+<color=#75715e>   * version or later.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>JEVersion</color> <color=#f8f8f2>DEFUNCT_JE_VERSION</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>JEVersion</color><color=#f8f8f2>(</color><color=#e6db74>"7.5.0"</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>streamTimeoutMs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>minRetainedVLSNs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>defunct</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* GroupCBVLSN can only be updated when synchronized. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>groupCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>GlobalCBVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>streamTimeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>REP_STREAM_TIMEOUT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>minRetainedVLSNs</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>MIN_RETAINED_VLSNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Uses minJEVersion to determine whether the global CBVLSN is defunct.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Try to avoid any use of the GlobalCBVLSN when all nodes are running new software:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>- For the master, this method should be called using the minJEVersion in the rep group DB.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>- For a replica, it should be called using the minJEVersion of the feeder, from the feeder</color>
+<color=#75715e>   * handshake.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See {@link #setDefunctJEVersion(RepNode)} for how the minJEVersion is set for a new group</color>
+<color=#75715e>   * (with new software) and for an upgraded group.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param minJEVersion the min JE version for the group, or null if unknown.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>JEVersion</color> <color=#f8f8f2>minJEVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>TEST_CBVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Should never transition from defunct to !defunct. */</color>
+      <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>defunct</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>minJEVersion</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>DEFUNCT_JE_VERSION</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>minJEVersion</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>defunct</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Should never transition from defunct to !defunct. */</color>
+      <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>defunct</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Calls RepNode.setMinJEVersion to upgrade the min version to DEFUNCT_JE_VERSION. This allows a</color>
+<color=#75715e>   * group to treat the global CBLVSN as defunct when all the electable nodes in the group have been</color>
+<color=#75715e>   * upgraded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method should be called when the first node in a a new group is created to avoid all</color>
+<color=#75715e>   * use of the GlobalVLSN. It should also be called periodically on the master, as feeders become</color>
+<color=#75715e>   * active, to update the min JE version after all nodes in a group are upgraded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the version update fails because not all nodes are upgraded, or there is no quorum for</color>
+<color=#75715e>   * the group DB update, or there is a lock conflict, this method fails silently and should be</color>
+<color=#75715e>   * called again later.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDefunctJEVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>TEST_CBVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>setMinJEVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>DEFUNCT_JE_VERSION</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>defunct</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>MinJEVersionUnsupportedException</color> <color=#f92672>|</color> <color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Fail silently -- will try again later. */</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if all nodes in the group are running JE 7.5 or later, and therefore the</color>
+<color=#75715e>   * GlobalCBVLSN is not maintained. Returns false for a mixed old/new version group (or when</color>
+<color=#75715e>   * TEST_GLOBAL_CBVLSN is true).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDefunct</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>defunct</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the global CBVLSN if it is not defunct. Returns a null if it is defunct.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For sake of old nodes, the global CBVLSN is computed as the minimum of CBVLSNs after</color>
+<color=#75715e>   * discarding CBVLSNs that are obsolete. A CBVLSN is considered obsolete if it has not been</color>
+<color=#75715e>   * updated within a configurable time interval relative to the time that the most recent CBVLSN</color>
+<color=#75715e>   * was updated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getCBVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>defunct</color> <color=#f92672>?</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color> <color=#f8f8f2>:</color> <color=#f8f8f2>groupCBVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Updates the cached group info for the node, avoiding a database read, if the global CBVLSN is</color>
+<color=#75715e>   * not defunct. If it is defunct, does nothing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param updateNameIdPair the node whose localCBVLSN must be updated.</color>
+<color=#75715e>   * @param barrierState the new node syncup state</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>updateGroupInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>updateNameIdPair</color><color=#f8f8f2>,</color> <color=#f8f8f2>CleanerBarrierState</color> <color=#f8f8f2>barrierState</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>defunct</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>group</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>RepNodeImpl</color> <color=#f8f8f2>node</color> <color=#f92672>=</color> <color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getMember</color><color=#f8f8f2>(</color><color=#f8f8f2>updateNameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>node</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*  A subsequent refresh will get it, along with the new node. */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"LocalCBVLSN for "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>updateNameIdPair</color>
+            <color=#f92672>+</color> <color=#e6db74>" updated to "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>barrierState</color>
+            <color=#f92672>+</color> <color=#e6db74>" from "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierState</color><color=#f8f8f2>().</color><color=#a6e22e>getLastCBVLSN</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>setBarrierState</color><color=#f8f8f2>(</color><color=#f8f8f2>barrierState</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>recalculate</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Recalculates the GlobalVLSN when it is not defunct. When it is defunct, does nothing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For sake of old nodes, the globalCBVLSN is computed as it was earlier: the minimum of</color>
+<color=#75715e>   * CBVLSNs after discarding CBVLSNs that are obsolete. A CBVLSN is considered obsolete if it has</color>
+<color=#75715e>   * not been updated within a configurable time interval relative to the time that the most recent</color>
+<color=#75715e>   * CBVLSN was updated.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the read of GroupInfo is not protected, and that groupInfo could be changing.</color>
+<color=#75715e>   * That's okay, because we guarantee that none of the local CBVLSNs can be LT globalCBVLSN. If a</color>
+<color=#75715e>   * local CBVLSN is written, and we miss it, it only means that this recalculation of global CBVLSN</color>
+<color=#75715e>   * is too pessimistic -- it's too low.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Secondary nodes do not appear in the RepGroupDB, but the feeder has local CBVLSN values for</color>
+<color=#75715e>   * them which are part of this calculation. Secondary nodes and new nodes have their VLSN ranges</color>
+<color=#75715e>   * protected by the mechanism which tries to ensure that files which may be needed by active</color>
+<color=#75715e>   * feeders are not candidates for deletion.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>recalculate</color><color=#f8f8f2>(</color><color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>groupInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>defunct</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Find the time the highest CBVLSN was computed. */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>maxCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>latestBarrierTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepNodeImpl</color> <color=#f8f8f2>node</color> <color=#f8f8f2>:</color> <color=#f8f8f2>groupInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getDataMembers</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>CleanerBarrierState</color> <color=#f8f8f2>nodeBarrier</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierState</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>cbvlsn</color> <color=#f92672>=</color> <color=#f8f8f2>nodeBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>getLastCBVLSN</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>cbvlsn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>cbvlsn</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Count all nodes when finding the max time, including old nodes</color>
+<color=#75715e>       * that are in the middle of syncup and have not established their</color>
+<color=#75715e>       * low point .</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>nodeBarrierTime</color> <color=#f92672>=</color> <color=#f8f8f2>nodeBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierTime</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>cbvlsn</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Use min, since it represents the real change when they are</color>
+<color=#75715e>         * equal.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>latestBarrierTime</color> <color=#f92672>=</color>
+            <color=#f8f8f2>cbvlsn</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>maxCBVLSN</color><color=#f8f8f2>)</color>
+                <color=#f92672>?</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeBarrierTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>latestBarrierTime</color><color=#f8f8f2>)</color>
+                <color=#f8f8f2>:</color> <color=#f8f8f2>nodeBarrierTime</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>maxCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>cbvlsn</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Track the name of the node holding the maximum CBVLSN, since</color>
+<color=#75715e>         * that node pins that VLSN</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>latestBarrierTime</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* No cbvlsns entered yet, don't bother to recalculate. */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* No cbvlsns entered yet, don't bother to recalculate. */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now find the min CBVLSN that has not been timed out. This may mean</color>
+<color=#75715e>     * that the min CBVLSN == NULL_VLSN, for old nodes that have not yet</color>
+<color=#75715e>     * finished syncup.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>newGroupCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>maxCBVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>nodeBarrierTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>RepNodeImpl</color> <color=#f8f8f2>node</color> <color=#f8f8f2>:</color> <color=#f8f8f2>groupInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getDataMembers</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>CleanerBarrierState</color> <color=#f8f8f2>nodeBarrier</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierState</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>nodeCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>nodeBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>getLastCBVLSN</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>nodeCBVLSN</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>nodeCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(((</color><color=#f8f8f2>latestBarrierTime</color> <color=#f92672>-</color> <color=#f8f8f2>nodeBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierTime</color><color=#f8f8f2>())</color> <color=#f92672><=</color> <color=#f8f8f2>streamTimeoutMs</color><color=#f8f8f2>)</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeCBVLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newGroupCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>nodeCBVLSN</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * A node is pinning the CBVLSN because it is lagging and has</color>
+<color=#75715e>         * not timed out</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>nodeName</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>nodeBarrierTime</color> <color=#f92672>=</color> <color=#f8f8f2>nodeBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>getBarrierTime</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Adjust to retain min number of VLSNs, while ensuring we stay within</color>
+<color=#75715e>     * the current VLSN range.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>newGroupCBVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>minRetainedVLSNs</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSNIndex</color> <color=#f8f8f2>vlsnIndex</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeFirst</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnIndex</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>().</color><color=#a6e22e>getFirst</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>FIRST_VLSN</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Environments where the minRetainedVLSNs was expanded need to ensure</color>
+<color=#75715e>     * the global cbvlsn still stays within the vlsn range.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>rangeFirst</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newGroupCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>updateGroupCBVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>groupInfo</color><color=#f8f8f2>,</color> <color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeName</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeBarrierTime</color><color=#f8f8f2>,</color> <color=#f8f8f2>latestBarrierTime</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Update the group CBVLSN, but only if the newGroupCBVLSN is more recent</color>
+<color=#75715e>   * This is to ensure that the group CBVLSN can only advance during the</color>
+<color=#75715e>   * lifetime of this instance.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateGroupCBVLSN</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>groupInfo</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>nodeBarrierTime</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>latestBarrierTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>defunct</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>cbvlsnLoweredMessage</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>oldCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Be sure not to do anything expensive in this synchronized</color>
+<color=#75715e>       * section, such as logging.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>groupCBVLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>currentRange</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>().</color><color=#a6e22e>getRange</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>currentRange</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cbvlsnLoweredMessage</color> <color=#f92672>=</color>
+              <color=#e6db74>"GroupCBVLSN: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>newGroupCBVLSN</color>
+                  <color=#f92672>+</color> <color=#e6db74>" is outside VLSN range: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>currentRange</color>
+                  <color=#f92672>+</color> <color=#e6db74>" Current group:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>groupInfo</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>oldCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>groupCBVLSN</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>groupCBVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cbvlsnLoweredMessage</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>cbvlsnLoweredMessage</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>changed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Global CBVLSN changed from "</color> <color=#f92672>+</color> <color=#f8f8f2>oldCBVLSN</color> <color=#f92672>+</color> <color=#e6db74>" to "</color> <color=#f92672>+</color> <color=#f8f8f2>newGroupCBVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a VLSN appropriate for the RestoreResponse.cbvlsn field when the GlobalCBVLSN is not</color>
+<color=#75715e>   * defunct. When it is defunct, returns a null VLSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When sending a RestoreResponse to a (potentially) old node, we supply a VLSN that will cause</color>
+<color=#75715e>   * selection of reasonably current nodes as a server (feeder) for the network restore. The return</color>
+<color=#75715e>   * value is the VLSN range end of this node (the master) minus a value that will allow up-to-date</color>
+<color=#75715e>   * servers to qualify (NETWORKBACKUP_MAX_LAG). Old nodes will reject servers whose VLSN range does</color>
+<color=#75715e>   * not cover this VLSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In JE 7.4 and earlier, the "group CBVLSN" was used for this value. This was incorrect,</color>
+<color=#75715e>   * because it was the lower bound for lagging replicas and reserved files. In JE 7.5 we improve on</color>
+<color=#75715e>   * this by sending the value described above, when older nodes must be supported.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When GlobalCBLVSN is defunct, a null VLSN is returned because the RestoreResponse.cbvlsn</color>
+<color=#75715e>   * field is not used at all. See the updated 'Algorithm' in {@link NetworkRestore}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getRestoreResponseVLSN</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>defunct</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>vlsn</color> <color=#f92672>=</color>
+        <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color>
+            <color=#f92672>-</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>NETWORKBACKUP_MAX_LAG</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,401 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.RestoreMarker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore.NetworkBackup</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore.NetworkBackup.RejectedServerException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore.NetworkBackupStats</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.TestHook</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.ConnectException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Obtains log files for a Replica from other members of the replication group. A Replica may need</color>
+<color=#75715e> * to do so if it has been offline for some time, and has fallen behind in its execution of the</color>
+<color=#75715e> * replication stream.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>During that time, the connected nodes may have reduced their log files by deleting files after</color>
+<color=#75715e> * doing log cleaning. When this node rejoins the group, it is possible that the current Master's</color>
+<color=#75715e> * log files do not go back far enough to adequately {@link <a</color>
+<color=#75715e> * href="{@docRoot}/../ReplicationGuide/lifecycle.html#lifecycle-nodestartup">sync * up</a>} this</color>
+<color=#75715e> * node. In that case, the node can use a {@code NetworkRestore} object to copy the log files from</color>
+<color=#75715e> * one of the nodes in the group. The system tries to avoid deleting log files that either would be</color>
+<color=#75715e> * needed for replication by current nodes or where replication would be more efficient than network</color>
+<color=#75715e> * restore.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A Replica discovers the need for a NetworkRestore operation when a call to {@code</color>
+<color=#75715e> * ReplicatedEnvironment()} fails with a {@link InsufficientLogException}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>A call to {@code NetworkRestore.execute()} will copy the required log files from a member of</color>
+<color=#75715e> * the group who owns the files and seems to be the least busy. For example:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class=code></color>
+<color=#75715e> *  try {</color>
+<color=#75715e> *     node = new ReplicatedEnvironment(envDir, envConfig, repConfig);</color>
+<color=#75715e> * } catch (InsufficientLogException insufficientLogEx) {</color>
+<color=#75715e> *</color>
+<color=#75715e> *     NetworkRestore restore = new NetworkRestore();</color>
+<color=#75715e> *     NetworkRestoreConfig config = new NetworkRestoreConfig();</color>
+<color=#75715e> *     config.setRetainLogFiles(false); // delete obsolete log files.</color>
+<color=#75715e> *</color>
+<color=#75715e> *     // Use the members returned by insufficientLogEx.getLogProviders() to</color>
+<color=#75715e> *     // select the desired subset of members and pass the resulting list</color>
+<color=#75715e> *     // as the argument to config.setLogProviders(), if the default selection</color>
+<color=#75715e> *     // of providers is not suitable.</color>
+<color=#75715e> *</color>
+<color=#75715e> *     restore.execute(insufficientLogEx, config);</color>
+<color=#75715e> *</color>
+<color=#75715e> *     // retry</color>
+<color=#75715e> *     node = new ReplicatedEnvironment(envDir, envConfig, repConfig);</color>
+<color=#75715e> * }</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * @see <a href="{@docRoot}/../ReplicationGuide/logfile-restore.html">Restoring Log Files</a></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>NetworkRestore</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The node that needs to be restored. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The server's VLSN range end must be GT this vlsn. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* See 'Algorithm'. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxLag</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The log provider actually used to obtain the log files. It must be one</color>
+<color=#75715e>   * of the members from the logProviders list.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>logProvider</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The current backup attempt. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>NetworkBackup</color> <color=#f8f8f2>backup</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For unit tests only */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>interruptHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an instance of NetworkRestore suitable for restoring the logs at this node. After the</color>
+<color=#75715e>   * logs are restored, the node can create a new {@link ReplicatedEnvironment} and join the group</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>NetworkRestore</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initializes this instance for an impending execute() operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Algorithm ========= If we simply choose the server with the highest maxVSLN, we would always</color>
+<color=#75715e>   * choose the master, which is typically the server with the highest load. If we choose based on</color>
+<color=#75715e>   * load alone, we may choose a lagging replica, and this may result in syncup failing later on the</color>
+<color=#75715e>   * restored server. The compromise solution involves maxLag. We don't select servers less than</color>
+<color=#75715e>   * maxLag behind the master (the server with the highest VLSN range end) to increase the chances</color>
+<color=#75715e>   * of syncup working later, and among the non-lagging servers we choose the lowest load.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1. Collect list of servers and get their load/rangeEnd using the first part of the restore</color>
+<color=#75715e>   * protocol. For each server, its load is its number of feeders and rangeEnd is the upper end of</color>
+<color=#75715e>   * its VLSN range. Remove unresponsive servers from the list.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2. At the beginning of each round, if the server list is empty, give up.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>3. Sort list by load. Let minVLSN be max(all rangeEnds) minus maxLag.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>4. Attempt to perform restore in list order, refreshing each server's load/rangeEnd as we</color>
+<color=#75715e>   * go. Reject any server with a refreshed rangeEnd that is LT minVLSN or a refreshed load that is</color>
+<color=#75715e>   * GT its prior known load. Remove unresponsive servers from the list.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>5. If the restore is incomplete, goto 2 and do another round.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that between rounds the load and minVLSN of each server can change, which is why</color>
+<color=#75715e>   * servers are not removed from the list unless they are unresponsive. The idea is to choose the</color>
+<color=#75715e>   * best server based on the information we collected in the last round, but reject servers with</color>
+<color=#75715e>   * new load or rangeEnd values that invalidate the earlier decision, and always get fresh</color>
+<color=#75715e>   * load/rangeEnd values for each server.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param logException the exception packing information driving the restore operation.</color>
+<color=#75715e>   * @param config may contain an explicit list of members.</color>
+<color=#75715e>   * @return the list of candidate Server instances</color>
+<color=#75715e>   * @throws IllegalArgumentException if the configured log providers are invalid</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>logException</color><color=#f8f8f2>,</color> <color=#f8f8f2>NetworkRestoreConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>logException</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+
+    <color=#f8f8f2>maxLag</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>NETWORKBACKUP_MAX_LAG</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>ReplicationNode</color><color=#f92672>></color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>().</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>memberNames</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>node</color> <color=#f8f8f2>:</color> <color=#f8f8f2>logException</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>memberNames</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>node</color> <color=#f8f8f2>:</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>memberNames</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Node:"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" is not a suitable member for NetworkRestore."</color>
+                  <color=#f92672>+</color> <color=#e6db74>" It's not a member of logException."</color>
+                  <color=#f92672>+</color> <color=#e6db74>"getLogProviders(): "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(</color><color=#f8f8f2>memberNames</color><color=#f8f8f2>.</color><color=#a6e22e>toArray</color><color=#f8f8f2>()));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>logProviders</color> <color=#f92672>=</color> <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logProviders</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedList</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#f8f8f2>logException</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Started network restore"</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#f8f8f2>serverList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedList</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set minVLSN and loadThreshold such that all attempts in the initial</color>
+<color=#75715e>     * round will produce RejectedServerException. Real values will be used</color>
+<color=#75715e>     * as servers are contacted and added to the list for the next round.</color>
+<color=#75715e>     * No initial sort is needed because all servers have the same load.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>maxVLSN</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>loadThreshold</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>node</color> <color=#f8f8f2>:</color> <color=#f8f8f2>logProviders</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>serverList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Server</color><color=#f8f8f2>(</color><color=#f8f8f2>node</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>loadThreshold</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>minVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>maxVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>serverList</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Sorts the refreshed server list by load and computes minVLSN. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>resetServerList</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#f8f8f2>serverList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+<color=#75715e>//    if (serverList.isEmpty()) {</color>
+<color=#75715e>//      return;</color>
+<color=#75715e>//    }</color>
+<color=#75715e>//</color>
+<color=#75715e>//    /* Natural comparator sorts by Server.load. */</color>
+<color=#75715e>//    Collections.sort(serverList);</color>
+<color=#75715e>//</color>
+<color=#75715e>//    /* Get server with max VLSN range end. */</color>
+<color=#75715e>//    Server maxVlsnServer =</color>
+<color=#75715e>//        Collections.max(serverList, Comparator.comparingLong(s -> s.rangeEnd.getSequence()));</color>
+<color=#75715e>//</color>
+<color=#75715e>//    /* Subtract lag and ensure that result is GTE 0. */</color>
+<color=#75715e>//    minVLSN = new VLSN(Math.max(0, maxVlsnServer.rangeEnd.getSequence() - maxLag));</color>
+    <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>UnsupportedOperationException</color><color=#f8f8f2>(</color><color=#e6db74>"Java 1.8"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Restores the log files from one of the members of the replication group.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If <code>config.getLogProviders()</code> returns null, or an empty list, it uses the member</color>
+<color=#75715e>   * that is least busy as the provider of the log files. Otherwise it selects a member from the</color>
+<color=#75715e>   * list, choosing the first member that's available, to provide the log files. If the members in</color>
+<color=#75715e>   * this list are not present in <code>logException.getLogProviders()</code>, it will result in an</color>
+<color=#75715e>   * <code>IllegalArgumentException</code> being thrown. Exceptions handlers for <code></color>
+<color=#75715e>   * InsufficientLogException</code> will typically use {@link</color>
+<color=#75715e>   * InsufficientLogException#getLogProviders()} as the starting point to compute an appropriate</color>
+<color=#75715e>   * list, with which to set up the <code>config</code> argument.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Log files that are currently at the node will be retained if they are part of a consistent</color>
+<color=#75715e>   * set of log files. Obsolete log files are either deleted, or are renamed based on the the</color>
+<color=#75715e>   * configuration of <code>config.getRetainLogFiles()</code>.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param logException the exception thrown by {@code ReplicatedEnvironment()} that necessitated</color>
+<color=#75715e>   *     this log refresh operation</color>
+<color=#75715e>   * @param config configures the execution of the network restore operation</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the <code>config</code> is invalid</color>
+<color=#75715e>   * @see NetworkRestoreConfig</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>execute</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>InsufficientLogException</color> <color=#f8f8f2>logException</color><color=#f8f8f2>,</color> <color=#f8f8f2>NetworkRestoreConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#f8f8f2>serverList</color> <color=#f92672>=</color> <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>logException</color><color=#f8f8f2>,</color> <color=#f8f8f2>config</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>firstRound</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Loop trying busier servers. It sorts the servers by the number</color>
+<color=#75715e>       * of active feeders at each server and contacts each one in turn,</color>
+<color=#75715e>       * trying increasingly busy servers until it finds a suitable one</color>
+<color=#75715e>       * that will service its request for log files. The same server may</color>
+<color=#75715e>       * be contacted multiple times, since it may become busier between</color>
+<color=#75715e>       * the time it was first contacted and a subsequent attempt.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>serverList</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#f8f8f2>newServerList</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LinkedList</color><color=#f92672><></color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>File</color> <color=#f8f8f2>envHome</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnvironmentHome</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Server</color> <color=#f8f8f2>server</color> <color=#f8f8f2>:</color> <color=#f8f8f2>serverList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>serverSocket</color> <color=#f92672>=</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color><color=#f8f8f2>.</color><color=#a6e22e>getSocketAddress</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>serverSocket</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSocket</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Cannot restore from yourself. */</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Network restore candidate server: "</color> <color=#f92672>+</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>logProvider</color> <color=#f92672>=</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>startTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>backup</color> <color=#f92672>=</color>
+                <color=#66d9ef>new</color> <color=#f8f8f2>NetworkBackup</color><color=#f8f8f2>(</color>
+                    <color=#f8f8f2>serverSocket</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getReceiveBufferSize</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>envHome</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getRetainLogFiles</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>load</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>minVLSN</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getChannelFactory</color><color=#f8f8f2>(),</color>
+                    <color=#f8f8f2>logException</color><color=#f8f8f2>.</color><color=#a6e22e>getProperties</color><color=#f8f8f2>());</color>
+
+            <color=#f8f8f2>backup</color><color=#f8f8f2>.</color><color=#a6e22e>setInterruptHook</color><color=#f8f8f2>(</color><color=#f8f8f2>interruptHook</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>backup</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+                    <color=#e6db74>"Network restore completed from: %s. "</color> <color=#f92672>+</color> <color=#e6db74>"Elapsed time: %,d s."</color><color=#f8f8f2>,</color>
+                    <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>startTime</color><color=#f8f8f2>)</color> <color=#f92672>/</color> <color=#ae81ff>1000</color><color=#f8f8f2>)));</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>FileCreationException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Likely A malfunctioning server. */</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Backup failed from node: "</color> <color=#f92672>+</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ConnectException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Move on if the network connection is troublesome. */</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                <color=#e6db74>"Backup server node: "</color> <color=#f92672>+</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color> <color=#f92672>+</color> <color=#e6db74>" is not available: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f92672>|</color> <color=#f8f8f2>ServiceConnectFailedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Move on if the network connection is troublesome. */</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Backup failed from node: "</color> <color=#f92672>+</color> <color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RejectedServerException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/*</color>
+<color=#75715e>             * This is for one of two reasons:</color>
+<color=#75715e>             * 1. This is the initial round and we expect this</color>
+<color=#75715e>             *    exception for every server. We should not log a</color>
+<color=#75715e>             *    message. Add server to the new list now that we</color>
+<color=#75715e>             *    have its true rangeEnd and load.</color>
+<color=#75715e>             * 2. The server got busier or is lagging since the</color>
+<color=#75715e>             *    prior round, based on its refreshed rangeEnd and</color>
+<color=#75715e>             *    load. Add server to the list in case it qualifies</color>
+<color=#75715e>             *    in subsequent rounds.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>firstRound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#f8f8f2>newServerList</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Server</color><color=#f8f8f2>(</color><color=#f8f8f2>server</color><color=#f8f8f2>.</color><color=#a6e22e>node</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeLast</color><color=#f8f8f2>(),</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveServers</color><color=#f8f8f2>()));</color>
+
+          <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>serverList</color> <color=#f92672>=</color> <color=#f8f8f2>newServerList</color><color=#f8f8f2>;</color> <color=#75715e>/* New list for the next round. */</color>
+        <color=#f8f8f2>resetServerList</color><color=#f8f8f2>(</color><color=#f8f8f2>serverList</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>firstRound</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Tried and failed with every node"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>logException</color><color=#f8f8f2>.</color><color=#a6e22e>releaseRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden for testing use only */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>NetworkBackup</color> <color=#a6e22e>getBackup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>backup</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden for testing use only</color>
+<color=#75715e>   *     <p>Returns the member that was used to provide the log files.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNode</color> <color=#a6e22e>getLogProvider</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logProvider</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Returns the network backup statistics for the current network restore attempt, or</color>
+<color=#75715e>   *     {@code null} if a network backup is not currently underway.</color>
+<color=#75715e>   * @return the statistics or {@code null}</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>NetworkBackupStats</color> <color=#a6e22e>getNetworkBackupStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>NetworkBackup</color> <color=#f8f8f2>currentBackup</color> <color=#f92672>=</color> <color=#f8f8f2>backup</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentBackup</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>currentBackup</color><color=#f8f8f2>.</color><color=#a6e22e>getStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A convenience class to help aggregate server attributes that may be relevant to ordering the</color>
+<color=#75715e>   * servers in terms of their suitability.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>Server</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Comparable</color><color=#f92672><</color><color=#f8f8f2>Server</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>node</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeEnd</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>load</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>Server</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>node</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeEnd</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>load</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>node</color> <color=#f92672>=</color> <color=#f8f8f2>node</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeEnd</color> <color=#f92672>=</color> <color=#f8f8f2>rangeEnd</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>load</color> <color=#f92672>=</color> <color=#f8f8f2>load</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** This method is used in the sort to prioritize servers. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>Server</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>load</color> <color=#f92672>-</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>load</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden For unit testing</color>
+<color=#75715e>   * @param hook</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setInterruptHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>interruptHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

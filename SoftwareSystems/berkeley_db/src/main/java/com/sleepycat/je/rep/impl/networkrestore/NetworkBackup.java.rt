@@ -1,0 +1,874 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.FileManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.RestoreMarker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.RestoreRequired</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore.Protocol.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory.ConnectOptions</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.ProtocolException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.ServerVersion</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileOutputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.FileChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.security.MessageDigest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.security.NoSuchAlgorithmException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BrokenBarrierException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.CyclicBarrier</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.networkRestore.NetworkBackupStatDefinition.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>java.util.concurrent.TimeUnit.MINUTES</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * This class implements a hot network backup that permits it to obtain a consistent set of log</color>
+<color=#75715e> * files from any running environment that provides a LogFileFeeder service. This class thus plays</color>
+<color=#75715e> * the role of a client, and the running environment that of a server.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The log files that are retrieved over the network are placed in a directory that can serve as</color>
+<color=#75715e> * an environment directory for a JE stand alone or HA environment. If log files are already present</color>
+<color=#75715e> * in the target directory, it will try reuse them, if they are really consistent with those on the</color>
+<color=#75715e> * server. Extant log files that are no longer part of the current backup file set are deleted or</color>
+<color=#75715e> * are renamed, depending on how the backup operation was configured.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Renamed backup files have the following syntax:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>NNNNNNNN.bup.<backup number></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>where the backup number is the number associated with the backup attempt, rather than with an</color>
+<color=#75715e> * individual file. That is, the backup number is increased by one each time a backup is repeated in</color>
+<color=#75715e> * the same directory and log files actually needed to be renamed.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The implementation tries to be resilient in the face of network failures and minimizes the</color>
+<color=#75715e> * amount of work that might need to be done if the client or server were to fail and had to be</color>
+<color=#75715e> * restarted. Users of this API must be careful to ensure that the execute() completes successfully</color>
+<color=#75715e> * before accessing the environment. The user fails to do this, the InsufficientLogException will be</color>
+<color=#75715e> * thrown again when the user attempts to open the environment. This safeguard is implemented using</color>
+<color=#75715e> * the {@link RestoreMarker} mechanism.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>NetworkBackup</color> <color=#f8f8f2>{</color>
+  <color=#75715e>/* The server that was chosen to supply the log files. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>serverAddress</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The environment directory into which the log files will be backed up */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>envDir</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The id used during logging to identify a node. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>clientNameId</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Determines whether any existing log files in the envDir should be</color>
+<color=#75715e>   * retained under a different name (with a BUP_SUFFIX), or whether it</color>
+<color=#75715e>   * should be deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The minimal VLSN that the backup must cover. Used to ensure that the</color>
+<color=#75715e>   * backup is sufficient to permit replay of a replication stream from a</color>
+<color=#75715e>   * feeder. It's NULL_VLSN if the VLSN does not matter, that is, it's a</color>
+<color=#75715e>   * backup for a standalone environment.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The client abandons a backup attempt if the server is loaded beyond this</color>
+<color=#75715e>   * threshold</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>serverLoadThreshold</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The RepImpl instance used in Protocol. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The factory for creating new channels */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The protocol used to communicate with the server. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The channel connecting this client to the server. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>DataChannel</color> <color=#f8f8f2>channel</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The message digest used to compute the digest as each log file is pulled</color>
+<color=#75715e>   * over the network.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MessageDigest</color> <color=#f8f8f2>messageDigest</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Statistics on number of files actually fetched and skipped */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>statistics</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicIntStat</color> <color=#f8f8f2>backupFileCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicIntStat</color> <color=#f8f8f2>disposedCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicIntStat</color> <color=#f8f8f2>fetchCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicIntStat</color> <color=#f8f8f2>skipCount</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLongStat</color> <color=#f8f8f2>expectedBytes</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLongStat</color> <color=#f8f8f2>transferredBytes</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongAvgRateStat</color> <color=#f8f8f2>transferRate</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>CyclicBarrier</color> <color=#f8f8f2>testBarrier</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The receive buffer size associated with the socket used for the log file transfers */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Time to wait for a request from the client. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SOCKET_TIMEOUT_MS</color> <color=#f92672>=</color> <color=#ae81ff>10000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The number of times to retry on a digest exception. That is, when the SHA1 hash as computed by</color>
+<color=#75715e>   * the server for the file does not match the hash as computed by the client for the same file.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>DIGEST_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Save the properties from the instigating InsufficientLogException in</color>
+<color=#75715e>   * order to persist the exception into a RestoreRequired entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Properties</color> <color=#f8f8f2>exceptionProperties</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Be prepared to create a marker file saying that the log can't be</color>
+<color=#75715e>   * recovered.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RestoreMarker</color> <color=#f8f8f2>restoreMarker</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* For testing */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>interruptHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a configured backup instance which when executed will backup the files to the</color>
+<color=#75715e>   * environment directory.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param serverSocket the socket on which to contact the server</color>
+<color=#75715e>   * @param receiveBufferSize the receive buffer size to be associated with the socket used for the</color>
+<color=#75715e>   *     log file transfers.</color>
+<color=#75715e>   * @param envDir the directory in which to place the log files</color>
+<color=#75715e>   * @param clientNameId the id used to identify this client</color>
+<color=#75715e>   * @param retainLogfiles determines whether obsolete log files should be retained by renaming</color>
+<color=#75715e>   *     them, instead of deleting them.</color>
+<color=#75715e>   * @param serverLoadThreshold only backup from this server if it has fewer than this number of</color>
+<color=#75715e>   *     feeders active.</color>
+<color=#75715e>   * @param repImpl is passed in as a distinct field from the log manager and file manager because</color>
+<color=#75715e>   *     it is used only for logging and environment invalidation. A network backup may be invoked</color>
+<color=#75715e>   *     by unit tests without an enclosing environment.</color>
+<color=#75715e>   * @param minVLSN the VLSN that should be covered by the server. It ensures that the log files are</color>
+<color=#75715e>   *     sufficiently current for this client's needs.</color>
+<color=#75715e>   * @throws IllegalArgumentException if the environment directory is not valid. When used</color>
+<color=#75715e>   *     internally, this should be caught appropriately.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>NetworkBackup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>serverSocket</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envDir</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>clientNameId</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>serverLoadThreshold</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>LogManager</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Properties</color> <color=#f8f8f2>exceptionProperties</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>serverAddress</color> <color=#f92672>=</color> <color=#f8f8f2>serverSocket</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>receiveBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>envDir</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Environment directory: "</color> <color=#f92672>+</color> <color=#f8f8f2>envDir</color> <color=#f92672>+</color> <color=#e6db74>" not found"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envDir</color> <color=#f92672>=</color> <color=#f8f8f2>envDir</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>clientNameId</color> <color=#f92672>=</color> <color=#f8f8f2>clientNameId</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retainLogfiles</color> <color=#f92672>=</color> <color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>serverLoadThreshold</color> <color=#f92672>=</color> <color=#f8f8f2>serverLoadThreshold</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>minVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileManager</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>channelFactory</color> <color=#f92672>=</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>messageDigest</color> <color=#f92672>=</color> <color=#f8f8f2>MessageDigest</color><color=#f8f8f2>.</color><color=#a6e22e>getInstance</color><color=#f8f8f2>(</color><color=#e6db74>"SHA1"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>NoSuchAlgorithmException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// Should not happen -- if it does it's a JDK config issue</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLoggerFixedPrefix</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>(),</color> <color=#f8f8f2>clientNameId</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>(),</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>statistics</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>NetworkBackupStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>NetworkBackupStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>backupFileCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicIntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>BACKUP_FILE_COUNT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>disposedCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicIntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>DISPOSED_COUNT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>fetchCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicIntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>FETCH_COUNT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>skipCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicIntStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>SKIP_COUNT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>expectedBytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>EXPECTED_BYTES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>transferredBytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>TRANSFERRED_BYTES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>transferRate</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongAvgRateStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>TRANSFER_RATE</color><color=#f8f8f2>,</color> <color=#ae81ff>10000</color><color=#f8f8f2>,</color> <color=#f8f8f2>MINUTES</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>exceptionProperties</color> <color=#f92672>=</color> <color=#f8f8f2>exceptionProperties</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>restoreMarker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Convenience overloading.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see NetworkBackup(InetSocketAddress, int, File, NameIdPair, boolean, int, VLSN, RepImpl,</color>
+<color=#75715e>   *     FileManager, Properties)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>NetworkBackup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>InetSocketAddress</color> <color=#f8f8f2>serverSocket</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>envDir</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>clientNameId</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>LogManager</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>serverSocket</color><color=#f8f8f2>,</color>
+        <color=#ae81ff>0</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>envDir</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>clientNameId</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>null</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>logManager</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>channelFactory</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>Properties</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns statistics associated with the NetworkBackup execution. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>NetworkBackupStats</color> <color=#a6e22e>getStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>NetworkBackupStats</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Execute the backup.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws ServiceConnectFailedException</color>
+<color=#75715e>   * @throws LoadThresholdExceededException</color>
+<color=#75715e>   * @throws InsufficientVLSNRangeException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#a6e22e>execute</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ServiceConnectFailedException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LoadThresholdExceededException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InsufficientVLSNRangeException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>FileCreationException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>channel</color> <color=#f92672>=</color>
+          <color=#f8f8f2>channelFactory</color><color=#f8f8f2>.</color><color=#a6e22e>connect</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>serverAddress</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>ConnectOptions</color><color=#f8f8f2>()</color>
+                  <color=#f8f8f2>.</color><color=#a6e22e>setTcpNoDelay</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color>
+                  <color=#f8f8f2>.</color><color=#a6e22e>setReceiveBufferSize</color><color=#f8f8f2>(</color><color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>)</color>
+                  <color=#f8f8f2>.</color><color=#a6e22e>setOpenTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>SOCKET_TIMEOUT_MS</color><color=#f8f8f2>)</color>
+                  <color=#f8f8f2>.</color><color=#a6e22e>setReadTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>SOCKET_TIMEOUT_MS</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>doServiceHandshake</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>checkProtocol</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>(</color><color=#f8f8f2>clientNameId</color><color=#f8f8f2>,</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>VERSION</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>checkServer</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileNames</color> <color=#f92672>=</color> <color=#f8f8f2>getFileList</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Restoring from:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>serverAddress</color>
+              <color=#f92672>+</color> <color=#e6db74>" Allocated network receive buffer size:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>getSocketChannel</color><color=#f8f8f2>().</color><color=#a6e22e>socket</color><color=#f8f8f2>().</color><color=#a6e22e>getReceiveBufferSize</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>"("</color>
+              <color=#f92672>+</color> <color=#f8f8f2>receiveBufferSize</color>
+              <color=#f92672>+</color> <color=#e6db74>")"</color>
+              <color=#f92672>+</color> <color=#e6db74>" candidate log file count:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>getFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>cleanup</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>listJDBFiles</color><color=#f8f8f2>().</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color>
+          <color=#f8f8f2>:</color> <color=#e6db74>"envDir="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>envDir</color>
+              <color=#f92672>+</color> <color=#e6db74>" list="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>asList</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>listJDBFiles</color><color=#f8f8f2>())</color>
+              <color=#f92672>+</color> <color=#e6db74>" fileNames="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>asList</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The fileNames array is sorted in getFileList method, so we can</color>
+<color=#75715e>       * use the first and last array elements to get the range of the</color>
+<color=#75715e>       * files to be restored.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileBegin</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getNumFromName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileEnd</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getNumFromName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f92672>[</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+      <color=#75715e>/* Return file names with sub directories' names if exists. */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>listFileNames</color><color=#f8f8f2>(</color><color=#f8f8f2>fileBegin</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileEnd</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>channel</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * Closing the socket directly is not correct.  Let the channel</color>
+<color=#75715e>         * do the work (necessary for correct TLS operation).</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Backup file total: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>backupFileCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>".  Files actually fetched: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>fetchCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>".  Files skipped(available locally): "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>skipCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>".  Local files renamed/deleted: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>disposedCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Ensures that the log file feeder is a suitable choice for this backup: The feeder's VLSN range</color>
+<color=#75715e>   * end must be GTE the minVSLN and its load must be LTE the serverLoadThreshold.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>checkServer</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color><color=#f8f8f2>,</color> <color=#f8f8f2>LoadThresholdExceededException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>InsufficientVLSNRangeException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>FeederInfoReq</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>FeederInfoResp</color> <color=#f8f8f2>resp</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FeederInfoResp</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>minVLSN</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InsufficientVLSNRangeException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>minVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeFirst</color><color=#f8f8f2>(),</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeLast</color><color=#f8f8f2>(),</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveFeeders</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveFeeders</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#f8f8f2>serverLoadThreshold</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>LoadThresholdExceededException</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>serverLoadThreshold</color><color=#f8f8f2>,</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeFirst</color><color=#f8f8f2>(),</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getRangeLast</color><color=#f8f8f2>(),</color> <color=#f8f8f2>resp</color><color=#f8f8f2>.</color><color=#a6e22e>getActiveFeeders</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Delete or rename residual jdb files that are not part of the log file set. This method is only</color>
+<color=#75715e>   * invoked after all required files have been copied over from the server.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>cleanup</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Cleaning up"</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>logFileSet</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>asList</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>listJDBFiles</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>logFileSet</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>disposeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>logFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>string</color> <color=#f8f8f2>:</color> <color=#f8f8f2>logFileSet</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Use the full path of this file in case the environment uses</color>
+<color=#75715e>       * multiple data directories.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>string</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Missing file: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>logFiles</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getCanonicalPath</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>", "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>names</color> <color=#f92672>=</color> <color=#f8f8f2>logFiles</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>names</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>names</color> <color=#f92672>=</color> <color=#f8f8f2>names</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>names</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#ae81ff>2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Log file set: "</color> <color=#f92672>+</color> <color=#f8f8f2>names</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Retrieves all the files in the list, that are not already in the envDir.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws DatabaseException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>getFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>FileCreationException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#e6db74>" files in backup set"</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Get all file transfer lengths first, so we can track progress */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FileAndLength</color><color=#f92672>></color> <color=#f8f8f2>fileTransferLengths</color> <color=#f92672>=</color> <color=#f8f8f2>getFileTransferLengths</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNames</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>FileAndLength</color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileTransferLengths</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>testBarrier</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>testBarrier</color><color=#f8f8f2>.</color><color=#a6e22e>await</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>// Ignore just a test mechanism</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>BrokenBarrierException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>DIGEST_RETRIES</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>getFile</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>file</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>fetchCount</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DigestException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>i</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>DIGEST_RETRIES</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color><color=#e6db74>"Digest mismatch despite "</color> <color=#f92672>+</color> <color=#f8f8f2>DIGEST_RETRIES</color> <color=#f92672>+</color> <color=#e6db74>" attempts"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/* Account for the additional transfer */</color>
+          <color=#f8f8f2>expectedBytes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* We've finished transferring all files, remove the marker file. */</color>
+    <color=#f8f8f2>restoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>removeMarkerFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* All done, shutdown conversation with the server. */</color>
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>Done</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Store File and file length pair. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>FileAndLength</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>FileAndLength</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>file</color> <color=#f92672>=</color> <color=#f8f8f2>file</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>=</color> <color=#f8f8f2>length</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>length</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns information about files that need to be transferred, and updates expectedBytes and</color>
+<color=#75715e>   * skipCount accordingly. This method tries to avoid requesting the SHA1 if the file lengths are</color>
+<color=#75715e>   * not equal, since computing the SHA1 if it's not already cached requires a pass over the log</color>
+<color=#75715e>   * file. Note that the server will always send back the SHA1 value if it has it cached.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FileAndLength</color><color=#f92672>></color> <color=#a6e22e>getFileTransferLengths</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>FileAndLength</color><color=#f92672>></color> <color=#f8f8f2>fileTransferLengths</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>fileName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileNames</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Use the full path of this file in case the environment uses</color>
+<color=#75715e>       * multiple data directories.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileName</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>FileInfoReq</color><color=#f8f8f2>(</color><color=#f8f8f2>fileName</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>FileInfoResp</color> <color=#f8f8f2>statResp</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileInfoResp</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileLength</color> <color=#f92672>=</color> <color=#f8f8f2>statResp</color><color=#f8f8f2>.</color><color=#a6e22e>getFileLength</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * See if we can skip the file if it is present with correct length</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileLength</color> <color=#f92672>==</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Make sure we have the message digest */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>statResp</color><color=#f8f8f2>.</color><color=#a6e22e>getDigestSHA1</color><color=#f8f8f2>().</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>FileInfoReq</color><color=#f8f8f2>(</color><color=#f8f8f2>fileName</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>statResp</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileInfoResp</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>digest</color> <color=#f92672>=</color> <color=#f8f8f2>LogFileFeeder</color><color=#f8f8f2>.</color><color=#a6e22e>getSHA1Digest</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileLength</color><color=#f8f8f2>).</color><color=#a6e22e>digest</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>digest</color><color=#f8f8f2>,</color> <color=#f8f8f2>statResp</color><color=#f8f8f2>.</color><color=#a6e22e>getDigestSHA1</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"File: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getCanonicalPath</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" length: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>fileLength</color>
+                  <color=#f92672>+</color> <color=#e6db74>" available with matching SHA1, copy skipped"</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>skipCount</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>fileTransferLengths</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>FileAndLength</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileLength</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>expectedBytes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>fileLength</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileTransferLengths</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Requests and obtains the specific log file from the server. The file is first created under a</color>
+<color=#75715e>   * name with the .tmp suffix and is renamed to its true name only after its digest has been</color>
+<color=#75715e>   * verified.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is protected to facilitate error testing.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>getFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DigestException</color><color=#f8f8f2>,</color> <color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>FileCreationException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Requesting file: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>FileReq</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>FileStart</color> <color=#f8f8f2>fileResp</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileStart</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Delete the tmp file if it already exists.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Use the full path of this file in case the environment uses multiple</color>
+<color=#75715e>     * data directories.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>File</color> <color=#f8f8f2>tmpFile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>())</color> <color=#f92672>+</color> <color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>TMP_SUFFIX</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>tmpFile</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#f8f8f2>tmpFile</color><color=#f8f8f2>.</color><color=#a6e22e>delete</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>deleted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Could not delete file: "</color> <color=#f92672>+</color> <color=#f8f8f2>tmpFile</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use a direct buffer to avoid an unnecessary copies into and out of</color>
+<color=#75715e>     * native buffers.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>allocateDirect</color><color=#f8f8f2>(</color><color=#f8f8f2>LogFileFeeder</color><color=#f8f8f2>.</color><color=#a6e22e>TRANSFER_BYTES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>messageDigest</color><color=#f8f8f2>.</color><color=#a6e22e>reset</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Write the tmp file. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileOutputStream</color> <color=#f8f8f2>fileStream</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>tmpFile</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileChannel</color> <color=#f8f8f2>fileChannel</color> <color=#f92672>=</color> <color=#f8f8f2>fileStream</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Compute the transfer rate roughly once each MB */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>rateInterval</color> <color=#f92672>=</color> <color=#ae81ff>0x100000</color> <color=#f92672>/</color> <color=#f8f8f2>LogFileFeeder</color><color=#f8f8f2>.</color><color=#a6e22e>TRANSFER_BYTES</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>count</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Copy over the file contents. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#f8f8f2>fileResp</color><color=#f8f8f2>.</color><color=#a6e22e>getFileLength</color><color=#f8f8f2>();</color> <color=#f8f8f2>bytes</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>readSize</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>LogFileFeeder</color><color=#f8f8f2>.</color><color=#a6e22e>TRANSFER_BYTES</color><color=#f8f8f2>,</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>(</color><color=#f8f8f2>readSize</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>actualBytes</color> <color=#f92672>=</color> <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>actualBytes</color> <color=#f92672>==</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color><color=#e6db74>"Premature EOF. Was expecting:"</color> <color=#f92672>+</color> <color=#f8f8f2>readSize</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>bytes</color> <color=#f92672>-=</color> <color=#f8f8f2>actualBytes</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>flip</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>fileChannel</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>rewind</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>messageDigest</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>transferredBytes</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>actualBytes</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Update the transfer rate at interval and last time */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(((</color><color=#f92672>++</color><color=#f8f8f2>count</color> <color=#f92672>%</color> <color=#f8f8f2>rateInterval</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytes</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>transferRate</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>transferredBytes</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(),</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+                <color=#e6db74>"Fetched log file: %s, size: %,d bytes,"</color>
+                    <color=#f92672>+</color> <color=#e6db74>" %s bytes,"</color>
+                    <color=#f92672>+</color> <color=#e6db74>" %s bytes,"</color>
+                    <color=#f92672>+</color> <color=#e6db74>" %s bytes/second"</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>fileResp</color><color=#f8f8f2>.</color><color=#a6e22e>getFileLength</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>transferredBytes</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>expectedBytes</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>transferRate</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileStream</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>FileEnd</color> <color=#f8f8f2>fileEnd</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileEnd</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Check that the read is successful. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>messageDigest</color><color=#f8f8f2>.</color><color=#a6e22e>digest</color><color=#f8f8f2>(),</color> <color=#f8f8f2>fileEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getDigestSHA1</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"digest mismatch on file: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>DigestException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We're about to alter the files that exist in the log, either by</color>
+<color=#75715e>     * deleting file N.jdb, or by renaming N.jdb.tmp -> N, and thereby</color>
+<color=#75715e>     * adding a file to the set in the directory. Create the marker that</color>
+<color=#75715e>     * says this log is no longer coherent and can't be recovered. Marker</color>
+<color=#75715e>     * file creation can safely be called multiple times; the file will</color>
+<color=#75715e>     * only be created the first time.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>restoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>createMarkerFile</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>.</color><color=#a6e22e>FailureType</color><color=#f8f8f2>.</color><color=#a6e22e>NETWORK_RESTORE</color><color=#f8f8f2>,</color> <color=#f8f8f2>exceptionProperties</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>interruptHook</color><color=#f8f8f2>,</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Now that we know it's good, move the file into place. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Delete or back up this and all subsequent obsolete files,</color>
+<color=#75715e>       * excluding the marker file. The marker file will be explicitly</color>
+<color=#75715e>       * cleaned up when the entire backup finishes.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>disposeObsoleteFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Rename the tmp file. */</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Renamed "</color> <color=#f92672>+</color> <color=#f8f8f2>tmpFile</color> <color=#f92672>+</color> <color=#e6db74>" to "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>renamed</color> <color=#f92672>=</color> <color=#f8f8f2>tmpFile</color><color=#f8f8f2>.</color><color=#a6e22e>renameTo</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>renamed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Rename from: "</color> <color=#f92672>+</color> <color=#f8f8f2>tmpFile</color> <color=#f92672>+</color> <color=#e6db74>" to "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color> <color=#f92672>+</color> <color=#e6db74>" failed"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Retain last modified time, to leave an audit trail. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>setLastModified</color><color=#f8f8f2>(</color><color=#f8f8f2>fileResp</color><color=#f8f8f2>.</color><color=#a6e22e>getLastModifiedTime</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"File.setlastModifiedTime() for:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>file</color>
+              <color=#f92672>+</color> <color=#e6db74>" and time "</color>
+              <color=#f92672>+</color> <color=#66d9ef>new</color> <color=#f8f8f2>Date</color><color=#f8f8f2>(</color><color=#f8f8f2>fileResp</color><color=#f8f8f2>.</color><color=#a6e22e>getLastModifiedTime</color><color=#f8f8f2>())</color>
+              <color=#f92672>+</color> <color=#e6db74>" failed."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Renames (or deletes) this log file, and all other files following it in the log sequence. The</color>
+<color=#75715e>   * operation is done from the highest file down to this one, to ensure the integrity of the log</color>
+<color=#75715e>   * files in the directory is always preserved. Exclude the marker file because that is meant to</color>
+<color=#75715e>   * serve as an indicator that the backup is in progress. It will be explicitly removed only when</color>
+<color=#75715e>   * the entire backup is finished.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param startFile the lowest numbered log file that must be renamed or deleted</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>disposeObsoleteFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>startFile</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>File</color><color=#f92672>[]</color> <color=#f8f8f2>dirFiles</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>listJDBFiles</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>sort</color><color=#f8f8f2>(</color><color=#f8f8f2>dirFiles</color><color=#f8f8f2>);</color> <color=#75715e>// sorts in ascending order</color>
+
+    <color=#75715e>/* Start with highest numbered file to be robust in case of failure. */</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#f8f8f2>dirFiles</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>--</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>File</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>dirFiles</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Skip the marker file, wait until the whole backup is done */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>RestoreMarker</color><color=#f8f8f2>.</color><color=#a6e22e>getMarkerFileName</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>disposeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>startFile</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Remove the file from the current set of log files in the directory.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param file</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>disposeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>File</color> <color=#f8f8f2>file</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>disposedCount</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileNumber</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getNumFromName</color><color=#f8f8f2>(</color><color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>retainLogfiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>renamed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>renamed</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>renameFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumber</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>BUP_SUFFIX</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Could not rename log file "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" because of exception: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>renamed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Could not rename log file "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Renamed log file: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>deleted</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>deleteFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumber</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Could not delete log file "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" during network restore."</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>deleted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Could not delete log file "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"deleted log file: "</color> <color=#f92672>+</color> <color=#f8f8f2>file</color><color=#f8f8f2>.</color><color=#a6e22e>getPath</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Carries out the message exchange to obtain the list of backup files.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   * @throws ProtocolException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#a6e22e>getFileList</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>FileListReq</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>FileListResp</color> <color=#f8f8f2>fileListResp</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileListResp</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>String</color><color=#f92672>[]</color> <color=#f8f8f2>fileList</color> <color=#f92672>=</color> <color=#f8f8f2>fileListResp</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNames</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>sort</color><color=#f8f8f2>(</color><color=#f8f8f2>fileList</color><color=#f8f8f2>);</color> <color=#75715e>// sort the file names in ascending order</color>
+    <color=#f8f8f2>backupFileCount</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>fileList</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileList</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Verify that the protocols are compatible, switch to a different protocol version, if we need</color>
+<color=#75715e>   * to.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws DatabaseException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#a6e22e>checkProtocol</color><color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color> <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>ClientVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channel</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>ServerVersion</color> <color=#f8f8f2>serverVersion</color> <color=#f92672>=</color> <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>channel</color><color=#f8f8f2>,</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>ServerVersion</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>serverVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>message</color> <color=#f92672>=</color>
+          <color=#e6db74>"Server requested protocol version:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>serverVersion</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" but the client version is "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ProtocolException</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * In future we may switch protocol versions to accommodate the server.</color>
+<color=#75715e>     * For now, simply return the one and only version.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>candidateProtocol</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * A test entry point used to simulate a slow network restore.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTestBarrier</color><color=#f8f8f2>(</color><color=#f8f8f2>CyclicBarrier</color> <color=#f8f8f2>testBarrier</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>testBarrier</color> <color=#f92672>=</color> <color=#f8f8f2>testBarrier</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit testing only */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setInterruptHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>interruptHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Exception indicating that the digest sent by the server did not match the digest computed by</color>
+<color=#75715e>   * the client, that is, the log file was corrupted during transit.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>DigestException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Exception indicating that the server could not be used for the restore. */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>RejectedServerException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* The actual range covered by the server. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The actual load of the server. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>RejectedServerException</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeFirst</color> <color=#f92672>=</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>rangeLast</color> <color=#f92672>=</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>activeServers</color> <color=#f92672>=</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getRangeLast</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getActiveServers</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Exception indicating that the server vlsn range did not cover the VLSN of interest. */</color>
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>InsufficientVLSNRangeException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RejectedServerException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* The VLSN that must be covered by the server. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>InsufficientVLSNRangeException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>VLSN</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>rangeFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>,</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>minVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>minVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Insufficient VLSN range. Needed VLSN: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>minVLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>" Available range: "</color>
+          <color=#f92672>+</color> <color=#e6db74>"["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rangeFirst</color>
+          <color=#f92672>+</color> <color=#e6db74>", "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>rangeLast</color>
+          <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>LoadThresholdExceededException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RejectedServerException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>threshold</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LoadThresholdExceededException</color><color=#f8f8f2>(</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>threshold</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>rangeFirst</color><color=#f8f8f2>,</color> <color=#f8f8f2>rangeLast</color><color=#f8f8f2>,</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeServers</color> <color=#f92672>></color> <color=#f8f8f2>threshold</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>threshold</color> <color=#f92672>=</color> <color=#f8f8f2>threshold</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Active server threshold: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>threshold</color>
+          <color=#f92672>+</color> <color=#e6db74>" exceeded. "</color>
+          <color=#f92672>+</color> <color=#e6db74>"Active servers: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>activeServers</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

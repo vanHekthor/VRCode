@@ -1,0 +1,770 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.txn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.CursorImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.BIN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.BINReference</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.StatGroup</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Locker instances are JE's route to locking and transactional support. This class is the abstract</color>
+<color=#75715e> * base class for BasicLocker, ThreadLocker, Txn, MasterTxn and ReadonlyTxn. Locker instances are in</color>
+<color=#75715e> * fact only a transaction shell to get to the lock manager, and don't guarantee transactional</color>
+<color=#75715e> * semantics.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Txn (includes Txns marked autoTxn) MasterTxn and ReadonlyTxn instances are truly</color>
+<color=#75715e> * transactional. They have potentially different transaction begin and end behaviors.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>Locker</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>protected</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>LockManager</color> <color=#f8f8f2>lockManager</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color> <color=#75715e>// transaction id</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>readUncommittedDefault</color><color=#f8f8f2>;</color> <color=#75715e>// read-uncommitted is default</color>
+
+  <color=#75715e>/* Timeouts */</color>
+  <color=#66d9ef>boolean</color> <color=#f8f8f2>defaultNoWait</color><color=#f8f8f2>;</color> <color=#75715e>// true for non-blocking</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lockTimeoutMillis</color><color=#f8f8f2>;</color> <color=#75715e>// timeout period for lock, in ms</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnTimeoutMillis</color><color=#f8f8f2>;</color> <color=#75715e>// timeout period for txns, in ms</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnStartMillis</color><color=#f8f8f2>;</color> <color=#75715e>// for txn timeout determination</color>
+
+  <color=#75715e>/* The lsn of the lock that this locker is waiting for. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>waitingFor</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The LockType corresponding to waitingFor. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>waitingForType</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The current thread ID when waitingFor is set. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>waiterThreadId</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * DeleteInfo refers to BINReferences that should be sent to the</color>
+<color=#75715e>   * INCompressor for asynchronous compressing after the transaction ends.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>BINReference</color><color=#f92672>></color> <color=#f8f8f2>deleteInfo</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The thread that created this locker. Used for debugging, and by the ThreadLocker subclass. Note</color>
+<color=#75715e>   * that thread may be null if the Locker is instantiated by reading the log.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>Thread</color> <color=#f8f8f2>thread</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set to false when close() is called. After that point no other locker operations should occur.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isOpen</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** True if my locks can be preempted/stolen. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>preemptable</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Non-null if a lock has been stolen from this locker by the HA replayer. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>preemptedCause</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Non-null if this locker is replacing another locker that is in the process of closing because a</color>
+<color=#75715e>   * cursor is being moved.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>closingLocker</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a locker id. This constructor is called very often, so it should be as streamlined as</color>
+<color=#75715e>   * possible. It should never be called directly, because the mandatedId mechanism only works if</color>
+<color=#75715e>   * the generateId() method is overridden to use the mandatedId value.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param readUncommittedDefault if true, this transaction does read-uncommitted by default</color>
+<color=#75715e>   * @param noWait if true, non-blocking lock requests are used.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>Locker</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>readUncommittedDefault</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>mandatedId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>TxnManager</color> <color=#f8f8f2>txnManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lockManager</color> <color=#f92672>=</color> <color=#f8f8f2>txnManager</color><color=#f8f8f2>.</color><color=#a6e22e>getLockManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>id</color> <color=#f92672>=</color> <color=#f8f8f2>generateId</color><color=#f8f8f2>(</color><color=#f8f8f2>txnManager</color><color=#f8f8f2>,</color> <color=#f8f8f2>mandatedId</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>readUncommittedDefault</color> <color=#f92672>=</color> <color=#f8f8f2>readUncommittedDefault</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>waitingFor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>waitingForType</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>waiterThreadId</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* get the default lock timeout. */</color>
+    <color=#f8f8f2>defaultNoWait</color> <color=#f92672>=</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>lockTimeoutMillis</color> <color=#f92672>=</color> <color=#f8f8f2>getInitialLockTimeout</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Check the default txn timeout. If non-zero, remember the txn start</color>
+<color=#75715e>     * time.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>txnTimeoutMillis</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnTimeoutMillis</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txnStartMillis</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txnStartMillis</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Save the thread used to create the locker. */</color>
+    <color=#f8f8f2>thread</color> <color=#f92672>=</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Do lazy initialization of deleteInfo, to conserve memory. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For reading from the log. */</color>
+  <color=#f8f8f2>Locker</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>defaultNoWait</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#a6e22e>getInitialLockTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLockTimeout</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#a6e22e>getEnvironment</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A Locker has to generate its next id. Some subtypes, like BasicLocker, have a single id for all</color>
+<color=#75715e>   * instances because they are never used for recovery. Other subtypes ask the txn manager for an</color>
+<color=#75715e>   * id or use a specific, mandated id.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>abstract</color> <color=#66d9ef>long</color> <color=#a6e22e>generateId</color><color=#f8f8f2>(</color><color=#f8f8f2>TxnManager</color> <color=#f8f8f2>txnManager</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>mandatedId</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** @return the transaction's id. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return the default no-wait (non-blocking) setting. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getDefaultNoWait</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>defaultNoWait</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDefaultNoWait</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>defaultNoWait</color> <color=#f92672>=</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the lock timeout period for this locker, in milliseconds</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: Be sure to always access the timeout with this accessor, since it is overridden in</color>
+<color=#75715e>   * BuddyLocker.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>long</color> <color=#a6e22e>getLockTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lockTimeoutMillis</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the lock timeout period for any locks in this transaction, in milliseconds.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param timeout The timeout value for the transaction lifetime, in milliseconds. A value of 0</color>
+<color=#75715e>   *     disables timeouts for the transaction.</color>
+<color=#75715e>   * @throws IllegalArgumentException via Transaction.setLockTimeout</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"the timeout value cannot be negative"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672>></color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>pow</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>,</color> <color=#ae81ff>32</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"the timeout value cannot be greater than 2^32"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>lockTimeoutMillis</color> <color=#f92672>=</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the timeout period for this transaction, in milliseconds.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param timeout The timeout value for the transaction lifetime, in microseconds. A value of 0</color>
+<color=#75715e>   *     disables timeouts for the transaction.</color>
+<color=#75715e>   * @throws IllegalArgumentException via Transaction.setLockTimeout</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"the timeout value cannot be negative"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672>></color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>pow</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>,</color> <color=#ae81ff>32</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"the timeout value cannot be greater than 2^32"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>txnTimeoutMillis</color> <color=#f92672>=</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnTimeoutMillis</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txnStartMillis</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>txnStartMillis</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if transaction was created with read-uncommitted as a default. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReadUncommittedDefault</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>readUncommittedDefault</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>setWaitingFor</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>waitingFor</color> <color=#f92672>=</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>waitingForType</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>waiterThreadId</color> <color=#f92672>=</color> <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>currentThread</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>clearWaitingFor</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>waitingFor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>waitingForType</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>waiterThreadId</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>Long</color> <color=#a6e22e>getWaitingFor</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>waitingFor</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>LockType</color> <color=#a6e22e>getWaitingForType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>waitingForType</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>getWaiterThreadId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>waiterThreadId</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Set the state of a transaction to abort-only. Should ONLY be called by</color>
+<color=#75715e>   * OperationFailureException.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setOnlyAbortable</color><color=#f8f8f2>(</color><color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* no-op unless Txn. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Set the state of a transaction's IMPORTUNATE bit. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setImportunate</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>importunate</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* no-op unless Txn. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the state of a transaction's IMPORTUNATE bit. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getImportunate</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Allows/disallows my locks from being stolen/preemted. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setPreemptable</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>preemptable</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>preemptable</color> <color=#f92672>=</color> <color=#f8f8f2>preemptable</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether my locks can be stolen/preemted. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getPreemptable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>preemptable</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called when a lock is stolen from this locker by the HA replayer. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setPreempted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Record the stack trace when a lock is stolen.  This will provide</color>
+<color=#75715e>     * more "cause" information when it is wrapped in a</color>
+<color=#75715e>     * LockPreemptedException that is thrown later -- see checkPreempted.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>preemptedCause</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#e6db74>"Lock was preempted by the replication replayer"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called when obtaining a lock to cause a LockPreemptedException to be thrown if a lock was</color>
+<color=#75715e>   * preempted earlier.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This operation is split into two methods, checkPreempted and throwIfPreempted, so that</color>
+<color=#75715e>   * Txn.checkPreempted can call throwIfPreempted for all its BuddyLockers without causing an</color>
+<color=#75715e>   * infinite recursion. This method is overridden by BuddyLocker to forward the call to its parent</color>
+<color=#75715e>   * buddy (the Txn), and by Txn to check all its child buddies.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param allowPreemptedLocker is a locker that is being closed as the result of a cursor move</color>
+<color=#75715e>   *     operation. If the operation is successful then allowPreemptedLocker will be closed, and the</color>
+<color=#75715e>   *     fact that a lock has been stolen from allowPreemptedLocker can be ignored.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>checkPreempted</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>allowPreemptedLocker</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>throwIfPreempted</color><color=#f8f8f2>(</color><color=#f8f8f2>allowPreemptedLocker</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by checkPreempted to cause a LockPreemptedException to be thrown if a lock was preempted</color>
+<color=#75715e>   * earlier. Creating the LockPreemptedException sets the txn to abort-only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #checkPreempted</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>throwIfPreempted</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>allowPreemptedLocker</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>!=</color> <color=#f8f8f2>allowPreemptedLocker</color> <color=#f92672>&&</color> <color=#f8f8f2>preemptedCause</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>createLockPreemptedException</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>preemptedCause</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For unit testing. */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isPreempted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>preemptedCause</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method is called to set the closingLocker when a cursor has been duplicated prior to being</color>
+<color=#75715e>   * moved. The new locker is informed of the old locker, so that a preempted lock taken by the old</color>
+<color=#75715e>   * locker can be ignored. When the operation is complete, this method is called to clear the</color>
+<color=#75715e>   * closingLocker so that a reference to the old closed locker is not held by this object. [#16513]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param closingLocker the old locker that will be closed if the new cursor (using this locker)</color>
+<color=#75715e>   *     is moved successfully.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setClosingLocker</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>closingLocker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>closingLocker</color> <color=#f92672>=</color> <color=#f8f8f2>closingLocker</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** See ThreadLocker.allowMultithreadedAccess. */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>setAllowMultithreadedAccess</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>allow</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Do nothing by default. Is overridden by ThreadLocker. */</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>checkState</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>ignoreCalledByAbort</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Overridden to perform actions in a non-transactional cursor when it is opened, for example,</color>
+<color=#75715e>   * ReplicaThreadLocker performs consistency checks.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>openCursorHook</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Do nothing. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether a transaction is method indicates whether the txn is part of the rep stream.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A replicated txn must be used for writing to a replicated DB, and a non-replicated txn must</color>
+<color=#75715e>   * be used for writing to a non-replicated DB. This is critical for avoiding corruption when HA</color>
+<color=#75715e>   * failovers occur [#23234] [#23330].</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See guard in LN.logInternal.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReplicated</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>TxnManager</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicatedTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>id</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if writes may only be to non-replicated DBs using this locker, or false if writes</color>
+<color=#75715e>   * may only be to replicated DBs.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>By default (this implementation) local-write is true, since it is allowed for all non-txnal</color>
+<color=#75715e>   * lockers and for all lockers in a standalone environment. This method is overridden and returns</color>
+<color=#75715e>   * false for for user transactions in a replicated environment that are not explicitly configured</color>
+<color=#75715e>   * for local-write.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is used to describe a locker's configured usage for checking the validity of an</color>
+<color=#75715e>   * API write operation. This is checked by Cursor methods at the beginning of each write</color>
+<color=#75715e>   * operation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLocalWrite</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether writes are prohibited using this locker. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReadOnly</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Obtain and release locks.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Abstract method to a blocking or non-blocking lock of the given type on the given LSN. Unlike</color>
+<color=#75715e>   * the lock() method, this method does not throw LockNotAvailableException and can therefore be</color>
+<color=#75715e>   * used by nonBlockingLock to probe for a lock without the overhead of an exception stack trace.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn is the node to lock.</color>
+<color=#75715e>   * @param lockType is the type of lock to request.</color>
+<color=#75715e>   * @param noWait is true to override the defaultNoWait setting. If true, or if defaultNoWait is</color>
+<color=#75715e>   *     true, throws LockNotAvailableException if the lock cannot be granted without waiting.</color>
+<color=#75715e>   * @param jumpAheadOfWaiters grant the lock before other waiters, if any.</color>
+<color=#75715e>   * @param database is the database containing lsn.</color>
+<color=#75715e>   * @throws LockConflictException if a blocking lock could not be acquired.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#f8f8f2>LockResult</color> <color=#a6e22e>lockInternal</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>LockType</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>jumpAheadOfWaiters</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>database</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Request a blocking or non-blocking lock of the given type on the given LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn is the node to lock.</color>
+<color=#75715e>   * @param lockType is the type of lock to request.</color>
+<color=#75715e>   * @param noWait is true to override the defaultNoWait setting. If true, or if defaultNoWait is</color>
+<color=#75715e>   *     true, throws LockNotAvailableException if the lock cannot be granted without waiting.</color>
+<color=#75715e>   * @param database is the database containing lsn.</color>
+<color=#75715e>   * @throws LockNotAvailableException if a non-blocking lock was denied.</color>
+<color=#75715e>   * @throws LockConflictException if a blocking lock could not be acquired.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LockResult</color> <color=#a6e22e>lock</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>database</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>LockNotAvailableException</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockConflictException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+        <color=#f8f8f2>lockInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color> <color=#f8f8f2>noWait</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>database</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* DENIED can only be returned for a non-blocking lock. */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>LockNotAvailableException</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#e6db74>"Non-blocking lock was denied."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>checkPreempted</color><color=#f8f8f2>(</color><color=#f8f8f2>closingLocker</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Request a non-blocking lock of the given type on the given LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Unlike lock(), this method returns LockGrantType.DENIED if the lock is denied rather than</color>
+<color=#75715e>   * throwing LockNotAvailableException. This method should therefore not be used as the final lock</color>
+<color=#75715e>   * for a user operation, since in that case LockNotAvailableException should be thrown for a</color>
+<color=#75715e>   * denied lock. It is normally used only to probe for a lock internally, and other recourse is</color>
+<color=#75715e>   * taken if the lock is denied.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param lsn is the node to lock.</color>
+<color=#75715e>   * @param lockType is the type of lock to request.</color>
+<color=#75715e>   * @param jumpAheadOfWaiters grant the lock before other waiters, if any.</color>
+<color=#75715e>   * @param database is the database containing LSN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LockResult</color> <color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>jumpAheadOfWaiters</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>database</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+        <color=#f8f8f2>lockInternal</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*noWait*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>jumpAheadOfWaiters</color><color=#f8f8f2>,</color> <color=#f8f8f2>database</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>checkPreempted</color><color=#f8f8f2>(</color><color=#f8f8f2>closingLocker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Release the lock on this LN and remove from the transaction's owning set. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>boolean</color> <color=#a6e22e>releaseLock</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>removeLock</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Revert this lock from a write lock to a read lock. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>demoteLock</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If successful, the lock manager will call back to the transaction</color>
+<color=#75715e>     * and adjust the location of the lock in the lock collection.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>demote</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called when an LN is logged by an operation that will not hold the lock such as</color>
+<color=#75715e>   * eviction/checkpoint deferred-write logging or cleaner LN migration. We must acquire a lock on</color>
+<color=#75715e>   * the new LSN on behalf of every locker that currently holds a lock on the old LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Lock is non-blocking because no contention is possible on the new LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Because this locker is being used by multiple threads, this method may be called for a</color>
+<color=#75715e>   * locker that has been closed or for which the lock on the old LSN has been released. Unlike</color>
+<color=#75715e>   * other locking methods, in this case we simply return rather than report an error.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>lockAfterLsnChange</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Locker was recently closed, made abort-only, etc. */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>lockType</color> <color=#f92672>=</color> <color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>getOwnedLockType</color><color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockType</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Lock was recently released. */</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockResult</color> <color=#f92672>=</color>
+        <color=#f8f8f2>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockResult</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"No contention is possible on new LSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" old LSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" LockType: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lockType</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * In the case where logging occurs before locking, allow lockers to reject the operation (e.g.,</color>
+<color=#75715e>   * if writing on a replica) and also prepare to undo in the (very unlikely) event that logging</color>
+<color=#75715e>   * succeeds but locking fails.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>preLogWithoutLock</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>database</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Throws ReplicaWriteException if called for a locker on a Replica. This implementation does</color>
+<color=#75715e>   * nothing but is overridden by replication lockers. [#20543]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>disallowReplicaWrite</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Returns whether this locker is transactional. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTransactional</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/** Returns whether the isolation level of this locker is serializable. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSerializableIsolation</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/** Returns whether the isolation level of this locker is read-committed. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReadCommittedIsolation</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the underlying Txn if the locker is transactional, or null if the locker is</color>
+<color=#75715e>   * non-transactional. For a Txn-based locker, this method returns 'this'. For a BuddyLocker, this</color>
+<color=#75715e>   * method may return the buddy.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>Txn</color> <color=#a6e22e>getTxnLocker</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/** Returns a Transaction if the locker is transctional, or null otherwise. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Transaction</color> <color=#a6e22e>getTransaction</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Only BuddyLockers have buddies. */</color>
+  <color=#f8f8f2>Locker</color> <color=#a6e22e>getBuddy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a fresh non-transactional locker, while retaining any transactional locks held by this</color>
+<color=#75715e>   * locker. This method is called when the cursor for this locker is cloned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method must return a locker that shares locks with this locker, e.g., a ThreadLocker.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In general, transactional lockers return 'this' when this method is called, while</color>
+<color=#75715e>   * non-transactional lockers return a new instance.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>Locker</color> <color=#a6e22e>newNonTxnLocker</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Releases any non-transactional locks held by this locker. This method is called when the cursor</color>
+<color=#75715e>   * moves to a new position or is closed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In general, transactional lockers do nothing when this method is called, while</color>
+<color=#75715e>   * non-transactional lockers release all locks as if operationEnd were called.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>releaseNonTxnLocks</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Releases locks and closes the locker at the end of a non-transactional cursor operation. For a</color>
+<color=#75715e>   * transctional cursor this method should do nothing, since locks must be held until transaction</color>
+<color=#75715e>   * end.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>nonTxnOperationEnd</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** By default the set of buddy lockers is not maintained. This is overridden by Txn. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>addBuddy</color><color=#f8f8f2>(</color><color=#f8f8f2>BuddyLocker</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** By default the set of buddy lockers is not maintained. This is overridden by Txn. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>removeBuddy</color><color=#f8f8f2>(</color><color=#f8f8f2>BuddyLocker</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Returns whether this locker can share locks with the given locker. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>sharesLocksWith</color><color=#f8f8f2>(</color><color=#f8f8f2>Locker</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The equivalent of calling operationEnd(true). */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>operationEnd</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>operationEnd</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** A SUCCESS status equals operationOk. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>operationEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>OperationStatus</color> <color=#f8f8f2>status</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>operationEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>status</color> <color=#f92672>==</color> <color=#f8f8f2>OperationStatus</color><color=#f8f8f2>.</color><color=#a6e22e>SUCCESS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Different types of transactions do different things when the operation ends. Txn does nothing,</color>
+<color=#75715e>   * auto Txn commits or aborts, and BasicLocker (and its subclasses) just releases locks.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param operationOK is whether the operation succeeded, since that may impact ending behavior.</color>
+<color=#75715e>   *     (i.e for an auto Txn)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>operationEnd</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>operationOK</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Should be called by all subclasses when the locker is no longer used. For Txns and auto Txns</color>
+<color=#75715e>   * this is at commit or abort. For non-transactional lockers it is at operationEnd.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>isOpen</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Used to determine whether the locker is usable.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>FUTURE: Note that this method is overridden by Txn, and Txn.abort sets the state to closed</color>
+<color=#75715e>   * when it begins rather than when it ends, but calls close() (the method above) when it ends.</color>
+<color=#75715e>   * This is not ideal and deserves attention in the future.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isValid</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>isOpen</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see Txn#addOpenedDatabase */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addOpenedDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>Database</color> <color=#f8f8f2>dbHandle</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** @see HandleLocker#allowReleaseLockAfterLsnChange */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>allowReleaseLockAfterLsnChange</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Tell this transaction about a cursor. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>registerCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>CursorImpl</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** Remove a cursor from this txn. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>unRegisterCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>CursorImpl</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if locking is required for this Locker. All Txnal lockers require it; most</color>
+<color=#75715e>   * BasicLockers do not, but BasicLockers on internal dbs do.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>boolean</color> <color=#a6e22e>lockingRequired</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Transactional support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** @return the WriteLockInfo for this node. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>WriteLockInfo</color> <color=#a6e22e>getWriteLockInfo</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Database operations like remove and truncate leave behind residual DatabaseImpls that must be</color>
+<color=#75715e>   * purged at transaction commit or abort.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>markDeleteAtTxnEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>deleteAtCommit</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Add delete information, to be added to the inCompressor queue when the transaction ends. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addDeleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Skip queue addition if a delta will be logged.  In this case the</color>
+<color=#75715e>     * slot compression will occur in BIN.beforeLog, when a full version is</color>
+<color=#75715e>     * logged.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>shouldLogDelta</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Maintain only one binRef per node. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleteInfo</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>deleteInfo</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>nodeId</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>deleteInfo</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeId</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>deleteInfo</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeId</color><color=#f8f8f2>,</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>createReference</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Manage locks owned by this transaction. Note that transactions that will</color>
+<color=#75715e>   * be multithreaded must override these methods and provide synchronized</color>
+<color=#75715e>   * implementations.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Add a lock to set owned by this transaction. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>addLock</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockGrantType</color> <color=#f8f8f2>grantStatus</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Remove the lock from the set owned by this transaction. If specified to LockManager.release,</color>
+<color=#75715e>   * the lock manager will call this when its releasing a lock.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>removeLock</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** A lock is being demoted. Move it from the write collection into the read collection. */</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>void</color> <color=#a6e22e>moveWriteToReadLock</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>Lock</color> <color=#f8f8f2>lock</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/** Get lock count, for per transaction lock stats, for internal debugging. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>collectStats</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Check txn timeout, if set. Called by the lock manager when blocking on a</color>
+<color=#75715e>   * lock.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTimedOut</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>timeout</color> <color=#f92672>=</color> <color=#f8f8f2>getTxnTimeout</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>timeout</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>diff</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>txnStartMillis</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>diff</color> <color=#f92672>></color> <color=#f8f8f2>timeout</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the transaction timeout period for this locker, in milliseconds</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>public for jca/ra/JELocalTransaction.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>WARNING: Be sure to always access the timeout with this accessor, since it is overridden in</color>
+<color=#75715e>   * BuddyLocker.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>long</color> <color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txnTimeoutMillis</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>long</color> <color=#a6e22e>getTxnStartMillis</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>txnStartMillis</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return if this locker has ever been rolled back. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isRolledBack</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// most Locker types will never roll back.</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method is safe to call without synchronizing and this fact is relied on by LockManager</color>
+<color=#75715e>   * when creating exception messages.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>className</color> <color=#f92672>=</color> <color=#f8f8f2>className</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>.</color><color=#a6e22e>lastIndexOf</color><color=#f8f8f2>(</color><color=#e6db74>'.'</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>identityHashCode</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>)</color>
+        <color=#f92672>+</color> <color=#e6db74>" "</color>
+        <color=#f92672>+</color> <color=#f8f8f2>id</color>
+        <color=#f92672>+</color> <color=#e6db74>"_"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>thread</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#e6db74>""</color> <color=#f8f8f2>:</color> <color=#f8f8f2>thread</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>())</color>
+        <color=#f92672>+</color> <color=#e6db74>"_"</color>
+        <color=#f92672>+</color> <color=#f8f8f2>className</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Dump lock table, for debugging */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLockTable</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>dump</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,815 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.arbiter.impl</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Durability.SyncPolicy</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.StatsConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.GroupShutdownException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.NodeType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.ReplicatedEnvironment</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.FeederManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ReplicaOutputThread</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ReplicaOutputThreadBase</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory.ConnectOptions</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.ShutdownRequest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.InputWireRecord</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.MasterStatus.MasterSyncException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.Protocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshake</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.ReplicaFeederHandshakeConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.Message</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.MessageOp</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.NamedChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.NamedChannelWithTimeout</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.RepUtils.Clock</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.Response</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.TxnCommit</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.ConnectException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.ClosedByInterruptException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.List</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ArrayBlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.TimeUnit</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType.LOG_TXN_COMMIT</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.arbiter.impl.ArbiterStatDefinition.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * The ArbiterAcker is used to acknowledge transactions. A feeder connection is established with the</color>
+<color=#75715e> * current master. Commit and Heartbeat messages are sent by the master. The ArbiterAcker responds</color>
+<color=#75715e> * and persistently tracks the high VLSN of the commit messages that it acknowledges.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>There are configuration parameters that are used. RepParams.REPLICA_MESSAGE_QUEUE_SIZE used</color>
+<color=#75715e> * for the replay queue size and in the computation of the output queue size.</color>
+<color=#75715e> * RepParams.REPLICA_TIMEOUT used for the Arbiter feeder channel timeout.</color>
+<color=#75715e> * RepParams.PRE_HEARTBEAT_TIMEOUT used for the Arbiter feeder channel timeout before the first</color>
+<color=#75715e> * heartbeat is sent. RepParams.REPLICA_RECEIVE_BUFFER_SIZE used for the datachannel buffer size.</color>
+<color=#75715e> * RepParams.REPSTREAM_OPEN_TIMEOUT used for the datachannel open timeout. RepParams.MAX_CLOCK_DELTA</color>
+<color=#75715e> * - used for ReplicaFeederHandshake maximum clock delta. RepParams.HEARTBEAT_INTERVAL heartbeat</color>
+<color=#75715e> * interval in millis. RepParams.ENABLE_GROUP_ACKS enables output thread ack grouping.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The main Arbiter thread reads messages from the feeder channel and queues the message on the</color>
+<color=#75715e> * request queue. The request thread reads entries from the request queue. The request thread may</color>
+<color=#75715e> * queue an entry on the output queue. The ArbiterOutputThread reads from the output queue and</color>
+<color=#75715e> * writes to the network channel. read from network -> ArbiterAcker main thread -> requestQueue</color>
+<color=#75715e> * requestQueue -> RequestThread -> outputQueue outputQueue -> ArbiterOutputThread -> writes to</color>
+<color=#75715e> * network</color>
+<color=#75715e> */</color>
+<color=#66d9ef>class</color> <color=#a6e22e>ArbiterAcker</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Defines the possible types of exits that can be requested from the</color>
+<color=#75715e>   * RequestThread.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>enum</color> <color=#f8f8f2>RequestExitType</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>IMMEDIATE</color><color=#f8f8f2>,</color> <color=#75715e>/* An immediate exit; ignore queued requests. */</color>
+    <color=#f8f8f2>SOFT</color> <color=#75715e>/* Process pending requests in queue, then exit */</color>
+  <color=#f8f8f2>}</color>
+  <color=#75715e>/* Number of times to retry on a network connection failure. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>NETWORK_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Service unavailable retries. These are typically the result of service</color>
+<color=#75715e>   * request being made before the node is ready to provide them. For</color>
+<color=#75715e>   * example, the feeder service is only available after a node has</color>
+<color=#75715e>   * transitioned to becoming the master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SERVICE_UNAVAILABLE_RETRIES</color> <color=#f92672>=</color> <color=#ae81ff>10</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The number of ms to wait between above retries, allowing time for the</color>
+<color=#75715e>   * master to assume its role, and start listening on its port.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color> <color=#f92672>=</color> <color=#ae81ff>1000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The queue poll interval, 1 second */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>QUEUE_POLL_INTERVAL_NS</color> <color=#f92672>=</color> <color=#ae81ff>1000000000l</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The exception that provoked the ArbiterAcker exit. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>NamedChannelWithTimeout</color> <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Clock</color> <color=#f8f8f2>clock</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ArbiterImpl</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>outputQueue</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The message queue used for communications between the network read</color>
+<color=#75715e>   * thread and the request thread.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>requestQueue</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>ArbiterOutputThread</color> <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>RequestThread</color> <color=#f8f8f2>requestThread</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The last commit entry acknowledged.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The in-memory DTVLSN maintained by the Arbiter. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>dtvlsn</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Statistics */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>stats</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The number of times a message entry could not be inserted into</color>
+<color=#75715e>   * the queue within the poll period and had to be retried.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nReplayQueueOverflow</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* Number of transactions acknowledged */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nAcks</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* Current or last master that was connected */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StringStat</color> <color=#f8f8f2>masterStat</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The maximum number of entries pulled out of the request queue that</color>
+<color=#75715e>   * are grouped together. There is at most one write to the data file for</color>
+<color=#75715e>   * this group.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>N_MAX_GROUP_XACT</color> <color=#f92672>=</color> <color=#ae81ff>100</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color> <color=#f8f8f2>groupMessages</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>groupXact</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>FSYNC_INTERVAL</color> <color=#f92672>=</color> <color=#ae81ff>1000</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastFSyncTime</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>ArbiterAcker</color><color=#f8f8f2>(</color><color=#f8f8f2>ArbiterImpl</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>arbiterImpl</color> <color=#f92672>=</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>clock</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Clock</color><color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getClockSkewMs</color><color=#f8f8f2>());</color>
+    <color=#75715e>/* Set up the request queue. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>requestQueueSize</color> <color=#f92672>=</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MESSAGE_QUEUE_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>requestQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Message</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>requestQueueSize</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The factor of 2 below is somewhat arbitrary. It should be > 1 X so</color>
+<color=#75715e>     * that the RequestThread can completely process the buffered</color>
+<color=#75715e>     * messages in the face of a network drop and 2X to allow for</color>
+<color=#75715e>     * additional headroom and minimize the chances that the operation</color>
+<color=#75715e>     * might be blocked due to the limited queue length.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>outputQueueSize</color> <color=#f92672>=</color>
+        <color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MESSAGE_QUEUE_SIZE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>outputQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>outputQueueSize</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>stats</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>ArbiterStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>ArbiterStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nReplayQueueOverflow</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>ARB_N_REPLAY_QUEUE_OVERFLOW</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nAcks</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>ARB_N_ACKS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>masterStat</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringStat</color><color=#f8f8f2>(</color><color=#f8f8f2>stats</color><color=#f8f8f2>,</color> <color=#f8f8f2>ARB_MASTER</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initializeConnection</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>createArbiterFeederChannel</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>refreshCachedGroup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>ReplicaFeederHandshake</color> <color=#f8f8f2>handshake</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicaFeederHandshake</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>RepFeederHandshakeConfig</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>handshake</color><color=#f8f8f2>.</color><color=#a6e22e>execute</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>refreshCachedGroup</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* read heartbeat and respond */</color>
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>(),</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Heartbeat</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT_ACK</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* decrement latch to indicate we are connected */</color>
+    <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getReadyLatch</color><color=#f8f8f2>().</color><color=#a6e22e>countDown</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>notifyJoinGroup</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The core Arbiter control loop. The loop exits when it encounters one of the following possible</color>
+<color=#75715e>   * conditions:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1) The connection to the master can no longer be maintained, due to connectivity issues, or</color>
+<color=#75715e>   * because the master has explicitly shutdown its connections due to an election.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>2) The node becomes aware of a change in master, that is, assertSync() fails.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>3) The loop is interrupted, which is interpreted as a request to shutdown the Arbiter node</color>
+<color=#75715e>   * as a whole.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>4) It fails to establish its node information in the master as it attempts to join the</color>
+<color=#75715e>   * replication group for the first time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Normal exit from this run loop results in the Arbiter node retrying finding the group</color>
+<color=#75715e>   * master. A thrown exception, on the other hand, results in the Arbiter node as a whole</color>
+<color=#75715e>   * terminating its operation and no longer participating in the replication group, that is, it</color>
+<color=#75715e>   * enters the DETACHED state.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InterruptedException</color>
+<color=#75715e>   * @throws DatabaseException if the environment cannot be closed/for a re-init</color>
+<color=#75715e>   * @throws GroupShutdownException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>runArbiterAckLoop</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Class</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RetryException</color><color=#f92672>></color> <color=#f8f8f2>retryExceptionClass</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>retryCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>runArbiterAckLoopInternal</color><color=#f8f8f2>();</color>
+          <color=#75715e>/* Normal exit */</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RetryException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>inSync</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Retry terminated, out of sync."</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>retryExceptionClass</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>++</color><color=#f8f8f2>retryCount</color> <color=#f92672>>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#75715e>/* Exit replica retry elections */</color>
+              <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+                  <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+                  <color=#e6db74>"Failed to recover from exception: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>", despite "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color>
+                      <color=#f92672>+</color> <color=#e6db74>" retries.\n"</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+              <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>retryCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>retryExceptionClass</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Retry #: "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>retryCount</color>
+                  <color=#f92672>+</color> <color=#e6db74>"/"</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color>
+                  <color=#f92672>+</color> <color=#e6db74>" Will retry Arbiter loop after "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color>
+                  <color=#f92672>+</color> <color=#e6db74>"ms. "</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>inSync</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>resetReadyLatch</color><color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Exit use elections to try a different master. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>requestThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Ignore so shutdown can continue */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Request thread error shutting down."</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arbiterOutputThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Ignore we will clean up via killing IO channel anyway. */</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>runArbiterAckLoopInternal</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>RetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Arbiter loop started with master: "</color> <color=#f92672>+</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMasterNameId</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>initializeConnection</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setState</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicatedEnvironment</color><color=#f8f8f2>.</color><color=#a6e22e>State</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>doRunArbiterLoopInternalWork</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setState</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicatedEnvironment</color><color=#f8f8f2>.</color><color=#a6e22e>State</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ClosedByInterruptException</color> <color=#f8f8f2>closedByInterruptException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdown</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Arbiter loop interrupted for shutdown."</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Arbiter loop unexpected interrupt."</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>(</color><color=#f8f8f2>closedByInterruptException</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Master may have changed with the master shutting down its</color>
+<color=#75715e>       * connection as a result. Normal course of events, log it and</color>
+<color=#75715e>       * return to the outer node level loop.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Arbiter IO exception: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>"\n"</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RetryException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Propagate it outwards. Node does not need to shutdown. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>GroupShutdownException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>severe</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Arbiter unexpected exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>MasterSyncException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* expected change in masters from an election. */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shutdownException</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>severe</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Arbiter unexpected exception "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>));</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>loopExitCleanup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>doRunArbiterLoopInternalWork</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_TIMEOUT</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>setTimeoutMs</color><color=#f8f8f2>(</color><color=#f8f8f2>timeoutMs</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>arbiterOutputThread</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ArbiterOutputThread</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>outputQueue</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>protocol</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getArbiterVLSNTracker</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>requestThread</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RequestThread</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>long</color> <color=#f8f8f2>maxPending</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdownOrInvalid</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>offer</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>QUEUE_POLL_INTERVAL_NS</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>NANOSECONDS</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Offer timed out. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>isAlive</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* Retry the offer */</color>
+          <color=#f8f8f2>nReplayQueueOverflow</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>pending</color> <color=#f92672>=</color> <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pending</color> <color=#f92672>></color> <color=#f8f8f2>maxPending</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>maxPending</color> <color=#f92672>=</color> <color=#f8f8f2>pending</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Max pending request log items:"</color> <color=#f92672>+</color> <color=#f8f8f2>maxPending</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Make sure messages in the queue are processed. Ensure, in</color>
+<color=#75715e>       * particular, that shutdown requests are processed and not ignored</color>
+<color=#75715e>       * due to the IOEException resulting from a closed connection.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Drain all queued messages, exceptions may be generated</color>
+<color=#75715e>         * in the process. They logically precede IO exceptions.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* request thread is dead or exiting. */</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>exception</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>getException</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Ensure thread has exited in all circumstances */</color>
+        <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>requestThread</color><color=#f8f8f2>.</color><color=#a6e22e>join</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>arbiterOutputThread</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownThread</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>StatGroup</color> <color=#a6e22e>loadStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>masterStat</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMasterNameId</color><color=#f8f8f2>().</color><color=#a6e22e>toString</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>copyStats</color> <color=#f92672>=</color> <color=#f8f8f2>stats</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>copyStats</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Performs the cleanup actions upon exit from the internal arbiter loop. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>loopExitCleanup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RetryException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Retrying connection to feeder. Message: "</color> <color=#f92672>+</color> <color=#f8f8f2>shutdownException</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Exiting inner Arbiter loop."</color> <color=#f92672>+</color> <color=#e6db74>" Master requested shutdown."</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Exiting inner Arbiter loop with exception "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>shutdownException</color>
+                <color=#f92672>+</color> <color=#e6db74>"\n"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getStackTrace</color><color=#f8f8f2>(</color><color=#f8f8f2>shutdownException</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Exiting inner Arbiter loop."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>shutdown</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a channel used by the Arbiter to connect to the Feeder. The socket is configured with a</color>
+<color=#75715e>   * read timeout that's a multiple of the heartbeat interval to help detect, or initiate a change</color>
+<color=#75715e>   * in master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   * @throws ConnectRetryException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>createArbiterFeederChannel</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ConnectRetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DataChannel</color> <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>timeoutMs</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>PRE_HEARTBEAT_TIMEOUT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>receiveBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_RECEIVE_BUFFER_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>openTimeout</color> <color=#f92672>=</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPSTREAM_OPEN_TIMEOUT</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Note that soTimeout is not set since it's a blocking channel and</color>
+<color=#75715e>       * setSoTimeout has no effect on a blocking nio channel.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Push responses out rapidly, they are small (heart beat or commit</color>
+<color=#75715e>       * response) and need timely delivery to the master.</color>
+<color=#75715e>       * (tcpNoDelay = true)</color>
+<color=#75715e>       */</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>ConnectOptions</color> <color=#f8f8f2>connectOpts</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>ConnectOptions</color><color=#f8f8f2>()</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setTcpNoDelay</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setReceiveBufferSize</color><color=#f8f8f2>(</color><color=#f8f8f2>receiveBufferSize</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setOpenTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>openTimeout</color><color=#f8f8f2>)</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>setBlocking</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>dataChannel</color> <color=#f92672>=</color>
+          <color=#f8f8f2>repImpl</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>getChannelFactory</color><color=#f8f8f2>()</color>
+              <color=#f8f8f2>.</color><color=#a6e22e>connect</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getNodeMaster</color><color=#f8f8f2>(),</color> <color=#f8f8f2>connectOpts</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>arbiterFeederChannel</color> <color=#f92672>=</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>NamedChannelWithTimeout</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getChannelTimeoutTask</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>timeoutMs</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>doServiceHandshake</color><color=#f8f8f2>(</color><color=#f8f8f2>dataChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>FeederManager</color><color=#f8f8f2>.</color><color=#a6e22e>FEEDER_SERVICE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ConnectException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * A network problem, or the node went down between the time we</color>
+<color=#75715e>       * learned it was the master and we tried to connect.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>NETWORK_RETRIES</color><color=#f8f8f2>,</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ServiceConnectFailedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The feeder may not have established the Feeder Service</color>
+<color=#75715e>       * as yet. For example, the transition to the master may not have</color>
+<color=#75715e>       * been completed. Wait longer.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getResponse</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>Response</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_SERVICE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>(),</color> <color=#f8f8f2>SERVICE_UNAVAILABLE_RETRIES</color><color=#f8f8f2>,</color> <color=#f8f8f2>CONNECT_RETRY_SLEEP_MS</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedException</color><color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process a heartbeat message. It queues a response and updates the consistency tracker with the</color>
+<color=#75715e>   * information in the heartbeat.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param xid</color>
+<color=#75715e>   * @throws IOException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>xid</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>xid</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>ie</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Have the higher levels treat it like an IOE and</color>
+<color=#75715e>       * exit the thread.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color><color=#e6db74>"Ack I/O interrupted"</color><color=#f8f8f2>,</color> <color=#f8f8f2>ie</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process the shutdown message from the master and return the GroupShutdownException that must be</color>
+<color=#75715e>   * thrown to exit the Replica loop.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the GroupShutdownException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>GroupShutdownException</color> <color=#a6e22e>processShutdown</color><color=#f8f8f2>(</color><color=#f8f8f2>ShutdownRequest</color> <color=#f8f8f2>shutdown</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Acknowledge the shutdown message right away, since the checkpoint</color>
+<color=#75715e>     * operation can take a long time to complete. Long enough to exceed</color>
+<color=#75715e>     * the feeder timeout on the master. The master only needs to know that</color>
+<color=#75715e>     * the replica has received the message.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThreadBase</color><color=#f8f8f2>.</color><color=#a6e22e>SHUTDOWN_ACK</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Turn off network timeouts on the replica, since we don't want the</color>
+<color=#75715e>     * replica to timeout the connection. The connection itself is no</color>
+<color=#75715e>     * longer used past this point and will be reclaimed as part of normal</color>
+<color=#75715e>     * replica exit cleanup.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>.</color><color=#a6e22e>setTimeoutMs</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>masterHostName</color> <color=#f92672>=</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>getGroupMaster</color><color=#f8f8f2>().</color><color=#a6e22e>getHostName</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>GroupShutdownException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>masterHostName</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getArbiterVLSNTracker</color><color=#f8f8f2>().</color><color=#a6e22e>get</color><color=#f8f8f2>(),</color>
+        <color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>getShutdownTimeMs</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>abstract</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>RetryException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>RetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color> <color=#f92672>=</color> <color=#f8f8f2>retries</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retrySleepMs</color> <color=#f92672>=</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Failed after retries: "</color> <color=#f92672>+</color> <color=#f8f8f2>retries</color> <color=#f92672>+</color> <color=#e6db74>" with retry interval: "</color> <color=#f92672>+</color> <color=#f8f8f2>retrySleepMs</color> <color=#f92672>+</color> <color=#e6db74>"ms."</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Apply the operation represented by this log entry on this Arbiter node. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Message</color> <color=#a6e22e>replayEntries</color><color=#f8f8f2>(</color><color=#f8f8f2>Message</color> <color=#f8f8f2>firstMessage</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>doSync</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>highVLSN</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>shutdownMessage</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>groupXact</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>groupMessages</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>groupMessages</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>firstMessage</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>drainTo</color><color=#f8f8f2>(</color><color=#f8f8f2>groupMessages</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MAX_GROUP_XACT</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>groupMessages</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>groupMessages</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>MessageOp</color> <color=#f8f8f2>messageOp</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>SHUTDOWN_REQUEST</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shutdownMessage</color> <color=#f92672>=</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>messageOp</color> <color=#f92672>==</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>groupXact</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicaOutputThreadBase</color><color=#f8f8f2>.</color><color=#a6e22e>HEARTBEAT_ACK</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>InputWireRecord</color> <color=#f8f8f2>wireRecord</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>).</color><color=#a6e22e>getWireRecord</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getEntryType</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LOG_TXN_COMMIT</color><color=#f8f8f2>.</color><color=#a6e22e>equalsType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Commit</color> <color=#f8f8f2>commitEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Commit</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>commitEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaSyncPolicy</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>SYNC</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>doSync</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getLogEntry</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#f8f8f2>highVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>highVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>TxnCommit</color> <color=#f8f8f2>masterCommit</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TxnCommit</color><color=#f8f8f2>)</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>long</color> <color=#f8f8f2>nextDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>masterCommit</color><color=#f8f8f2>.</color><color=#a6e22e>getDTVLSN</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextDTVLSN</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED_VLSN_SEQUENCE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Pre-DTVLSN log commit record. */</color>
+            <color=#f8f8f2>nextDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>().</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * The Arbiter, unlike Replicas, does not receive commits</color>
+<color=#75715e>           * in ascending VLSN order, so discard lower DTVLSNs.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>dtvlsn</color> <color=#f92672>=</color> <color=#f8f8f2>nextDTVLSN</color> <color=#f92672>></color> <color=#f8f8f2>dtvlsn</color> <color=#f92672>?</color> <color=#f8f8f2>nextDTVLSN</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dtvlsn</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>groupXact</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactionId</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>nAcks</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINEST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Arbiter ack commit record "</color> <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>String</color> <color=#f8f8f2>errMsg</color> <color=#f92672>=</color> <color=#e6db74>"Illegal message type recieved by "</color> <color=#f92672>+</color> <color=#e6db74>" Arbiter. ["</color> <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color> <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#f8f8f2>errMsg</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>doSync</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastFSyncTime</color> <color=#f92672>+</color> <color=#f8f8f2>FSYNC_INTERVAL</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>doSync</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>lastFSyncTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getArbiterVLSNTracker</color><color=#f8f8f2>().</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>highVLSN</color><color=#f8f8f2>),</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>dtvlsn</color><color=#f8f8f2>),</color> <color=#f8f8f2>doSync</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>groupXact</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>groupXact</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>shutdownMessage</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>ConnectRetryException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>RetryException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ConnectRetryException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>retries</color><color=#f8f8f2>,</color> <color=#f8f8f2>retrySleepMs</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>class</color> <color=#a6e22e>RequestThread</color> <color=#66d9ef>extends</color> <color=#f8f8f2>StoppableThread</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>exception</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Set asynchronously when a shutdown is being requested.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>volatile</color> <color=#f8f8f2>RequestExitType</color> <color=#f8f8f2>exitRequest</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The queue poll interval, 1 second */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>REQUEST_QUEUE_POLL_INTERVAL_NS</color> <color=#f92672>=</color> <color=#ae81ff>1000000000l</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>protected</color> <color=#a6e22e>RequestThread</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"RequestThread"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#66d9ef>int</color> <color=#a6e22e>initiateSoftShutdown</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Use immediate, since the stream will continue to be read. */</color>
+      <color=#f8f8f2>exitRequest</color> <color=#f92672>=</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Request thread started. Message queue size:"</color> <color=#f92672>+</color> <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>remainingCapacity</color><color=#f8f8f2>());</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color>
+              <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>poll</color><color=#f8f8f2>(</color><color=#f8f8f2>REQUEST_QUEUE_POLL_INTERVAL_NS</color><color=#f8f8f2>,</color> <color=#f8f8f2>TimeUnit</color><color=#f8f8f2>.</color><color=#a6e22e>NANOSECONDS</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>IMMEDIATE</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>((</color><color=#f8f8f2>exitRequest</color> <color=#f92672>==</color> <color=#f8f8f2>RequestExitType</color><color=#f8f8f2>.</color><color=#a6e22e>SOFT</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color>
+              <color=#f92672>||</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isShutdownOrInvalid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>assertSync</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* Timeout on poll. */</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>Message</color> <color=#f8f8f2>shutdownMessage</color> <color=#f92672>=</color> <color=#f8f8f2>replayEntries</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdownMessage</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>throw</color> <color=#f8f8f2>processShutdown</color><color=#f8f8f2>((</color><color=#f8f8f2>ShutdownRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>shutdownMessage</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>exception</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Bring it to the attention of the main thread by freeing</color>
+<color=#75715e>         * up the "offer" wait right away.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>requestQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Get the attention of the main arbiter thread in case it's</color>
+<color=#75715e>         * waiting in a read on the socket channel.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"closing arbiterFeederChannel = "</color> <color=#f92672>+</color> <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>RepUtils</color><color=#f8f8f2>.</color><color=#a6e22e>shutdownChannel</color><color=#f8f8f2>(</color><color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"ArbiterAcker thread exiting with exception:"</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>protected</color> <color=#f8f8f2>Logger</color> <color=#a6e22e>getLogger</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>RepFeederHandshakeConfig</color> <color=#66d9ef>implements</color> <color=#f8f8f2>ReplicaFeederHandshakeConfig</color> <color=#f8f8f2>{</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepImpl</color> <color=#a6e22e>getRepImpl</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNameIdPair</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>Clock</color> <color=#a6e22e>getClock</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>clock</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NodeType</color> <color=#a6e22e>getNodeType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>ARBITER</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>RepGroupImpl</color> <color=#a6e22e>getGroup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>arbiterImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>NamedChannel</color> <color=#a6e22e>getNamedChannel</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>arbiterFeederChannel</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

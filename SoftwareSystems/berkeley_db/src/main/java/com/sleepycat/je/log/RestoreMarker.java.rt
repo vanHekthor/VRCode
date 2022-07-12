@@ -1,0 +1,141 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.FileHeaderEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.RestoreRequired</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.SingleItemEntry</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileOutputStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.channels.FileChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Properties</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A RestoreMarker is a file that indicates that a normal recovery is not possible, because the log</color>
+<color=#75715e> * files are physically or semantically inconsistent in some way.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>One example is an interrupted, incomplete network restore. The network restore copies log</color>
+<color=#75715e> * files from a source to destination node. If it's halted, while the destination node may contain</color>
+<color=#75715e> * files that are readable, checksum-able and seem correct, the set as a whole may not have a</color>
+<color=#75715e> * complete and coherent copy of the log. In such a case, recovery should not be run on this</color>
+<color=#75715e> * environment's log until some action is taken to make it consistent. For a network restore, this</color>
+<color=#75715e> * curative action is to restart the copy process, and to complete the copy of a set of logs from</color>
+<color=#75715e> * some node to this node. The network restore creates a marker file just before it does any form of</color>
+<color=#75715e> * change to the log that would make the log inconsistent.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The restore marker file is named <MAXINT>.jdb, and holds a normal log file header and a</color>
+<color=#75715e> * RestoreRequired log entry. The RestoreRequired entry indicates the type of error of the initial</color>
+<color=#75715e> * cause, and information needed to repair the environment. The mechanism depends on the fact that</color>
+<color=#75715e> * the very first step of recovery is to read backwards from the last file in the environment.</color>
+<color=#75715e> * Recovery will start at this file, and will fail when it reads the RestoreRequired log entry,</color>
+<color=#75715e> * throwing an exception that contains prescriptive information for how the environment can be</color>
+<color=#75715e> * repaired.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Note that createMarkerFile() is idempotent and can be safely called multiple times. It's done</color>
+<color=#75715e> * that way to make it simpler for the caller.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The handler that repairs the log must also delete the marker file so future recoveries can</color>
+<color=#75715e> * succeed.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RestoreMarker</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/** Internal exception used to distinguish marker file creation from other IOErrors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>FileCreationException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>FileCreationException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>msg</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogManager</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>File</color> <color=#f8f8f2>lastFile</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>RestoreMarker</color><color=#f8f8f2>(</color><color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogManager</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logManager</color> <color=#f92672>=</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>lastFileName</color> <color=#f92672>=</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFullFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>lastFile</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>lastFileName</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMarkerFileName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Remove the marker file. Use FileManager.delete so this file works with the</color>
+<color=#75715e>   * FileDeletionDetector.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IOException if the file won't delete.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>removeMarkerFile</color><color=#f8f8f2>(</color><color=#f8f8f2>FileManager</color> <color=#f8f8f2>fileManager</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastFile</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileManager</color><color=#f8f8f2>.</color><color=#a6e22e>deleteFile</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create the restore marker file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The method may be called repeatedly, but will not re-create the marker file if there's</color>
+<color=#75715e>   * already a non-zero length file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param failureType the failure type that should be recorded in the RestoreRequired log entry.</color>
+<color=#75715e>   * @param props will be serialized to store information about how to handle the failure type.</color>
+<color=#75715e>   * @throws FileCreationException if the marker file can't be created.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>createMarkerFile</color><color=#f8f8f2>(</color><color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>.</color><color=#a6e22e>FailureType</color> <color=#f8f8f2>failureType</color><color=#f8f8f2>,</color> <color=#f8f8f2>Properties</color> <color=#f8f8f2>props</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>FileCreationException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Don't overwrite the file if it already exists. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastFile</color><color=#f8f8f2>.</color><color=#a6e22e>exists</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>lastFile</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastFile</color><color=#f8f8f2>.</color><color=#a6e22e>createNewFile</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The file will have two log entries:</color>
+<color=#75715e>       * - a manufactured file header. Note that the file header usually</color>
+<color=#75715e>       * has a previous offset that points to the previous log entry. In</color>
+<color=#75715e>       * this case, it's set to 0 because we will never scan backwards</color>
+<color=#75715e>       * from this file.</color>
+<color=#75715e>       * - a RestoreRequired log entry</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>FileHeader</color> <color=#f8f8f2>header</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>Integer</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>headerLogEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileHeaderEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>,</color> <color=#f8f8f2>header</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf1</color> <color=#f92672>=</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>.</color><color=#a6e22e>putIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>headerLogEntry</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color> <color=#75715e>// prevLogEntryOffset</color>
+
+      <color=#f8f8f2>RestoreRequired</color> <color=#f8f8f2>rr</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RestoreRequired</color><color=#f8f8f2>(</color><color=#f8f8f2>failureType</color><color=#f8f8f2>,</color> <color=#f8f8f2>props</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>marker</color> <color=#f92672>=</color> <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_RESTORE_REQUIRED</color><color=#f8f8f2>,</color> <color=#f8f8f2>rr</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf2</color> <color=#f92672>=</color> <color=#f8f8f2>logManager</color><color=#f8f8f2>.</color><color=#a6e22e>putIntoBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>marker</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileOutputStream</color> <color=#f8f8f2>stream</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileOutputStream</color><color=#f8f8f2>(</color><color=#f8f8f2>lastFile</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>FileChannel</color> <color=#f8f8f2>channel</color> <color=#f92672>=</color> <color=#f8f8f2>stream</color><color=#f8f8f2>.</color><color=#a6e22e>getChannel</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>buf1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>channel</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>buf2</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* the stream and channel will be closed */</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileCreationException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Marker file creation failed for: "</color> <color=#f92672>+</color> <color=#f8f8f2>failureType</color> <color=#f92672>+</color> <color=#e6db74>" "</color> <color=#f92672>+</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>,</color> <color=#f8f8f2>ioe</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,513 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree.dupConvert</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.CacheMode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.PreloadConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.LocalUtilizationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.BasicLocker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockGrantType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockResult</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.LockType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.ArrayList</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Performs post-recovery conversion of all dup DBs during Environment construction, when upgrading</color>
+<color=#75715e> * from JE 4.1 and earlier. In JE 5.0, duplicates are represented by a two-part (key + data) key,</color>
+<color=#75715e> * and empty data. In JE 4.1 and earlier, the key and data were separate as with non-dup DBs.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Uses the DbTree.DUPS_CONVERTED_BIT to determine whether conversion of the environment is</color>
+<color=#75715e> * necessary. When all databases are successfully converted, this bit is set and the mapping tree is</color>
+<color=#75715e> * flushed. See EnvironmentImpl.convertDupDatabases.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Uses DatabaseImpl.DUPS_CONVERTED to determine whether an individual database has been</color>
+<color=#75715e> * converted, to handle the case where the conversion crashes and is restarted later. When a</color>
+<color=#75715e> * database is successfully converted, this bit is set and the entire database is flushed using</color>
+<color=#75715e> * Database.sync.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The conversion of each database is atomic -- either all INs or none are converted and made</color>
+<color=#75715e> * durable. This is accomplished by putting the database into Deferred Write mode so that splits</color>
+<color=#75715e> * won't log and eviction will be provisional (eviction will not flush the root IN if it is dirty).</color>
+<color=#75715e> * The Deferred Write mode is cleared after conversion is complete and Database.sync has been</color>
+<color=#75715e> * called.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The memory budget is updated during conversion and daemon eviction is invoked periodically.</color>
+<color=#75715e> * This provides support for arbitrarily large DBs.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Uses preload to load all dup trees (DINs/DBINs) prior to conversion, to minimize random I/O.</color>
+<color=#75715e> * See EnvironmentConfig.ENV_DUP_CONVERT_PRELOAD_ALL.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The preload config does not specify loading of LNs, because we do not need to load LNs from</color>
+<color=#75715e> * DBINs. The fact that DBIN LNs are not loaded is the main reason that conversion is quick. LNs are</color>
+<color=#75715e> * converted lazily instead; see LNLogEntry.postFetchInit. The DBIN LNs do not need to be loaded</color>
+<color=#75715e> * because the DBIN slot key contains the LN 'data' that is needed to create the two-part key.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Even when LN loading is not configured, it turns out that preload does load BIN (not DBIN) LNs</color>
+<color=#75715e> * in a dup DB, which is what we want. The singleton LNs must be loaded in order to get the LN data</color>
+<color=#75715e> * to create the two-part key. When preload has not loaded a singleton LN, it will be fetched during</color>
+<color=#75715e> * conversion.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The DIN, DBIN and DupCount LSN are counted obsolete during conversion using a local</color>
+<color=#75715e> * utilization tracker. The tracker must not be flushed until the conversion of a database is</color>
+<color=#75715e> * complete. Inexact counting can be used, because DIN/DBIN/DupCountLN entries are automatically</color>
+<color=#75715e> * considered obsolete by the cleaner. Since only totals are tracked, the memory overhead of the</color>
+<color=#75715e> * local tracker is not substantial.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Database Conversion Algorithm ----------------------------- 1. Set Deferred Write mode for the</color>
+<color=#75715e> * database. Preload the database, including INs/BINs/DINs/DBINs, but not LNs except for singleton</color>
+<color=#75715e> * LNs (LNs with a BIN parent).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>2. Convert all IN/BIN keys to "prefix keys", which are defined by the DupKeyData class. This</color>
+<color=#75715e> * allows tree searches and slot insertions to work correctly as the conversion is performed.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>3. Traverse through the BIN slots in forward order.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>4. If a singleton LN is encountered, ensure it is loaded. IN.fetchLN() automatically updates</color>
+<color=#75715e> * the slot key if the LNLogEntry's key is different from the one already in the slot. Because</color>
+<color=#75715e> * LNLogEntry's key is converted on the fly, a two-part key is set in the slot as a side effect of</color>
+<color=#75715e> * fetching the LN.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>5. If a DIN is encountered, first delete the BIN slot containing the DIN. Then iterate through</color>
+<color=#75715e> * all LNs in the DBINs of this dup tree, assign each a two-part key, and insert the slot into a</color>
+<color=#75715e> * BIN. The LSN and state flags of the DBIN slot are copied to the new BIN slot.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>6. If a deleted singleton (BIN) LN is encountered, delete the slot rather than converting the</color>
+<color=#75715e> * key. If a deleted DBIN LN is encountered, simply discard it.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>7. Count the DIN and DupCount LSN obsolete for each DIN encountered, using a local utilization</color>
+<color=#75715e> * tracker.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>8. When all BIN slots have been processed, set the DatabaseImpl.DUPS_CONVERTED flag, call</color>
+<color=#75715e> * Database.sync to flush all INs and the MapLN, clear Deferred Write mode, and flush the local</color>
+<color=#75715e> * utilization tracker.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>DupConvert</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>DEBUG</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>preloadAll</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>PreloadConfig</color> <color=#f8f8f2>preloadConfig</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LocalUtilizationTracker</color> <color=#f8f8f2>localTracker</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>nConverted</color><color=#f8f8f2>;</color> <color=#75715e>// for debugging</color>
+
+  <color=#75715e>/* Current working tree position. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a conversion object. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DupConvert</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>dbTree</color> <color=#f92672>=</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>preloadAll</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>ENV_DUP_CONVERT_PRELOAD_ALL</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>preloadConfig</color> <color=#f92672>=</color>
+        <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDupConvertPreloadConfig</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+            <color=#f92672>?</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDupConvertPreloadConfig</color><color=#f8f8f2>()</color>
+            <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>PreloadConfig</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Converts all dup DBs that need conversion. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>convertDatabases</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"DupConvert.convertDatabases"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>preloadAll</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>preloadAllDatabases</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDbNamesAndIds</color><color=#f8f8f2>().</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>needsConversion</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>convertDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>noDupNodesPresent</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>noDupNodesPresent</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>in</color> <color=#f8f8f2>:</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getInMemoryINs</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DIN</color> <color=#f92672>||</color> <color=#f8f8f2>in</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Preload all dup DBs to be converted. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>preloadAllDatabases</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color> <color=#f8f8f2>dbsToConvert</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDbNamesAndIds</color><color=#f8f8f2>().</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>releaseDbImpl</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>needsConversion</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>dbsToConvert</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>releaseDbImpl</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>releaseDbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbsToConvert</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>[]</color> <color=#f8f8f2>dbArray</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>[</color><color=#f8f8f2>dbsToConvert</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>dbsToConvert</color><color=#f8f8f2>.</color><color=#a6e22e>toArray</color><color=#f8f8f2>(</color><color=#f8f8f2>dbArray</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>preload</color><color=#f8f8f2>(</color><color=#f8f8f2>dbArray</color><color=#f8f8f2>,</color> <color=#f8f8f2>preloadConfig</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dbsToConvert</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dbTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the given DB needs conversion. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>needsConversion</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDupsConverted</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Converts a single database. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>convertDatabase</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"DupConvert.convertDatabase "</color> <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>saveDeferredWrite</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDurableDeferredWrite</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>localTracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LocalUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setDeferredWrite</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setKeyPrefixing</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>preloadAll</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>preload</color><color=#f8f8f2>(</color><color=#f8f8f2>preloadConfig</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>getFirstNode</color><color=#f8f8f2>(</color><color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>getNextBinSlot</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>convertBinSlot</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setDupsConverted</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>sync</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*flushLog*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>flushLocalTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>localTracker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setDeferredWrite</color><color=#f8f8f2>(</color><color=#f8f8f2>saveDeferredWrite</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Advances the bin/index fields to the next BIN slot. When moving past the last BIN slot, the bin</color>
+<color=#75715e>   * field is set to null and false is returned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getNextBinSlot</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>index</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>index</color> <color=#f92672><</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Compact keys after finishing with a BIN. */</color>
+    <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>compactMemory</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>verifyMemorySize</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Cannot evict between BINs here, because a latch is held. */</color>
+
+    <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>getNextBin</color><color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts the bin/index slot, whether a singleton LN or a DIN root.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched, although bin field may change.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When a singleton LN is converted, leaves with bin/index fields unchanged.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When a dup tree is converted, leaves with bin/index fields set to last inserted slot. This</color>
+<color=#75715e>   * is the slot of the highest key in the dup tree.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>convertBinSlot</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"DupConvert BIN LSN "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color>
+              <color=#f92672>+</color> <color=#e6db74>" index "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>index</color>
+              <color=#f92672>+</color> <color=#e6db74>" nEntries "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Delete slot if LN is deleted. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLNDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>deleteSlot</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Node</color> <color=#f8f8f2>node</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>fetchLNOrDIN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>node</color><color=#f8f8f2>.</color><color=#a6e22e>containsDuplicates</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"DupConvert BIN LN "</color> <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* Fetching a non-deleted LN updates the slot key; we're done. */</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>node</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>nConverted</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Delete the slot containing the DIN before re-inserting the dup tree,</color>
+<color=#75715e>     * so that the DIN slot key doesn't interfere with insertions.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * The DIN is evicted and memory usage is decremented. This is not</color>
+<color=#75715e>     * exactly correct because we keep a local reference to the DIN until</color>
+<color=#75715e>     * the dup tree is converted, but we tolerate this temporary</color>
+<color=#75715e>     * inaccuracy.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>binKey</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DIN</color> <color=#f8f8f2>din</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>DIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>node</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>deleteSlot</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>convertDin</color><color=#f8f8f2>(</color><color=#f8f8f2>din</color><color=#f8f8f2>,</color> <color=#f8f8f2>binKey</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if the LN at the given bin/index slot is permanently deleted. Returns false if it</color>
+<color=#75715e>   * is not deleted, or if it is deleted but part of an unclosed, resurrected txn.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLNDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>BIN</color> <color=#f8f8f2>checkBin</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>checkIndex</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>checkBin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>checkIndex</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>checkBin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryPendingDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>checkIndex</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Not deleted. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color> <color=#f92672>=</color> <color=#f8f8f2>checkBin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>checkIndex</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Can discard a NULL_LSN entry without locking. */</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Lock LSN to guarantee deletedness. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>lockingTxn</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+    <color=#75715e>/* Don't allow this short-lived lock to be preempted/stolen. */</color>
+    <color=#f8f8f2>lockingTxn</color><color=#f8f8f2>.</color><color=#a6e22e>setPreemptable</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockRet</color> <color=#f92672>=</color>
+          <color=#f8f8f2>lockingTxn</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>READ</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkBin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>());</color>
+        <color=#75715e>/* Is locked by a resurrected txn. */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>lockRet</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lockingTxn</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Deletes the bin/index slot, assigned a new identifier key if needed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>deleteSlot</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>deleteEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>index</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>setIdentifierKey</color><color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>),</color> <color=#66d9ef>true</color> <color=#75715e>/*makeDirty*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>index</color> <color=#f92672>-=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts the given DIN and its descendants.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched, although bin field will change to last inserted slot.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>convertDin</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DIN</color> <color=#f8f8f2>din</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>binKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>child</color> <color=#f92672>=</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>fetchIN</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>child</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>));</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>child</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>DBIN</color> <color=#f8f8f2>dbin</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>DBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>child</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672><</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>();</color> <color=#f8f8f2>j</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isLNDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>dbin</color><color=#f8f8f2>,</color> <color=#f8f8f2>j</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>convertDbinSlot</color><color=#f8f8f2>(</color><color=#f8f8f2>dbin</color><color=#f8f8f2>,</color> <color=#f8f8f2>j</color><color=#f8f8f2>,</color> <color=#f8f8f2>binKey</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>}</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>assert</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>verifyMemorySize</color><color=#f8f8f2>();</color>
+
+            <color=#75715e>/* Count DBIN obsolete. */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedLsn</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>localTracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>(),</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>());</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>convertDin</color><color=#f8f8f2>((</color><color=#f8f8f2>DIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>child</color><color=#f8f8f2>,</color> <color=#f8f8f2>binKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Evict DIN child. */</color>
+        <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>detachNode</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*updateLsn*/</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color> <color=#75715e>/*lsn*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>verifyMemorySize</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Count DIN and DupCountLN obsolete. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedLsn</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>localTracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>(),</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ChildReference</color> <color=#f8f8f2>dupCountRef</color> <color=#f92672>=</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getDupCountLNRef</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountRef</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>dupCountRef</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>localTracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>dupCountRef</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DUPCOUNTLN</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>din</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Converts the given DBIN slot, leaving bin/index set to the inserted BIN slot.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with bin field latched, although bin field may change.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If slot is inserted into current bin, leave bin field unchanged and set index field to</color>
+<color=#75715e>   * inserted slot.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If slot is inserted into a different bin, set bin/index fields to inserted slot.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>convertDbinSlot</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DBIN</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dbinIndex</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>binKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>replaceData</color><color=#f8f8f2>(</color><color=#f8f8f2>binKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>dbinIndex</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DEBUG</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>println</color><color=#f8f8f2>(</color><color=#e6db74>"DupConvert DBIN LN "</color> <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If the current BIN can hold the new slot, don't bother to do a</color>
+<color=#75715e>     * search to find it.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>needsSplitting</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isKeyInBounds</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Compact keys after finishing with a BIN. */</color>
+      <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>compactMemory</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Evict without latches, before moving to a new BIN. */</color>
+      <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>daemonEviction</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Find a BIN for insertion, split if necessary. */</color>
+      <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>searchSplitsAllowed</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>newIndex</color> <color=#f92672>=</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>insertEntry1</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>null</color> <color=#75715e>/*ln*/</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>null</color> <color=#75715e>/*data*/</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>dbinIndex</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getState</color><color=#f8f8f2>(</color><color=#f8f8f2>dbinIndex</color><color=#f8f8f2>),</color>
+            <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>newIndex</color> <color=#f92672>&</color> <color=#f8f8f2>IN</color><color=#f8f8f2>.</color><color=#a6e22e>INSERT_SUCCESS</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Key not inserted: "</color> <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" DB: "</color> <color=#f92672>+</color> <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>newIndex</color> <color=#f92672>&</color> <color=#f92672>~</color><color=#f8f8f2>IN</color><color=#f8f8f2>.</color><color=#a6e22e>INSERT_SUCCESS</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Evict LN from DBIN slot. Although we don't explicitly load DBIN LNs,</color>
+<color=#75715e>     * it may have been loaded by recovery.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>dbin</color><color=#f8f8f2>.</color><color=#a6e22e>detachNode</color><color=#f8f8f2>(</color><color=#f8f8f2>dbinIndex</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*updateLsn*/</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color> <color=#75715e>/*lsn*/</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>nConverted</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Changes all keys to "prefix keys" in the given IN. Called after reading an IN from disk via</color>
+<color=#75715e>   * IN.postFetchInit.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The conversion of IN keys is invoked from the IN class when an IN is fetched, rather than</color>
+<color=#75715e>   * invoked from the DupConvert class directly, for performance and simplicity. If it were invoked</color>
+<color=#75715e>   * from the DupConvert class, we would have to iterate over all INs in a separate initial pass.</color>
+<color=#75715e>   * This is both more time consuming, and more complex to implement properly so that eviction is</color>
+<color=#75715e>   * possible. Instead, conversion occurs when an old format IN is loaded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Enter/leave with 'in' unlatched.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>convertInKeys</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>in</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Nothing to convert for non-duplicates DB. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* DIN/DBIN do not need conversion either. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DIN</color> <color=#f92672>||</color> <color=#f8f8f2>in</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>DBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>oldKey</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>makePrefixKey</color><color=#f8f8f2>(</color><color=#f8f8f2>oldKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>oldKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>convertKey</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>newKey</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>oldKey</color> <color=#f92672>=</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getIdentifierKey</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color> <color=#f92672>=</color> <color=#f8f8f2>DupKeyData</color><color=#f8f8f2>.</color><color=#a6e22e>makePrefixKey</color><color=#f8f8f2>(</color><color=#f8f8f2>oldKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>oldKey</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>setIdentifierKey</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*makeDirty*/</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>verifyMemorySize</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

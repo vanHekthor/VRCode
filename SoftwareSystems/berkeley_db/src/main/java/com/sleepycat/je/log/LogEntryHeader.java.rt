@@ -1,0 +1,581 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.Adler32</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.zip.Checksum</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** A LogEntryHeader embodies the header information at the beginning of each log entry file. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LogEntryHeader</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Persistent fields. Layout on disk is (invariant) checksum - 4 bytes (invariant) entry type - 1</color>
+<color=#75715e>   * byte (invariant) entry flags - 1 byte (invariant) offset of previous log entry - 4 bytes</color>
+<color=#75715e>   * (invariant) item size (not counting header size) - 4 bytes (optional) vlsn - 8 bytes</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Flags: The provisional bit can be set for any log type in the log. It's an indication to</color>
+<color=#75715e>   * recovery that the entry shouldn't be processed when rebuilding the tree. See</color>
+<color=#75715e>   * com.sleepycat.je.log.Provisional.java for the reasons why it's set.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The replicated bit is set when this particular log entry is part of the replication stream</color>
+<color=#75715e>   * and contains a VLSN in the header.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The invisible bit is set when this log entry has been rolled back as part of replication</color>
+<color=#75715e>   * syncup. The ensuing log entry has not been checksum-corrected, and to read it, the invisible</color>
+<color=#75715e>   * bit must be cloaked.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The VLSN_PRESENT bit is set when a VLSN is present for log version 8+, and is set when the</color>
+<color=#75715e>   * replicated bit is *not* set in the case of a cleaner migrated LN. Prior to version 8, the</color>
+<color=#75715e>   * replicated bit alone indicates that a VLSN is present. For all versions, if the replicated bit</color>
+<color=#75715e>   * is set then a VLSN is always present. [#19476]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>first version of migrated LN a replicated LN --------------- ----------- log version 7-</color>
+<color=#75715e>   * replicated = true replicated = false (JE 4.1 and vlsn present = false vlsn present = false</color>
+<color=#75715e>   * earlier) vlsn exists in header no vlsn in header</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>log version 8+ replicated = true replicated = false preserve record vlsn present = true vlsn</color>
+<color=#75715e>   * present = false version = false vlsn exists in header no vlsn in header</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>log version 8+ replicated = true replicated = false preserve record vlsn present = true vlsn</color>
+<color=#75715e>   * present = true version = true vlsn exists in header vlsn exists in header</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/* The invariant size of the log entry header. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MIN_HEADER_SIZE</color> <color=#f92672>=</color> <color=#ae81ff>14</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Only used for tests and asserts. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MAX_HEADER_SIZE</color> <color=#f92672>=</color> <color=#f8f8f2>MIN_HEADER_SIZE</color> <color=#f92672>+</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_SIZE</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CHECKSUM_BYTES</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ENTRYTYPE_OFFSET</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FLAGS_OFFSET</color> <color=#f92672>=</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>PREV_OFFSET</color> <color=#f92672>=</color> <color=#ae81ff>6</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ITEMSIZE_OFFSET</color> <color=#f92672>=</color> <color=#ae81ff>10</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>VLSN_OFFSET</color> <color=#f92672>=</color> <color=#f8f8f2>MIN_HEADER_SIZE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Flags defined in the entry header.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * WARNING: Flags may not be defined or used in the entry header of the</color>
+<color=#75715e>   * FileHeader.  All flags defined here may only be used in log entries</color>
+<color=#75715e>   * other then the FileHeader. [#16939]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>PROVISIONAL_ALWAYS_MASK</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0x80</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>PROVISIONAL_BEFORE_CKPT_END_MASK</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0x40</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>REPLICATED_MASK</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0x20</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>INVISIBLE</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0x10</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IGNORE_INVISIBLE</color> <color=#f92672>=</color> <color=#f92672>~</color><color=#f8f8f2>INVISIBLE</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>VLSN_PRESENT</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>0x08</color><color=#f8f8f2>;</color>
+  <color=#75715e>/* Flags stored in version byte for logVersion 6 and below.*/</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>VERSION_6_FLAGS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>PROVISIONAL_ALWAYS_MASK</color> <color=#f92672>|</color> <color=#f8f8f2>PROVISIONAL_BEFORE_CKPT_END_MASK</color> <color=#f92672>|</color> <color=#f8f8f2>REPLICATED_MASK</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IGNORE_VERSION_6_FLAGS</color> <color=#f92672>=</color> <color=#f92672>~</color><color=#f8f8f2>VERSION_6_FLAGS</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>FILE_HEADER_TYPE_NUM</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>checksumVal</color><color=#f8f8f2>;</color> <color=#75715e>// stored in 4 bytes as an unsigned int</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevOffset</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Prior to log version 6, a type-specific version was stored in each</color>
+<color=#75715e>   * entry, and was packed together with the flags in a single byte.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * For version 6, we changed to use a global version (not type specific),</color>
+<color=#75715e>   * but it was stored in each entry, packed with the flags as in earlier</color>
+<color=#75715e>   * versions, as well as being stored redundantly in the FileHeader.  The</color>
+<color=#75715e>   * entry header and file header versions are always the same for all</color>
+<color=#75715e>   * entries in a file.  We flip the log file to guarantee this, when running</color>
+<color=#75715e>   * for the first time with an upgraded JE with a new log version.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * For version 7 and above, the version is stored only in the FileHeader,</color>
+<color=#75715e>   * freeing the space formerly taken by the version in each entry for use</color>
+<color=#75715e>   * by flag bits.  The version is not stored in each entry; however, the</color>
+<color=#75715e>   * version is still maintained in this in-memory object for two reasons:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * 1. When reading log files prior to version 6, each entry potentially has</color>
+<color=#75715e>   *    a different version.</color>
+<color=#75715e>   * 2. Convenience of access to the version when processing log entries.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * [#16939]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Version flag fields */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Provisional</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>invisible</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For reading a log entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param entryBuffer the buffer containing at least the first MIN_HEADER_SIZE bytes of the entry</color>
+<color=#75715e>   *     header.</color>
+<color=#75715e>   * @param logVersion is the log version of the file that contains the given buffer, and is</color>
+<color=#75715e>   *     obtained from the file header. Note that for the file header entry itself,</color>
+<color=#75715e>   *     UNKNOWN_FILE_HEADER_VERSION may be passed.</color>
+<color=#75715e>   * @param lsn is the LSN of the entry, for exception reporting.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>logVersion</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_FILE_HEADER_VERSION</color>
+            <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color> <color=#f92672>>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>FIRST_LOG_VERSION</color>
+                <color=#f92672>&&</color> <color=#f8f8f2>logVersion</color> <color=#f92672><=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>)</color>
+        <color=#f8f8f2>:</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>checksumVal</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>isValidType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Invalid log entry type: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryType</color>
+              <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" bufPosition="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" bufRemaining="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color> <color=#f92672>==</color> <color=#f8f8f2>FILE_HEADER_TYPE_NUM</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Actual version will be set by setFileHeaderVersion. */</color>
+      <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_FILE_HEADER_VERSION</color><color=#f8f8f2>;</color>
+      <color=#75715e>/* Discard flags byte: none are allowed for the file header. */</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>initFlags</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>UNKNOWN_FILE_HEADER_VERSION</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * If we are reading a log header the type should be</color>
+<color=#75715e>         * FILE_HEADER_TYPE_NUM.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Wrong entry type for header: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>entryType</color>
+                <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" bufPosition="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" bufRemaining="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logVersion</color> <color=#f92672><=</color> <color=#ae81ff>6</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Before version 7, flags and version were packed together. */</color>
+        <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>initFlags</color><color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>&</color> <color=#f8f8f2>VERSION_6_FLAGS</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>entryVersion</color> <color=#f92672>&=</color> <color=#f8f8f2>IGNORE_VERSION_6_FLAGS</color><color=#f8f8f2>;</color>
+        <color=#75715e>/* For log version 6, the entry version should always match. */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>logVersion</color> <color=#f92672>!=</color> <color=#ae81ff>6</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>==</color> <color=#ae81ff>6</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* For log version 7+, only flags are stored in the entry. */</color>
+        <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>initFlags</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>prevOffset</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>itemSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>itemSize</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChecksumException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Invalid log entry size: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>itemSize</color>
+              <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" bufPosition="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" bufRemaining="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>remaining</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For writing a log header. public for unit tests. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LogEntryHeader</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#f8f8f2>Provisional</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>logEntryType</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getLogType</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>logEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>itemSize</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>((</color><color=#f92672>!</color><color=#f8f8f2>logEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicationPossible</color><color=#f8f8f2>())</color> <color=#f92672>&&</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>inReplicationStream</color><color=#f8f8f2>()))</color>
+        <color=#f8f8f2>:</color> <color=#f8f8f2>logEntryType</color> <color=#f92672>+</color> <color=#e6db74>" should never be replicated."</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicationPossible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replicated</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>inReplicationStream</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replicated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>invisible</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If we about to write a new replicated entry, the VLSN will be null</color>
+<color=#75715e>     * and mustGenerateVLSN will return true.  For a cleaner migrated LN</color>
+<color=#75715e>     * that was replicated, the VLSN will be non-null and mustGenerateVLSN</color>
+<color=#75715e>     * will return false.  [#19476]</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>vlsnPresent</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getClientVLSN</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>mustGenerateVLSN</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For reading a replication message. The node-specific parts of the header are not needed. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LogEntryHeader</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>((</color><color=#f8f8f2>vlsn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>isNull</color><color=#f8f8f2>())</color> <color=#f8f8f2>:</color> <color=#e6db74>"vlsn = "</color> <color=#f92672>+</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>itemSize</color> <color=#f92672>=</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>replicated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>vlsnPresent</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>initFlags</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>entryFlags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>entryFlags</color> <color=#f92672>&</color> <color=#f8f8f2>PROVISIONAL_ALWAYS_MASK</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>YES</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>entryFlags</color> <color=#f92672>&</color> <color=#f8f8f2>PROVISIONAL_BEFORE_CKPT_END_MASK</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>BEFORE_CKPT_END</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>replicated</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>entryFlags</color> <color=#f92672>&</color> <color=#f8f8f2>REPLICATED_MASK</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>invisible</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>entryFlags</color> <color=#f92672>&</color> <color=#f8f8f2>INVISIBLE</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>vlsnPresent</color> <color=#f92672>=</color> <color=#f8f8f2>((</color><color=#f8f8f2>entryFlags</color> <color=#f92672>&</color> <color=#f8f8f2>VLSN_PRESENT</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called to set the version for a file header entry after reading the version from the item data.</color>
+<color=#75715e>   * See FileHeaderEntry.readEntry. [#16939]</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setFileHeaderVersion</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>entryVersion</color> <color=#f92672>=</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getChecksum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>checksumVal</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color> <color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getPrevOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>prevOffset</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getItemSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getEntrySize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>getItemSize</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getReplicated</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicated</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Provisional</color> <color=#a6e22e>getProvisional</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>provisional</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isInvisible</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>invisible</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getVariablePortionSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_SIZE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return number of bytes used to store this header */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>MIN_HEADER_SIZE</color> <color=#f92672>+</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_SIZE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>MIN_HEADER_SIZE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return the number of bytes used to store the header, excepting the checksum field. */</color>
+  <color=#66d9ef>int</color> <color=#a6e22e>getSizeMinusChecksum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getSize</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>CHECKSUM_BYTES</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return the number of bytes used to store the header, excepting the checksum field. */</color>
+  <color=#66d9ef>int</color> <color=#a6e22e>getInvariantSizeMinusChecksum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>MIN_HEADER_SIZE</color> <color=#f92672>-</color> <color=#f8f8f2>CHECKSUM_BYTES</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Assumes this is called directly after the constructor, and that the entryBuffer is positioned</color>
+<color=#75715e>   * right before the VLSN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readVariablePortion</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Serialize this object into the buffer and leave the buffer positioned in the right place to</color>
+<color=#75715e>   * write the following item. The checksum, prevEntry, and vlsn values will filled in later on.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>public for unit tests.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Skip over the checksumVal, proceed to the entry type. */</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>ENTRYTYPE_OFFSET</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Flags */</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>flags</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>provisional</color> <color=#f92672>==</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>YES</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>PROVISIONAL_ALWAYS_MASK</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>provisional</color> <color=#f92672>==</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>BEFORE_CKPT_END</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>PROVISIONAL_BEFORE_CKPT_END_MASK</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replicated</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>REPLICATED_MASK</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>VLSN_PRESENT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>flags</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Leave room for the prev offset, which must be added under</color>
+<color=#75715e>     * the log write latch. Proceed to write the item size.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>ITEMSIZE_OFFSET</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>itemSize</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Leave room for a VLSN if needed, must also be generated</color>
+<color=#75715e>     * under the log write latch.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_SIZE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Add those parts of the header that must be calculated later to the entryBuffer, and also assign</color>
+<color=#75715e>   * the fields in this class. That's - the prev offset, which must be done within the log write</color>
+<color=#75715e>   * latch to be sure what that lsn is - the VLSN, for the same reason - the checksumVal, which must</color>
+<color=#75715e>   * be added last, after all other fields are marshalled. (public for unit tests)</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>addPostMarshallingInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Add the prev pointer */</color>
+    <color=#f8f8f2>prevOffset</color> <color=#f92672>=</color> <color=#f8f8f2>lastOffset</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>PREV_OFFSET</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>prevOffset</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN_OFFSET</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Now calculate the checksumVal and write it into the buffer.  Be sure</color>
+<color=#75715e>     * to set the field in this instance, for use later when printing or</color>
+<color=#75715e>     * debugging the header.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Checksum</color> <color=#f8f8f2>checksum</color> <color=#f92672>=</color> <color=#f8f8f2>Adler32</color><color=#f8f8f2>.</color><color=#a6e22e>makeChecksum</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>checksum</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>(),</color>
+        <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>CHECKSUM_BYTES</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>CHECKSUM_BYTES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>checksumVal</color> <color=#f92672>=</color> <color=#f8f8f2>checksum</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>checksumVal</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Leave this buffer ready for copying into another buffer. */</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @param sb destination string buffer</color>
+<color=#75715e>   * @param verbose if true, dump the full, verbose version</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<hdr "</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dumpLogNoTag</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Dump the header without enclosing <header> tags. Used for DbPrintLog, to make the header</color>
+<color=#75715e>   * attributes in the <entry> tag, for a more compact rendering.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param sb destination string buffer</color>
+<color=#75715e>   * @param verbose if true, dump the full, verbose version</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>dumpLogNoTag</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>lastEntryType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"type=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>lastEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>toStringNoVersion</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"/"</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>provisional</color> <color=#f92672>!=</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" prov=\""</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>provisional</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" "</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" isReplicated=\"1\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" isInvisible=\"1\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" prev=\"0x"</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>prevOffset</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" size=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>itemSize</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" cksum=\""</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>checksumVal</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For use in special case where commits are transformed to aborts because of i/o errors during a</color>
+<color=#75715e>   * logBuffer flush. See [11271]. Assumes that the entryBuffer is positioned at the start of the</color>
+<color=#75715e>   * item. Return with the entryBuffer positioned to the end of the log entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>convertCommitToAbort</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color> <color=#f92672>==</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_TXN_COMMIT</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* Remember the start of the entry item. */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>itemStart</color> <color=#f92672>=</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Back up to where the type is stored and change the type. */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>entryTypePosition</color> <color=#f92672>=</color> <color=#f8f8f2>itemStart</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>getSize</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>ENTRYTYPE_OFFSET</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>entryTypePosition</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_TXN_ABORT</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Recalculate the checksum. This byte buffer could be large,</color>
+<color=#75715e>     * so don't just turn the whole buffer into an array to pass</color>
+<color=#75715e>     * into the checksum object.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Checksum</color> <color=#f8f8f2>checksum</color> <color=#f92672>=</color> <color=#f8f8f2>Adler32</color><color=#f8f8f2>.</color><color=#a6e22e>makeChecksum</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>checksumSize</color> <color=#f92672>=</color> <color=#f8f8f2>itemSize</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>getSize</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>CHECKSUM_BYTES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>checksum</color><color=#f8f8f2>.</color><color=#a6e22e>update</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>array</color><color=#f8f8f2>(),</color> <color=#f8f8f2>entryTypePosition</color> <color=#f92672>+</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>arrayOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>checksumSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>itemStart</color> <color=#f92672>-</color> <color=#f8f8f2>getSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>checksumVal</color> <color=#f92672>=</color> <color=#f8f8f2>checksum</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeUnsignedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>checksumVal</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/* verbose */</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dump only the parts of the header that apply for replicated entries.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpRep</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>lastEntryType</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>lastEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>toStringNoVersion</color><color=#f8f8f2>()).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"/"</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" vlsn="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>getReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" isReplicated=\"1\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" isInvisible=\"1\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @return true if two log headers are logically the same. This check will ignore the log version.</color>
+<color=#75715e>   *     <p>Used by replication.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEqualsIgnoreVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryHeader</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Note that item size is not part of the logical equality, because</color>
+<color=#75715e>     * on-disk compression can make itemSize vary if the entry has VLSNs</color>
+<color=#75715e>     * that were packed differently.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>getVLSN</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>()))</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>getReplicated</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicated</color><color=#f8f8f2>())</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>isInvisible</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>compareTypeAndVersion</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>getVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>getType</color><color=#f8f8f2>(),</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getVersion</color><color=#f8f8f2>(),</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>())));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * May be called after reading MIN_HEADER_SIZE bytes to determine whether more bytes</color>
+<color=#75715e>   * (getVariablePortionSize) should be read.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isVariableLength</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Currently only entries with VLSNs are variable length. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>vlsnPresent</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Set the invisible bit in the given log entry flags. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>byte</color> <color=#a6e22e>makeInvisible</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>flags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>INVISIBLE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Turn off the invisible bit in the byte buffer which backs this log entry header.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param logHeaderStartPosition the byte position of the start of the log entry header.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>turnOffInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>logHeaderStartPosition</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>flagsPosition</color> <color=#f92672>=</color> <color=#f8f8f2>logHeaderStartPosition</color> <color=#f92672>+</color> <color=#f8f8f2>FLAGS_OFFSET</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>flags</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>flagsPosition</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>flags</color> <color=#f92672>&=</color> <color=#f8f8f2>IGNORE_INVISIBLE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>flagsPosition</color><color=#f8f8f2>,</color> <color=#f8f8f2>flags</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

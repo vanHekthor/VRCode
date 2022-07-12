@@ -1,0 +1,353 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.ThreadInterruptedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.latch.Latch</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.latch.LatchFactory</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicInteger</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.locks.LockSupport</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * LogBuffers hold outgoing, newly written log entries. Space is allocated via the allocate() method</color>
+<color=#75715e> * that returns a LogBufferSegment object. The LogBuffer.writePinCount is incremented each time</color>
+<color=#75715e> * space is allocated. Once the caller copies data into the log buffer, the pin count is decremented</color>
+<color=#75715e> * via the free() method. Readers of a log buffer wait until the pin count is zero.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The pin count is incremented under the readLatch. The pin count is decremented without holding</color>
+<color=#75715e> * the latch. Holding the readLatch will prevent the pin count from being incremented.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Apart from the pin count, access to the buffer is protected by the readLatch and the LWL: -</color>
+<color=#75715e> * Write access requires holding both the LWL and the readLatch. - Read access requires holding</color>
+<color=#75715e> * either the LWL or the readLatch.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Of course, for buffers outside the buffer pool, or in the process of being constructed, these</color>
+<color=#75715e> * rules do not apply and no latching is necessary.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>TODO: Although the above statement about latching reflects the current implementation, it</color>
+<color=#75715e> * would be better if we can remove the reliance on the LWL and protect all access to the buffer</color>
+<color=#75715e> * using the readLatch. To do this, the callers of getFirstLsn and hasRoom will have to acquire the</color>
+<color=#75715e> * readLatch.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @see LogBufferPool</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LogBuffer</color> <color=#66d9ef>implements</color> <color=#f8f8f2>LogSource</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>DEBUG_NAME</color> <color=#f92672>=</color> <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/* Storage */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Information about what log entries are held here. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>firstLsn</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The read latch protects all modifications to the buffer, and protects</color>
+<color=#75715e>   * read access to the buffer when the LWL is not held. Decrementing the pin</color>
+<color=#75715e>   * count is the only exception, and this can be done with no latching.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Latch</color> <color=#f8f8f2>readLatch</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Buffer may be rewritten because an IOException previously occurred.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>rewriteAllowed</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicInteger</color> <color=#f8f8f2>writePinCount</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicInteger</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>capacity</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>capacity</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>readLatch</color> <color=#f92672>=</color> <color=#f8f8f2>LatchFactory</color><color=#f8f8f2>.</color><color=#a6e22e>createExclusiveLatch</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>DEBUG_NAME</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*collectStats*/</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>env</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>reinit</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used by LogManager for the case when we have a temporary buffer in hand</color>
+<color=#75715e>   * and no LogBuffers in the LogBufferPool are large enough to hold the</color>
+<color=#75715e>   * current entry being written.  We just wrap the temporary ByteBuffer</color>
+<color=#75715e>   * in a LogBuffer and pass it to FileManager. [#12674].</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>LogBuffer</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>firstLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>buffer</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>firstLsn</color> <color=#f92672>=</color> <color=#f8f8f2>firstLsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastLsn</color> <color=#f92672>=</color> <color=#f8f8f2>firstLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>rewriteAllowed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The LWL and buffer pool latch must be held. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>reinit</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>acquireExclusive</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>firstLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>lastLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>rewriteAllowed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>writePinCount</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Write support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return first LSN held in this buffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL or readLatch must be held.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getFirstLsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>firstLsn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Register the LSN for a buffer segment that has been allocated in this buffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL and readLatch must be held.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>registerLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>isExclusiveOwner</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>lastLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#e6db74>"lsn="</color> <color=#f92672>+</color> <color=#f8f8f2>lsn</color> <color=#f92672>+</color> <color=#e6db74>" lastlsn="</color> <color=#f92672>+</color> <color=#f8f8f2>lastLsn</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>lastLsn</color> <color=#f92672>=</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>firstLsn</color> <color=#f92672>=</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Check capacity of buffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL or readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if this buffer can hold this many more bytes.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>hasRoom</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>numBytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>numBytes</color> <color=#f92672><=</color> <color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>capacity</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the buffer for read access (although some tests may write to the buffer).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL or readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the actual data buffer.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>getDataBuffer</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The LWL or readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return capacity in bytes</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>int</color> <color=#a6e22e>getCapacity</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>capacity</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Read support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Support for reading out of a still-in-memory log. Can be used to determine if a log entry with</color>
+<color=#75715e>   * a given LSN is contained in this buffer, or whether an arbitrary LSN location is present in the</color>
+<color=#75715e>   * buffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>No latches need be held. The buffer is latched for read if true is returned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method must wait until the buffer's pin count goes to zero. When writing is active and</color>
+<color=#75715e>   * this is the currentWriteBuffer, it may have to wait until the buffer is full.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return true if this buffer holds the data at this LSN location. If true is returned, the</color>
+<color=#75715e>   *     buffer will be latched for read. Returns false if LSN is not here, and releases the read</color>
+<color=#75715e>   *     latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>containsLsn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>lsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Latch before we look at the LSNs. We do not have to wait</color>
+<color=#75715e>     * for zero to check the LSN field but need to have the count</color>
+<color=#75715e>     * zero for a reader to read the buffer.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>waitForZeroAndLatch</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>found</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>firstLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>firstLsn</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>contentSize</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Buffer was flipped for reading. */</color>
+        <color=#f8f8f2>contentSize</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>limit</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Buffer is still being written into. */</color>
+        <color=#f8f8f2>contentSize</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>firstLsnOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>firstLsn</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastContentOffset</color> <color=#f92672>=</color> <color=#f8f8f2>firstLsnOffset</color> <color=#f92672>+</color> <color=#f8f8f2>contentSize</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>firstLsnOffset</color> <color=#f92672><=</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastContentOffset</color> <color=#f92672>></color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>found</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>found</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Acquires the readLatch, providing exclusive access to the buffer. When modifying the buffer,</color>
+<color=#75715e>   * both the LWL and buffer latch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that containsLsn() acquires the latch for reading.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Call release() to release the latch.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>TODO: It would be possible to use a shared buffer latch to allow concurrent access by</color>
+<color=#75715e>   * multiple readers. The access rules for would then be: - Write access requires holding both the</color>
+<color=#75715e>   * LWL and the buffer latch EX. - Read access requires holding either the LWL or the buffer latch</color>
+<color=#75715e>   * SH. Note that LogBufferPool.bumpCurrent calls latchForWrite, but it may actually only need read</color>
+<color=#75715e>   * access.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>latchForWrite</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>acquireExclusive</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * LogSource support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Releases the readLatch.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see LogSource#release</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>release</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>releaseIfOwner</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>boolean</color> <color=#a6e22e>getRewriteAllowed</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>rewriteAllowed</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>setRewriteAllowed</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>rewriteAllowed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Allocate a segment out of the buffer.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL and readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param size of buffer to allocate</color>
+<color=#75715e>   * @return null if not enough room, otherwise a LogBufferSegment for the data.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogBufferSegment</color> <color=#a6e22e>allocate</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>isExclusiveOwner</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>hasRoom</color><color=#f8f8f2>(</color><color=#f8f8f2>size</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#f8f8f2>ByteBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>wrap</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(),</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>(</color><color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>writePinCount</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogBufferSegment</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Called with the buffer not latched. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>free</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>writePinCount</color><color=#f8f8f2>.</color><color=#a6e22e>decrementAndGet</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Acquire the buffer latched and with the buffer pin count equal to zero. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>waitForZeroAndLatch</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>done</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>done</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>writePinCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LockSupport</color><color=#f8f8f2>.</color><color=#a6e22e>parkNanos</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#ae81ff>100</color><color=#f8f8f2>);</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * This may be overkill to check if a thread was</color>
+<color=#75715e>         * interrupted. There should be no interrupt of the</color>
+<color=#75715e>         * thread pinning and unpinning the buffer.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Thread</color><color=#f8f8f2>.</color><color=#a6e22e>interrupted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ThreadInterruptedException</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#e6db74>"Interrupt during read operation"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>acquireExclusive</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>writePinCount</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>done</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>readLatch</color><color=#f8f8f2>.</color><color=#a6e22e>release</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Make a copy of this buffer (doesn't copy data, only buffer state) and position it to read the</color>
+<color=#75715e>   * requested data.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL or readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see LogSource#getBytes</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>copy</color> <color=#f92672>=</color> <color=#f8f8f2>buffer</color><color=#f8f8f2>.</color><color=#a6e22e>duplicate</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>copy</color><color=#f8f8f2>.</color><color=#a6e22e>position</color><color=#f8f8f2>((</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color> <color=#f92672>-</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>firstLsn</color><color=#f8f8f2>)));</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>copy</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Same as getBytes(long fileOffset) since buffer should always hold a whole entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The LWL or readLatch must be held.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see LogSource#getBytes</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ByteBuffer</color> <color=#a6e22e>getBytes</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>numBytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>fileOffset</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Entries in write buffers are always the current version. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"[LogBuffer firstLsn="</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>firstLsn</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

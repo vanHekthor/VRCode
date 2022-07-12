@@ -1,0 +1,491 @@
+<color=#75715e>/***</color>
+<color=#75715e> * ASM: a very small and fast Java bytecode manipulation framework</color>
+<color=#75715e> * Copyright (c) 2000-2011 INRIA, France Telecom</color>
+<color=#75715e> * All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * Redistribution and use in source and binary forms, with or without</color>
+<color=#75715e> * modification, are permitted provided that the following conditions</color>
+<color=#75715e> * are met:</color>
+<color=#75715e> * 1. Redistributions of source code must retain the above copyright</color>
+<color=#75715e> *    notice, this list of conditions and the following disclaimer.</color>
+<color=#75715e> * 2. Redistributions in binary form must reproduce the above copyright</color>
+<color=#75715e> *    notice, this list of conditions and the following disclaimer in the</color>
+<color=#75715e> *    documentation and/or other materials provided with the distribution.</color>
+<color=#75715e> * 3. Neither the name of the copyright holders nor the names of its</color>
+<color=#75715e> *    contributors may be used to endorse or promote products derived from</color>
+<color=#75715e> *    this software without specific prior written permission.</color>
+<color=#75715e> *</color>
+<color=#75715e> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</color>
+<color=#75715e> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</color>
+<color=#75715e> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</color>
+<color=#75715e> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</color>
+<color=#75715e> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</color>
+<color=#75715e> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</color>
+<color=#75715e> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</color>
+<color=#75715e> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</color>
+<color=#75715e> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</color>
+<color=#75715e> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF</color>
+<color=#75715e> * THE POSSIBILITY OF SUCH DAMAGE.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.asm</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A label represents a position in the bytecode of a method. Labels are used for jump, goto, and</color>
+<color=#75715e> * switch instructions, and for try catch blocks. A label designates the <i>instruction</i> that is</color>
+<color=#75715e> * just after. Note however that there can be other elements between a label and the instruction it</color>
+<color=#75715e> * designates (such as other labels, stack map frames, line numbers, etc.).</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Eric Bruneton</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Label</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates if this label is only used for debug attributes. Such a label is not the start of a</color>
+<color=#75715e>   * basic block, the target of a jump instruction, or an exception handler. It can be safely</color>
+<color=#75715e>   * ignored in control flow graph analysis algorithms (for optimization purposes).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>DEBUG</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if the position of this label is known. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>RESOLVED</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if this label has been updated, after instruction resizing. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>RESIZED</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates if this basic block has been pushed in the basic block stack. See {@link</color>
+<color=#75715e>   * MethodWriter#visitMaxs visitMaxs}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>PUSHED</color> <color=#f92672>=</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates if this label is the target of a jump instruction, or the start of an exception</color>
+<color=#75715e>   * handler.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>TARGET</color> <color=#f92672>=</color> <color=#ae81ff>16</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if a stack map frame must be stored for this label. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>STORE</color> <color=#f92672>=</color> <color=#ae81ff>32</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if this label corresponds to a reachable basic block. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>REACHABLE</color> <color=#f92672>=</color> <color=#ae81ff>64</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if this basic block ends with a JSR instruction. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>JSR</color> <color=#f92672>=</color> <color=#ae81ff>128</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if this basic block ends with a RET instruction. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>RET</color> <color=#f92672>=</color> <color=#ae81ff>256</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Indicates if this basic block is the start of a subroutine. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SUBROUTINE</color> <color=#f92672>=</color> <color=#ae81ff>512</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates if this subroutine basic block has been visited by a visitSubroutine(null, ...) call.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>VISITED</color> <color=#f92672>=</color> <color=#ae81ff>1024</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Indicates if this subroutine basic block has been visited by a visitSubroutine(!null, ...)</color>
+<color=#75715e>   * call.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>VISITED2</color> <color=#f92672>=</color> <color=#ae81ff>2048</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Field used to associate user information to a label. Warning: this field is used by the ASM</color>
+<color=#75715e>   * tree package. In order to use it with the ASM tree package you must override the {@link</color>
+<color=#75715e>   * org.objectweb.asm.tree.MethodNode#getLabelNode} method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flags that indicate the status of this label.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #DEBUG</color>
+<color=#75715e>   * @see #RESOLVED</color>
+<color=#75715e>   * @see #RESIZED</color>
+<color=#75715e>   * @see #PUSHED</color>
+<color=#75715e>   * @see #TARGET</color>
+<color=#75715e>   * @see #STORE</color>
+<color=#75715e>   * @see #REACHABLE</color>
+<color=#75715e>   * @see #JSR</color>
+<color=#75715e>   * @see #RET</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>status</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The line number corresponding to this label, if known. */</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>line</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The position of this label in the code, if known. */</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>position</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Number of forward references to this label, times two. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>referenceCount</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Informations about forward references. Each forward reference is described by two consecutive</color>
+<color=#75715e>   * integers in this array: the first one is the position of the first byte of the bytecode</color>
+<color=#75715e>   * instruction that contains the forward reference, while the second is the position of the first</color>
+<color=#75715e>   * byte of the forward reference itself. In fact the sign of the first integer indicates if this</color>
+<color=#75715e>   * reference uses 2 or 4 bytes, and its absolute value gives the position of the bytecode</color>
+<color=#75715e>   * instruction. This array is also used as a bitset to store the subroutines to which a basic</color>
+<color=#75715e>   * block belongs. This information is needed in {@linked MethodWriter#visitMaxs}, after all</color>
+<color=#75715e>   * forward references have been resolved. Hence the same array can be used for both purposes</color>
+<color=#75715e>   * without problems.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Fields for the control flow and data flow graph analysis algorithms (used</color>
+<color=#75715e>   * to compute the maximum stack size or the stack map frames). A control</color>
+<color=#75715e>   * flow graph contains one node per "basic block", and one edge per "jump"</color>
+<color=#75715e>   * from one basic block to another. Each node (i.e., each basic block) is</color>
+<color=#75715e>   * represented by the Label object that corresponds to the first instruction</color>
+<color=#75715e>   * of this basic block. Each node also stores the list of its successors in</color>
+<color=#75715e>   * the graph, as a linked list of Edge objects.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The control flow analysis algorithms used to compute the maximum stack</color>
+<color=#75715e>   * size or the stack map frames are similar and use two steps. The first</color>
+<color=#75715e>   * step, during the visit of each instruction, builds information about the</color>
+<color=#75715e>   * state of the local variables and the operand stack at the end of each</color>
+<color=#75715e>   * basic block, called the "output frame", <i>relatively</i> to the frame</color>
+<color=#75715e>   * state at the beginning of the basic block, which is called the "input</color>
+<color=#75715e>   * frame", and which is <i>unknown</i> during this step. The second step, in</color>
+<color=#75715e>   * {@link MethodWriter#visitMaxs}, is a fix point algorithm that computes</color>
+<color=#75715e>   * information about the input frame of each basic block, from the input</color>
+<color=#75715e>   * state of the first basic block (known from the method signature), and by</color>
+<color=#75715e>   * the using the previously computed relative output frames.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The algorithm used to compute the maximum stack size only computes the</color>
+<color=#75715e>   * relative output and absolute input stack heights, while the algorithm</color>
+<color=#75715e>   * used to compute stack map frames computes relative output frames and</color>
+<color=#75715e>   * absolute input frames.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Start of the output stack relatively to the input stack. The exact semantics of this field</color>
+<color=#75715e>   * depends on the algorithm that is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When only the maximum stack size is computed, this field is the number of elements in the</color>
+<color=#75715e>   * input stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When the stack map frames are completely computed, this field is the offset of the first</color>
+<color=#75715e>   * output stack element relatively to the top of the input stack. This offset is always negative</color>
+<color=#75715e>   * or null. A null offset means that the output stack must be appended to the input stack. A -n</color>
+<color=#75715e>   * offset means that the first n output stack elements must replace the top n input stack</color>
+<color=#75715e>   * elements, and that the other elements must be appended to the input stack.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>inputStackTop</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Maximum height reached by the output stack, relatively to the top of the input stack. This</color>
+<color=#75715e>   * maximum is always positive or null.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>int</color> <color=#f8f8f2>outputStackMax</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Information about the input and output stack map frames of this basic block. This field is only</color>
+<color=#75715e>   * used when {@link ClassWriter#COMPUTE_FRAMES} option is used.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Frame</color> <color=#f8f8f2>frame</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The successor of this label, in the order they are visited. This linked list does not include</color>
+<color=#75715e>   * labels used for debug info only. If {@link ClassWriter#COMPUTE_FRAMES} option is used then, in</color>
+<color=#75715e>   * addition, it does not contain successive labels that denote the same bytecode position (in this</color>
+<color=#75715e>   * case only the first label appears in this list).</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Label</color> <color=#f8f8f2>successor</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The successors of this node in the control flow graph. These successors are stored in a linked</color>
+<color=#75715e>   * list of {@link Edge Edge} objects, linked to each other by their {@link Edge#next} field.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Edge</color> <color=#f8f8f2>successors</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The next basic block in the basic block stack. This stack is used in the main loop of the fix</color>
+<color=#75715e>   * point algorithm used in the second step of the control flow analysis algorithms. It is also</color>
+<color=#75715e>   * used in {@link #visitSubroutine} to avoid using a recursive method.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see MethodWriter#visitMaxs</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Label</color> <color=#f8f8f2>next</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+  <color=#75715e>// Constructor</color>
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+
+  <color=#75715e>/** Constructs a new label. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>Label</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+  <color=#75715e>// Methods to compute offsets and to manage forward references</color>
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the offset corresponding to this label. This offset is computed from the start of the</color>
+<color=#75715e>   * method's bytecode. <i>This method is intended for {@link Attribute} sub classes, and is</color>
+<color=#75715e>   * normally not needed by class generators or adapters.</i></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the offset corresponding to this label.</color>
+<color=#75715e>   * @throws IllegalStateException if this label is not resolved yet.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>status</color> <color=#f92672>&</color> <color=#f8f8f2>RESOLVED</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Label offset position has not been resolved yet"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>position</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Puts a reference to this label in the bytecode of a method. If the position of the label is</color>
+<color=#75715e>   * known, the offset is computed and written directly. Otherwise, a null offset is written and a</color>
+<color=#75715e>   * new forward reference is declared for this label.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param owner the code writer that calls this method.</color>
+<color=#75715e>   * @param out the bytecode of the method.</color>
+<color=#75715e>   * @param source the position of first byte of the bytecode instruction that contains this label.</color>
+<color=#75715e>   * @param wideOffset <tt>true</tt> if the reference must be stored in 4 bytes, or <tt>false</tt></color>
+<color=#75715e>   *     if it must be stored with 2 bytes.</color>
+<color=#75715e>   * @throws IllegalArgumentException if this label has not been created by the given code writer.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>MethodWriter</color> <color=#f8f8f2>owner</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>ByteVector</color> <color=#f8f8f2>out</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>source</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>wideOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>status</color> <color=#f92672>&</color> <color=#f8f8f2>RESOLVED</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>wideOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>addReference</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color> <color=#f92672>-</color> <color=#f8f8f2>source</color><color=#f8f8f2>,</color> <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>putInt</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>addReference</color><color=#f8f8f2>(</color><color=#f8f8f2>source</color><color=#f8f8f2>,</color> <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>putShort</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>wideOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>putInt</color><color=#f8f8f2>(</color><color=#f8f8f2>position</color> <color=#f92672>-</color> <color=#f8f8f2>source</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>out</color><color=#f8f8f2>.</color><color=#a6e22e>putShort</color><color=#f8f8f2>(</color><color=#f8f8f2>position</color> <color=#f92672>-</color> <color=#f8f8f2>source</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Adds a forward reference to this label. This method must be called only for a true forward</color>
+<color=#75715e>   * reference, i.e. only if this label is not resolved yet. For backward references, the offset of</color>
+<color=#75715e>   * the reference can be, and must be, computed and stored directly.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param sourcePosition the position of the referencing instruction. This position will be used</color>
+<color=#75715e>   *     to compute the offset of this forward reference.</color>
+<color=#75715e>   * @param referencePosition the position where the offset for this forward reference must be</color>
+<color=#75715e>   *     stored.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addReference</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>sourcePosition</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>referencePosition</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcAndRefPositions</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>srcAndRefPositions</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>6</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>referenceCount</color> <color=#f92672>>=</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>a</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#ae81ff>6</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>a</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>srcAndRefPositions</color> <color=#f92672>=</color> <color=#f8f8f2>a</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>referenceCount</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>sourcePosition</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>referenceCount</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>referencePosition</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Resolves all forward references to this label. This method must be called when this label is</color>
+<color=#75715e>   * added to the bytecode of the method, i.e. when its position becomes known. This method fills in</color>
+<color=#75715e>   * the blanks that where left in the bytecode by each forward reference previously added to this</color>
+<color=#75715e>   * label.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param owner the code writer that calls this method.</color>
+<color=#75715e>   * @param position the position of this label in the bytecode.</color>
+<color=#75715e>   * @param data the bytecode of the method.</color>
+<color=#75715e>   * @return <tt>true</tt> if a blank that was left for this label was to small to store the offset.</color>
+<color=#75715e>   *     In such a case the corresponding jump instruction is replaced with a pseudo instruction</color>
+<color=#75715e>   *     (using unused opcodes) using an unsigned two bytes offset. These pseudo instructions will</color>
+<color=#75715e>   *     need to be replaced with true instructions with wider offsets (4 bytes instead of 2). This</color>
+<color=#75715e>   *     is done in {@link MethodWriter#resizeInstructions}.</color>
+<color=#75715e>   * @throws IllegalArgumentException if this label has already been resolved, or if it has not been</color>
+<color=#75715e>   *     created by the given code writer.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>resolve</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>MethodWriter</color> <color=#f8f8f2>owner</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>position</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>needUpdate</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>|=</color> <color=#f8f8f2>RESOLVED</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>position</color> <color=#f92672>=</color> <color=#f8f8f2>position</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>referenceCount</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>source</color> <color=#f92672>=</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>reference</color> <color=#f92672>=</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>offset</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>source</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>offset</color> <color=#f92672>=</color> <color=#f8f8f2>position</color> <color=#f92672>-</color> <color=#f8f8f2>source</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672><</color> <color=#f8f8f2>Short</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_VALUE</color> <color=#f92672>||</color> <color=#f8f8f2>offset</color> <color=#f92672>></color> <color=#f8f8f2>Short</color><color=#f8f8f2>.</color><color=#a6e22e>MAX_VALUE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * changes the opcode of the jump instruction, in order to</color>
+<color=#75715e>           * be able to find it later (see resizeInstructions in</color>
+<color=#75715e>           * MethodWriter). These temporary opcodes are similar to</color>
+<color=#75715e>           * jump instruction opcodes, except that the 2 bytes offset</color>
+<color=#75715e>           * is unsigned (and can therefore represent values from 0 to</color>
+<color=#75715e>           * 65535, which is sufficient since the size of a method is</color>
+<color=#75715e>           * limited to 65535 bytes).</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>int</color> <color=#f8f8f2>opcode</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#ae81ff>0xFF</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color> <color=#f92672><=</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>JSR</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>// changes IFEQ ... JSR to opcodes 202 to 217</color>
+            <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color> <color=#f92672>+</color> <color=#ae81ff>49</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#75715e>// changes IFNULL and IFNONNULL to opcodes 218 and 219</color>
+            <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color> <color=#f92672>+</color> <color=#ae81ff>20</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>needUpdate</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672>>>></color> <color=#ae81ff>8</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>offset</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>offset</color> <color=#f92672>=</color> <color=#f8f8f2>position</color> <color=#f92672>+</color> <color=#f8f8f2>source</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672>>>></color> <color=#ae81ff>24</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672>>>></color> <color=#ae81ff>16</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672>>>></color> <color=#ae81ff>8</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>data</color><color=#f92672>[</color><color=#f8f8f2>reference</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#f8f8f2>offset</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>needUpdate</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the first label of the series to which this label belongs. For an isolated label or for</color>
+<color=#75715e>   * the first label in a series of successive labels, this method returns the label itself. For</color>
+<color=#75715e>   * other labels it returns the first label of the series.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the first label of the series to which this label belongs.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>Label</color> <color=#a6e22e>getFirst</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f92672>!</color><color=#f8f8f2>ClassReader</color><color=#f8f8f2>.</color><color=#a6e22e>FRAMES</color> <color=#f92672>||</color> <color=#f8f8f2>frame</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#66d9ef>this</color> <color=#f8f8f2>:</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>owner</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+  <color=#75715e>// Methods related to subroutines</color>
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true is this basic block belongs to the given subroutine.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param id a subroutine id.</color>
+<color=#75715e>   * @return true is this basic block belongs to the given subroutine.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>inSubroutine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>id</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>status</color> <color=#f92672>&</color> <color=#f8f8f2>Label</color><color=#f8f8f2>.</color><color=#a6e22e>VISITED</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>id</color> <color=#f92672>>>></color> <color=#ae81ff>32</color><color=#f8f8f2>)</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>id</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if this basic block and the given one belong to a common subroutine.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param block another basic block.</color>
+<color=#75715e>   * @return true if this basic block and the given one belong to a common subroutine.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>inSameSubroutine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Label</color> <color=#f8f8f2>block</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>status</color> <color=#f92672>&</color> <color=#f8f8f2>VISITED</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>block</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>&</color> <color=#f8f8f2>VISITED</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>srcAndRefPositions</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>&</color> <color=#f8f8f2>block</color><color=#f8f8f2>.</color><color=#a6e22e>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Marks this basic block as belonging to the given subroutine.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param id a subroutine id.</color>
+<color=#75715e>   * @param nbSubroutines the total number of subroutines in the method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>addToSubroutine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>id</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nbSubroutines</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>status</color> <color=#f92672>&</color> <color=#f8f8f2>VISITED</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>status</color> <color=#f92672>|=</color> <color=#f8f8f2>VISITED</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>srcAndRefPositions</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>nbSubroutines</color> <color=#f92672>/</color> <color=#ae81ff>32</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>srcAndRefPositions</color><color=#f92672>[</color><color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>id</color> <color=#f92672>>>></color> <color=#ae81ff>32</color><color=#f8f8f2>)</color><color=#f92672>]</color> <color=#f92672>|=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>id</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Finds the basic blocks that belong to a given subroutine, and marks these blocks as belonging</color>
+<color=#75715e>   * to this subroutine. This method follows the control flow graph to find all the blocks that are</color>
+<color=#75715e>   * reachable from the current block WITHOUT following any JSR target.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param JSR a JSR block that jumps to this subroutine. If this JSR is not null it is added to</color>
+<color=#75715e>   *     the successor of the RET blocks found in the subroutine.</color>
+<color=#75715e>   * @param id the id of this subroutine.</color>
+<color=#75715e>   * @param nbSubroutines the total number of subroutines in the method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>visitSubroutine</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Label</color> <color=#f8f8f2>JSR</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>id</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nbSubroutines</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// user managed stack of labels, to avoid using a recursive method</color>
+    <color=#75715e>// (recursivity can lead to stack overflow with very large methods)</color>
+    <color=#f8f8f2>Label</color> <color=#f8f8f2>stack</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>stack</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// removes a label l from the stack</color>
+      <color=#f8f8f2>Label</color> <color=#f8f8f2>l</color> <color=#f92672>=</color> <color=#f8f8f2>stack</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>stack</color> <color=#f92672>=</color> <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>next</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>JSR</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>&</color> <color=#f8f8f2>VISITED2</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>|=</color> <color=#f8f8f2>VISITED2</color><color=#f8f8f2>;</color>
+        <color=#75715e>// adds JSR to the successors of l, if it is a RET block</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>&</color> <color=#f8f8f2>RET</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>inSameSubroutine</color><color=#f8f8f2>(</color><color=#f8f8f2>JSR</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>Edge</color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Edge</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>info</color> <color=#f92672>=</color> <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>inputStackTop</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>successor</color> <color=#f92672>=</color> <color=#f8f8f2>JSR</color><color=#f8f8f2>.</color><color=#a6e22e>successors</color><color=#f8f8f2>.</color><color=#a6e22e>successor</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>next</color> <color=#f92672>=</color> <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>successors</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>successors</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if the l block already belongs to subroutine 'id', continue</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>inSubroutine</color><color=#f8f8f2>(</color><color=#f8f8f2>id</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#75715e>// marks the l block as belonging to subroutine 'id'</color>
+        <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>addToSubroutine</color><color=#f8f8f2>(</color><color=#f8f8f2>id</color><color=#f8f8f2>,</color> <color=#f8f8f2>nbSubroutines</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>// pushes each successor of l on the stack, except JSR targets</color>
+      <color=#f8f8f2>Edge</color> <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>successors</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if the l block is a JSR block, then 'l.successors.next' leads</color>
+        <color=#75715e>// to the JSR target (see {@link #visitJumpInsn}) and must</color>
+        <color=#75715e>// therefore not be followed</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>status</color> <color=#f92672>&</color> <color=#f8f8f2>Label</color><color=#f8f8f2>.</color><color=#a6e22e>JSR</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>e</color> <color=#f92672>!=</color> <color=#f8f8f2>l</color><color=#f8f8f2>.</color><color=#a6e22e>successors</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>// pushes e.successor on the stack if it not already added</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>successor</color><color=#f8f8f2>.</color><color=#a6e22e>next</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>successor</color><color=#f8f8f2>.</color><color=#a6e22e>next</color> <color=#f92672>=</color> <color=#f8f8f2>stack</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>stack</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>successor</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>e</color> <color=#f92672>=</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+  <color=#75715e>// Overriden Object methods</color>
+  <color=#75715e>// ------------------------------------------------------------------------</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a string representation of this label.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a string representation of this label.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"L"</color> <color=#f92672>+</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>identityHashCode</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

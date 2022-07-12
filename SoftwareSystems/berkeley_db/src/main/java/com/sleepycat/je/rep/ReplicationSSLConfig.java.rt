@@ -1,0 +1,1103 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentConfig</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.ConfigParam</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbConfigManager</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.InstanceParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.PasswordSource</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.SSLAuthenticator</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collections</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Properties</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * @hidden SSL deferred Specifies the parameters that control replication network communication</color>
+<color=#75715e> *     within a replicated environment using SSL. The parameters contained here are immutable.</color>
+<color=#75715e> *     <p>To change the default settings for a replicated environment, an application creates a</color>
+<color=#75715e> *     configuration object, customizes settings and uses it for {@link ReplicatedEnvironment}</color>
+<color=#75715e> *     construction. Except as noted, the set methods of this class perform only minimal validation</color>
+<color=#75715e> *     of configuration values when the method is called, and value checking is deferred until the</color>
+<color=#75715e> *     time a DataChannel factory is constructed. An IllegalArgumentException is thrown if the value</color>
+<color=#75715e> *     is not valid for that attribute.</color>
+<color=#75715e> *     <p>ReplicationSSLkConfig follows precedence rules similar to those of {@link</color>
+<color=#75715e> *     EnvironmentConfig}.</color>
+<color=#75715e> *     <ol></color>
+<color=#75715e> *       <li>Configuration parameters specified in {@literal <environmentHome>/je.properties} take</color>
+<color=#75715e> *           first precedence.</color>
+<color=#75715e> *       <li>Configuration parameters set in the ReplicationSSLConfig object used at {@code</color>
+<color=#75715e> *           ReplicatedEnvironment} construction are next.</color>
+<color=#75715e> *       <li>Any configuration parameters not set by the application are set to system defaults,</color>
+<color=#75715e> *           described along with the parameter name String constants in this class.</color>
+<color=#75715e> *     </ol></color>
+<color=#75715e> *     <p></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>ReplicationSSLConfig</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1L</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Note: all replicated parameters should start with</color>
+<color=#75715e>   * EnvironmentParams.REP_PARAMS_PREFIX, which is "je.rep.",</color>
+<color=#75715e>   * see SR [#19080].</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Configures the type of communication channel to use. Valid values for this parameter are:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li><code>ssl</code></color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <code>ssl</code> indicates that SSL is to be used for service communication. Using SSL normally</color>
+<color=#75715e>   * provides both encryption and authentication. This option supports numerous associated</color>
+<color=#75715e>   * configuration parameters. It requires, at a minimum, that a Java keystore and associated</color>
+<color=#75715e>   * keystore password be supplied. The keystore password can be supplied using multiple methods,</color>
+<color=#75715e>   * considered in the following order:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>{@link #setSSLKeyStorePasswordSource} {@link #SSL_KEYSTORE_PASSWORD_CLASS</color>
+<color=#75715e>   * je.rep.ssl.keyStorePasswordClass} {@link #setSSLKeyStorePassword} {@link #SSL_KEYSTORE_PASSWORD</color>
+<color=#75715e>   * je.rep.ssl.keyStorePassword} The <code>javax.net.ssl.keyStorePassword</code> system property</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The properties supported by the supplied SSL channel factory are:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <pre></color>
+<color=#75715e>   *   {@link #SSL_KEYSTORE_FILE je.rep.ssl.keyStoreFile}</color>
+<color=#75715e>   *   {@link #SSL_KEYSTORE_PASSWORD_CLASS je.rep.ssl.keyStorePasswordClass}</color>
+<color=#75715e>   *   {@link #SSL_KEYSTORE_PASSWORD_PARAMS je.rep.ssl.keyStorePasswordParams}</color>
+<color=#75715e>   *   {@link #SSL_KEYSTORE_PASSWORD je.rep.ssl.keyStorePassword}</color>
+<color=#75715e>   *   {@link #SSL_KEYSTORE_TYPE je.rep.ssl.keyStoreType}</color>
+<color=#75715e>   *   {@link #SSL_CLIENT_KEY_ALIAS je.rep.ssl.clientKeyAlias}</color>
+<color=#75715e>   *   {@link #SSL_SERVER_KEY_ALIAS je.rep.ssl.serverKeyAlias}</color>
+<color=#75715e>   *   {@link #SSL_TRUSTSTORE_FILE je.rep.ssl.trustStoreFile}</color>
+<color=#75715e>   *   {@link #SSL_TRUSTSTORE_TYPE je.rep.ssl.trustStoreType}</color>
+<color=#75715e>   *   {@link #SSL_CIPHER_SUITES je.rep.ssl.cipherSuites}</color>
+<color=#75715e>   *   {@link #SSL_PROTOCOLS je.rep.ssl.protocols}</color>
+<color=#75715e>   *   {@link #SSL_AUTHENTICATOR je.rep.ssl.authenticator}</color>
+<color=#75715e>   *   {@link #SSL_AUTHENTICATOR_CLASS je.rep.ssl.authenticatorClass}</color>
+<color=#75715e>   *   {@link #SSL_AUTHENTICATOR_PARAMS je.rep.ssl.authenticatorParams}</color>
+<color=#75715e>   *   {@link #SSL_HOST_VERIFIER je.rep.ssl.hostVerifier}</color>
+<color=#75715e>   *   {@link #SSL_HOST_VERIFIER_CLASS je.rep.ssl.hostVerifierClass}</color>
+<color=#75715e>   *   {@link #SSL_HOST_VERIFIER_PARAMS je.rep.ssl.hostVerifierParams}</color>
+<color=#75715e>   * </pre></color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The path to the Java keystore file for SSL data channnel factories. The specified path must be</color>
+<color=#75715e>   * absolute. If this parameter is not set or has an empty value, the Java system property <code></color>
+<color=#75715e>   * javax.net.ssl.keyStore</code> is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_KEYSTORE_FILE</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.keyStoreFile"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The password for accessing the Java keystore file for SSL data channnel factories. If this</color>
+<color=#75715e>   * parameter is not set or has an empty value, the Java system property <code></color>
+<color=#75715e>   * javax.net.ssl.keyStorePassword</code> is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.keyStorePassword"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A class that will be instantiated in order to retrieve a password that allows access to the</color>
+<color=#75715e>   * keystore file. The class must implement the <code>com.sleepycat.je.rep.net.PasswordSource</color>
+<color=#75715e>   * </code> interface.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD_CLASS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.keyStorePasswordClass"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A string encoding the parameters for configuring the password class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_KEYSTORE_PASSWORD_PARAMS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.keyStorePasswordParams"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The type of the Java keystore file. This is used to determine what keystore implementation</color>
+<color=#75715e>   * should be used to manipulate the named keystore file. If set to a non-empty value, the value</color>
+<color=#75715e>   * must be a valid keystore type for the Java environment. If this parameter is not set to a</color>
+<color=#75715e>   * non-empty value, the default Java keystore type is assumed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_KEYSTORE_TYPE</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.keyStoreType"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The alias name of the preferred key for use by the service dispatcher acting in SSL server</color>
+<color=#75715e>   * mode. When not set to a non-empty value and the keystore contains multiple key options, the key</color>
+<color=#75715e>   * selection algorithm is unspecified.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_SERVER_KEY_ALIAS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.serverKeyAlias"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The alias name of the preferred key for use by a client connecting to the service dispatcher.</color>
+<color=#75715e>   * When not set to a non-empty value and the keystore contains multiple key options, the key</color>
+<color=#75715e>   * selection algorithm is unspecified.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_CLIENT_KEY_ALIAS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.clientKeyAlias"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The path to the Java truststore file for SSL data channel factories. The specified path must be</color>
+<color=#75715e>   * absolute. If this parameter is not set to a non-empty value, the Java system property <code></color>
+<color=#75715e>   * javax.net.ssl.trustStore</code> is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_TRUSTSTORE_FILE</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.trustStoreFile"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The type of the Java truststore file. This is used to determine what keystore implementation</color>
+<color=#75715e>   * should be used to manipulate the named keystore file. If set to a non-empty value, the value</color>
+<color=#75715e>   * must be a valid keystore type for the Java environment. If this parameter is not set to a</color>
+<color=#75715e>   * non-empty value, the default Java keystore type is assumed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>"JKS"</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_TRUSTSTORE_TYPE</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.trustStoreType"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The list of SSL cipher suites that are acceptable for SSL data channel factories. The cipher</color>
+<color=#75715e>   * suite list must be in comma-delimited form. If this parameter is not set to a non-empty value,</color>
+<color=#75715e>   * the Java default set of enabled cipher suites is allowed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_CIPHER_SUITES</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.cipherSuites"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The list of SSL protocols that are acceptable for SSL data channel factories. The protocol list</color>
+<color=#75715e>   * must be in comma-delimited form. If not specified, the default type selected is TBD: TLSv1.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_PROTOCOLS</color> <color=#f92672>=</color> <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.protocols"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The specification for an SSL authenicator. The authenticator can be configured in one of the</color>
+<color=#75715e>   * following ways:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li><code>mirror</code></color>
+<color=#75715e>   *   <li><code>dnmatch(</code>&lt;Regular Expression&gt;<code>)</code></color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The <code>mirror</code> option causes the authenticator to check that the Distinguished</color>
+<color=#75715e>   * Name(DN) in the certificate of the incoming client connection matches the DN of the certificate</color>
+<color=#75715e>   * that this server presents when connecting as a client to another server.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The <code>dnmatch()</code> option causes the authenticator to check that the DN in the</color>
+<color=#75715e>   * certificate of the incoming client connection matches the regular expression provided in the</color>
+<color=#75715e>   * dnmatch() specification.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Do not configure both the SSL authenticator and the SSL authenticator class, or an exception</color>
+<color=#75715e>   * will be thrown during DataChannelFactory instantiation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_AUTHENTICATOR</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.authenticator"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The string identifying a class to be instantiated to check whether incoming client SSL</color>
+<color=#75715e>   * connections are to be trusted. If specified, the string must be a fully qualified Java class</color>
+<color=#75715e>   * name for a class that implements the {@link SSLAuthenticator} interface and provides a public</color>
+<color=#75715e>   * constructor with an argument list of the form ( {@link InstanceParams} ).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Do not configure both the SSL authenticator and the SSL authenticator class, or an exception</color>
+<color=#75715e>   * will be thrown during DataChannelFactory instantiation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_AUTHENTICATOR_CLASS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.authenticatorClass"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A string encoding the parameters for configuring the authenticator class.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_AUTHENTICATOR_PARAMS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.authenticatorParams"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The configuration to be used for verifying the certificate of a server when a connection is</color>
+<color=#75715e>   * made.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The verifier can be configured in one of the following ways:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <ul></color>
+<color=#75715e>   *   <li><code>hostname</code></color>
+<color=#75715e>   *   <li><code>mirror</code></color>
+<color=#75715e>   *   <li><code>dnmatch(</code>&lt;Regular Expression&gt;<code>)</code></color>
+<color=#75715e>   * </ul></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The <code>hostname</code> option causes the verifier to check that the Distinguished</color>
+<color=#75715e>   * Name(DN) or one of the Subject Alternative Names in the certificate presented by the server</color>
+<color=#75715e>   * contains the hostname that was the target of the connection attempt. This assumes that server</color>
+<color=#75715e>   * certificates are unique per server.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The <code>mirror</code> option causes the verifier to check that the Distinguished Name(DN)</color>
+<color=#75715e>   * in the certificate of the server matches the DN of the certificate that this server presents to</color>
+<color=#75715e>   * incoming client connections. This assumes that all servers have equivalent certificates.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The <code>dnmatch()</code> option causes the verifier to check that the DN in the</color>
+<color=#75715e>   * certificate of the server matches the regular expression string provided in the dnmatch()</color>
+<color=#75715e>   * specification.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Do not configure both the SSL host verifier and the SSL host verifier class, or an exception</color>
+<color=#75715e>   * will be thrown during DataChannelFactory instantiation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_HOST_VERIFIER</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.hostVerifier"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The class to be instantiated to check whether the target host of a connection initiated by a</color>
+<color=#75715e>   * client is to be trusted. If specified, the string must be a fully qualified Java class name for</color>
+<color=#75715e>   * a class that implements the <code>javax.net.ssl.HostnameVerifier</code> interface and provides</color>
+<color=#75715e>   * a public constructor with an argument list of the form ({@link InstanceParams}).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Do not configure both the SSL host verifier and the SSL host verifier class, or an exception</color>
+<color=#75715e>   * will be thrown during DataChannelFactory instantiation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_HOST_VERIFIER_CLASS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.hostVerifierClass"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A string encoding the parameters for configuring the host verifier class, if needed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <table border="1"></color>
+<color=#75715e>   * <tr><td>Name</td><td>Type</td><td>Mutable</td><td>Default</td></tr></color>
+<color=#75715e>   * <tr></color>
+<color=#75715e>   * <td>{@value}</td></color>
+<color=#75715e>   * <td>String</td></color>
+<color=#75715e>   * <td>No</td></color>
+<color=#75715e>   * <td>""</td></color>
+<color=#75715e>   * </tr></color>
+<color=#75715e>   * </table></color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>SSL_HOST_VERIFIER_PARAMS</color> <color=#f92672>=</color>
+      <color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>REP_PARAM_PREFIX</color> <color=#f92672>+</color> <color=#e6db74>"ssl.hostVerifierParams"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The set of Replication properties specific to this class */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>repSSLProperties</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_KEYSTORE_FILE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_KEYSTORE_PASSWORD</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_KEYSTORE_PASSWORD_CLASS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_KEYSTORE_PASSWORD_PARAMS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_KEYSTORE_TYPE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_SERVER_KEY_ALIAS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_CLIENT_KEY_ALIAS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_TRUSTSTORE_FILE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_TRUSTSTORE_TYPE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_CIPHER_SUITES</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_PROTOCOLS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_AUTHENTICATOR</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_AUTHENTICATOR_CLASS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_AUTHENTICATOR_PARAMS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_HOST_VERIFIER</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_HOST_VERIFIER_CLASS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>SSL_HOST_VERIFIER_PARAMS</color><color=#f8f8f2>);</color>
+    <color=#75715e>/* Nail the set down */</color>
+    <color=#f8f8f2>repSSLProperties</color> <color=#f92672>=</color> <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>unmodifiableSet</color><color=#f8f8f2>(</color><color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Force loading when a ReplicationNetworkConfig is used and an</color>
+<color=#75715e>     * environment has not been created.</color>
+<color=#75715e>     */</color>
+    <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>forceLoad</color> <color=#f92672>=</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_TYPE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* The possibly null password source for keystore access */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>transient</color> <color=#f8f8f2>PasswordSource</color> <color=#f8f8f2>sslKeyStorePasswordSource</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Constructs a ReplicationSSLConfig initialized with the system default settings. Defaults are</color>
+<color=#75715e>   * documented with the string constants in this class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ReplicationSSLConfig</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates an ReplicationSSLConfig which includes the properties specified in the properties</color>
+<color=#75715e>   * parameter.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param properties Supported properties are described as the string constants in this class.</color>
+<color=#75715e>   * @throws IllegalArgumentException If any properties read from the properties parameter are</color>
+<color=#75715e>   *     invalid.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>ReplicationSSLConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>Properties</color> <color=#f8f8f2>properties</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>properties</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the channel type setting for the replication service.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the channel type</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getChannelType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"ssl"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the name of the Java KeyStore file to be used for SSL key pair retrieval.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore file name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLKeyStore</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_FILE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the name of the Java KeyStore file to be used when creating SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param filename the KeyStore filename</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStore</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>filename</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStoreVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>filename</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStoreVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>filename</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_FILE</color><color=#f8f8f2>,</color> <color=#f8f8f2>filename</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the type of the Java Keystore file to be used for SSL key pair retrieval.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore type</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLKeyStoreType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_TYPE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the type of the Java KeyStore file to be used when creating SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param keyStoreType the Keystore type</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStoreType</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>keyStoreType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStoreTypeVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>keyStoreType</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStoreTypeVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>keyStoreType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_TYPE</color><color=#f8f8f2>,</color> <color=#f8f8f2>keyStoreType</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the password for the Java KeyStore file to be used for SSL key pair retrieval.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore password</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLKeyStorePassword</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the password for the Java KeyStore file to be used when creating SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param password the KeyStore password</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStorePassword</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>password</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStorePasswordVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>password</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStorePasswordVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>password</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD</color><color=#f8f8f2>,</color> <color=#f8f8f2>password</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the name of a class that should be instantiated to retrieve the password for the Java</color>
+<color=#75715e>   * KeyStore file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore password source class name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLKeyStorePasswordClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_CLASS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the name of a class that should be instantiated to retrieve the password for the Java</color>
+<color=#75715e>   * KeyStore file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param className the name of the class</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStorePasswordClass</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStorePasswordClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>className</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStorePasswordClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>className</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_CLASS</color><color=#f8f8f2>,</color> <color=#f8f8f2>className</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a string to be used in the constructor for a keystore password source instance.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the parameter values</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLKeyStorePasswordParams</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_PARAMS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the string to be used in the constructor for a keystore password source instance.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param params a string that is to be passed to the constructor</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStorePasswordParams</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>params</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStorePasswordParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStorePasswordParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>params</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_KEYSTORE_PASSWORD_PARAMS</color><color=#f8f8f2>,</color> <color=#f8f8f2>params</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the Java KeyStore alias associated with the key that should be used to accept incoming</color>
+<color=#75715e>   * SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore alias</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLServerKeyAlias</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_SERVER_KEY_ALIAS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the alias associated with the key in the Java KeyStore file to be used when accepting</color>
+<color=#75715e>   * incoming SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param alias the KeyStore alias</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLServerKeyAlias</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>alias</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLServerKeyAliasVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>alias</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLServerKeyAliasVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>alias</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_SERVER_KEY_ALIAS</color><color=#f8f8f2>,</color> <color=#f8f8f2>alias</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the Java KeyStore alias associated with the key that should be used when initiating SSL</color>
+<color=#75715e>   * connections .</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the KeyStore alias</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLClientKeyAlias</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CLIENT_KEY_ALIAS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the alias associated with the key in the Java KeyStore file to be used when initiating SSL</color>
+<color=#75715e>   * connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param alias the KeyStore alias</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLClientKeyAlias</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>alias</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLClientKeyAliasVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>alias</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLClientKeyAliasVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>alias</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CLIENT_KEY_ALIAS</color><color=#f8f8f2>,</color> <color=#f8f8f2>alias</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the name of the Java TrustStore file to be used for SSL certificate validation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the TrustStore file name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLTrustStore</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_FILE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the name of the Java TrustStore file to be used when validating SSL certificates.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param filename the TrustStore filename</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLTrustStore</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>filename</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLTrustStoreVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>filename</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLTrustStoreVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>filename</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_FILE</color><color=#f8f8f2>,</color> <color=#f8f8f2>filename</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the type of the Java Truststore file to be used for SSL key pair retrieval.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the Truststore type</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLTrustStoreType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_TYPE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the type of the Java Truststore file to be used when creating SSL connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param trustStoreType the Truststore type</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLTrustStoreType</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>trustStoreType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLTrustStoreTypeVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>trustStoreType</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLTrustStoreTypeVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>trustStoreType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_TRUSTSTORE_TYPE</color><color=#f8f8f2>,</color> <color=#f8f8f2>trustStoreType</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the list of SSL cipher suites that are acceptable</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the list of SSL cipher suites in comma-delimited form</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLCipherSuites</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CIPHER_SUITES</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the list of SSL cipher suites that are acceptable</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cipherSuites a comma-delimited list of SSL cipher suites</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLCipherSuites</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>cipherSuites</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLCipherSuitesVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>cipherSuites</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLCipherSuitesVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>cipherSuites</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_CIPHER_SUITES</color><color=#f8f8f2>,</color> <color=#f8f8f2>cipherSuites</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the list of SSL protocols that are acceptable</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the list of SSL protocols in comma-delimited form</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLProtocols</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_PROTOCOLS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the list of SSL protocols that are acceptable</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param protocols a comma-delimited list of SSL protocols</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLProtocols</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>protocols</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLProtocolsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>protocols</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLProtocolsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>protocols</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_PROTOCOLS</color><color=#f8f8f2>,</color> <color=#f8f8f2>protocols</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the SSLAuthenticator configuration to be used for authenticating incoming client</color>
+<color=#75715e>   * connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the authentication configuration, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLAuthenticator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the authenticator configuration to be used for authenticating incoming client connections.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See {@link #SSL_AUTHENTICATOR} for a complete description of this parameter.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param authenticator the authentication configuration to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   * @throws IllegalArgumentException if the authenticator specification is not syntactically valid</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLAuthenticator</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticator</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLAuthenticatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>authenticator</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLAuthenticatorVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticator</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR</color><color=#f8f8f2>,</color> <color=#f8f8f2>authenticator</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the SSLAuthenticator factory class to be used for creating new Authenticator instances</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the SSLAuthenticator factory class name, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLAuthenticatorClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_CLASS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the authenticator class to be instantiated for creation of new SSL Authenticator</color>
+<color=#75715e>   * instances.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param authenticatorClass the class name to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLAuthenticatorClass</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticatorClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLAuthenticatorClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>authenticatorClass</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLAuthenticatorClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticatorClass</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_CLASS</color><color=#f8f8f2>,</color> <color=#f8f8f2>authenticatorClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the SSLAuthenticator parameters to be used for creating new Authenticator instances</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the SSLAuthenticator factory params name, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLAuthenticatorParams</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_PARAMS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the Authenticator parameters to be passed to the SSL server Authenticator class when</color>
+<color=#75715e>   * instantiated.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param authenticatorParams the parameter value to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLAuthenticatorParams</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticatorParams</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLAuthenticatorParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>authenticatorParams</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLAuthenticatorParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>authenticatorParams</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_AUTHENTICATOR_PARAMS</color><color=#f8f8f2>,</color> <color=#f8f8f2>authenticatorParams</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the HostnameVerifier factory class to be used for creating new host verifier instances</color>
+<color=#75715e>   * for client-mode operation</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the HostnameVerifier factory class name, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLHostVerifier</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the configuration to be used for verifying the certificate of a server when a connection</color>
+<color=#75715e>   * is made.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>See {@link #SSL_HOST_VERIFIER} for a complete description of this parameter.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param hostVerifier the verifier configuration to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   * @throws IllegalArgumentException if the authenticator specification is not syntactically valid</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLHostVerifier</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifier</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLHostVerifierVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>hostVerifier</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLHostVerifierVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifier</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IllegalArgumentException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER</color><color=#f8f8f2>,</color> <color=#f8f8f2>hostVerifier</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the HostnameVerifier factory class to be used for creating new host verifier instances</color>
+<color=#75715e>   * for client-mode operation</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the HostnameVerifier factory class name, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLHostVerifierClass</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_CLASS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the host verifier class to be instantiated for creation of new SSL host verifier</color>
+<color=#75715e>   * instances.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param hostVerifierClass the class name to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLHostVerifierClass</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifierClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLHostVerifierClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>hostVerifierClass</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLHostVerifierClassVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifierClass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_CLASS</color><color=#f8f8f2>,</color> <color=#f8f8f2>hostVerifierClass</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the SSLHostVerifier parameters to be used for creating new host verifier instances for</color>
+<color=#75715e>   * operation in client mode, if needed.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the SSLHostVerifier factory params name, if configured</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getSSLHostVerifierParams</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>getVal</color><color=#f8f8f2>(</color><color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_PARAMS</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the host verifier parameters to be passed to the SSL host verifier class when</color>
+<color=#75715e>   * instantiated.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param hostVerifierParams the parameter value to use</color>
+<color=#75715e>   * @return this</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLHostVerifierParams</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifierParams</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLHostVerifierParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>hostVerifierParams</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden The void return setter for use by Bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLHostVerifierParamsVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>hostVerifierParams</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>DbConfigManager</color><color=#f8f8f2>.</color><color=#a6e22e>setVal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>props</color><color=#f8f8f2>,</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>SSL_HOST_VERIFIER_PARAMS</color><color=#f8f8f2>,</color> <color=#f8f8f2>hostVerifierParams</color><color=#f8f8f2>,</color> <color=#f8f8f2>validateParams</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a copy of this configuration object. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationSSLConfig</color> <color=#a6e22e>clone</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationSSLConfig</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Gets the password source provided for KeyStore access by the SSL implementation. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>PasswordSource</color> <color=#a6e22e>getSSLKeyStorePasswordSource</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sslKeyStorePasswordSource</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the password source for KeyStore access by the SSL implementation. If not set to a</color>
+<color=#75715e>   * non-empty value, the SSL implementation uses the {@link #SSL_KEYSTORE_PASSWORD</color>
+<color=#75715e>   * je.rep.ssl.keyStorePassword} property instead. This setting is not included in the serialized</color>
+<color=#75715e>   * representation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNetworkConfig</color> <color=#a6e22e>setSSLKeyStorePasswordSource</color><color=#f8f8f2>(</color><color=#f8f8f2>PasswordSource</color> <color=#f8f8f2>passwordSource</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>setSSLKeyStorePasswordSourceVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>passwordSource</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @hidden For bean editors. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setSSLKeyStorePasswordSourceVoid</color><color=#f8f8f2>(</color><color=#f8f8f2>PasswordSource</color> <color=#f8f8f2>passwordSource</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sslKeyStorePasswordSource</color> <color=#f92672>=</color> <color=#f8f8f2>passwordSource</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Enumerate the subset of configuration properties that are intended to control network</color>
+<color=#75715e>   *     access.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#a6e22e>getRepSSLPropertySet</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Checks whether the named parameter is valid for this configuration type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param paramName the configuration parameter name, one of the String constants in this class</color>
+<color=#75715e>   * @return true if the named parameter is a valid parameter name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isValidConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>paramName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repSSLProperties</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>paramName</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>isValidConfigParam</color><color=#f8f8f2>(</color><color=#f8f8f2>paramName</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Force loading when a ReplicationNetworkConfig is used and an</color>
+<color=#75715e>     * environment has not been created.</color>
+<color=#75715e>     */</color>
+    <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>ConfigParam</color> <color=#f8f8f2>forceLoad</color> <color=#f92672>=</color> <color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>CHANNEL_TYPE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

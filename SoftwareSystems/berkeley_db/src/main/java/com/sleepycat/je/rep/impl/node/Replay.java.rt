@@ -1,0 +1,1362 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Durability.SyncPolicy</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DbTree.TruncateDbResult</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.recovery.RecoveryInfo</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.recovery.RollbackTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.LogFileRewriteListener</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.SyncupProgress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupDB</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.InputWireRecord</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.MasterStatus.MasterSyncException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.Protocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.txn.ReplayTxn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.LongMinZeroStat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.SimpleTxnMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNRange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.Key</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.LN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.NameLN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.utilint.StringUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.File</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ArrayBlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.BlockingQueue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.ReplayStatDefinition.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>java.util.concurrent.TimeUnit.MILLISECONDS</color><color=#f8f8f2>;</color>
+<color=#f92672>import static</color> <color=#f8f8f2>java.util.concurrent.TimeUnit.NANOSECONDS</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Replays log records from the replication stream, and manages the transactions for those records.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The Replay module has a lifetime equivalent to the environment owned by this replicator. Its</color>
+<color=#75715e> * lifetime is longer than the feeder/replica stream. For example, suppose this is nodeX:</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>t1 - Node X is a replica, node A is master. Replay X is alive t2 - Node X is a replica, node B</color>
+<color=#75715e> * takes over as master. X's Replay module is still alive and has the same set of active txns. It</color>
+<color=#75715e> * doesn't matter to X that the master has changed. t3 - Node X becomes the master. Now its Replay</color>
+<color=#75715e> * unit is cleared, because anything managed by the Replay is defunct.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Replay</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* These are strings for the rollback logging. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_START</color> <color=#f92672>=</color> <color=#e6db74>"Started Rollback"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_NO_ACTIVE</color> <color=#f92672>=</color> <color=#e6db74>"No active txns, nothing to rollback"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_RANGE_EQUALS</color> <color=#f92672>=</color>
+      <color=#e6db74>"End of range equals matchpoint, nothing to rollback"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_LOG_RBSTART</color> <color=#f92672>=</color> <color=#e6db74>"Logged RollbackStart entry"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_MEM_ROLLBACK</color> <color=#f92672>=</color> <color=#e6db74>"Finished in-memory rollback"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_INVISIBLE</color> <color=#f92672>=</color> <color=#e6db74>"Finished invisible setting"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>RBSTATUS_FINISH</color> <color=#f92672>=</color> <color=#e6db74>"Finished rollback"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * DatabaseEntry objects reused during replay, to minimize allocation in</color>
+<color=#75715e>   * high performance replay path.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>replayKeyEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>replayDataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>delDataEntry</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If a commit replay operation takes more than this threshold, it's logged. This information</color>
+<color=#75715e>   * helps determine whether ack timeouts on the master are due to a slow replica, or the network.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>ackTimeoutLogThresholdNs</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * ActiveTxns is a collection of txn objects used for applying replicated transactions. This</color>
+<color=#75715e>   * collection should be empty if the node is a master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that there is an interesting relationship between ActiveTxns and the txn collection</color>
+<color=#75715e>   * managed by the environment TxnManager. ActiveTxns is effectively a subset of the set of txns</color>
+<color=#75715e>   * held by the TxnManager. ReplayTxns must be sure to register and unregister themselves from</color>
+<color=#75715e>   * ActiveTxns, just as all Txns must register and unregister with the TxnManager's set. One</color>
+<color=#75715e>   * implementation alternative to having an ActiveTxns map here is to search the TxnManager set</color>
+<color=#75715e>   * (which is a set, not a map) for a given ReplayTxn. Another is to subclass TxnManager so that</color>
+<color=#75715e>   * replicated nodes have their own replayTxn map, just as XATxns have a XID->Txn map.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Both alternatives seemed too costly in terms of performance or elaborate in terms of code to</color>
+<color=#75715e>   * do for the current function. It seems clearer to make the ActiveTxns a map in the one place</color>
+<color=#75715e>   * that it is currently used. This choice may change over time, and should be reevaluated if the</color>
+<color=#75715e>   * implementation changes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The ActiveTxns key is the transaction id. These transactions are closed when: - the replay</color>
+<color=#75715e>   * unit executes a commit received over the replication stream - the replay unit executes an abort</color>
+<color=#75715e>   * received over the replication stream - the replication node realizes that it has just become</color>
+<color=#75715e>   * the new master, and was not previously the master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the Replay class has a lifetime that is longer than that of a RepNode. This means</color>
+<color=#75715e>   * in particular, that transactions may be left open, and will be resumed when a replica switches</color>
+<color=#75715e>   * from one master to another, creating a new RepNode in the process. Because of that, part of the</color>
+<color=#75715e>   * transaction may be implemented by the rep stream from one master and another part by another.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The map is synchronized, so simple get/put operations do not require additional</color>
+<color=#75715e>   * synchronization. However, iteration requires synchronization and copyActiveTxns can be used in</color>
+<color=#75715e>   * most cases.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SimpleTxnMap</color><color=#f92672><</color><color=#f8f8f2>ReplayTxn</color><color=#f92672>></color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The entry representing the last replayed txn commit. Supports the</color>
+<color=#75715e>   * replica's notion of consistency.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>TxnInfo</color> <color=#f8f8f2>lastReplayedTxn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The last replayed entry of any kind. Supports PointConsistencyPolicy.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The last replayed DTVLSN in the stream. It's used to ensure that the</color>
+<color=#75715e>   * DTVLSNs in the stream are correctly sequenced.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastReplayedDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The sync policy to be used in the absence of an ACK request. The replica</color>
+<color=#75715e>   * in this case has some latitude about how it syncs the commit.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>noAckSyncPolicy</color> <color=#f92672>=</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>NO_SYNC</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The RepParams.REPLAY_LOGGING_THRESHOLD configured logging threshold. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>replayLoggingThresholdNs</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * State that is reinitialized by the reinit() method each time a replay loop is started with a</color>
+<color=#75715e>   * new feeder.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** All writes (predominantly acks) are queued here, so they do not block the replay thread. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>outputQueue</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Holds the state associated with group commits. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>GroupCommit</color> <color=#f8f8f2>groupCommit</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Maintains the statistics associated with stream replay. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>statistics</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCommits</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCommitAcks</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCommitSyncs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCommitNoSyncs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nCommitWriteNoSyncs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nAborts</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nNameLNs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nLNs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nElapsedTxnTime</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nMessageQueueOverflows</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongMinStat</color> <color=#f8f8f2>minCommitProcessingNanos</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongMaxStat</color> <color=#f8f8f2>maxCommitProcessingNanos</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>totalCommitProcessingNanos</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>totalCommitLagMs</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>latestCommitLagMs</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>Replay</color><color=#f8f8f2>(</color><color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This should have already been caught in</color>
+<color=#75715e>     * ReplicatedEnvironment.setupRepConfig, but it is checked here anyway</color>
+<color=#75715e>     * as an added sanity check. [#17643]</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"Replay created with readonly ReplicatedEnvironment"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>ackTimeoutLogThresholdNs</color> <color=#f92672>=</color>
+        <color=#f8f8f2>MILLISECONDS</color><color=#f8f8f2>.</color><color=#a6e22e>toNanos</color><color=#f8f8f2>(</color><color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_ACK_TIMEOUT</color><color=#f8f8f2>));</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The factor of 2 below is somewhat arbitrary. It should be > 1 X so that the</color>
+<color=#75715e>     * ReplicaOutputThread can completely process the buffered messages in the face of a network</color>
+<color=#75715e>     * drop and 2X to allow for additional headroom and minimize the chances that the replay might</color>
+<color=#75715e>     * be blocked due to the limited queue length.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>outputQueueSize</color> <color=#f92672>=</color> <color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MESSAGE_QUEUE_SIZE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>outputQueue</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayBlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>outputQueueSize</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The Replay module manages all write transactions and mimics a</color>
+<color=#75715e>     * writing application thread. When the node comes up, it populates</color>
+<color=#75715e>     * the activeTxn collection with ReplayTxns that were resurrected</color>
+<color=#75715e>     * at recovery time.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>activeTxns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>SimpleTxnMap</color><color=#f92672><></color><color=#f8f8f2>(</color><color=#ae81ff>1024</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Configure the data entry used for deletion to avoid fetching the</color>
+<color=#75715e>     * old data during deletion replay.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>delDataEntry</color><color=#f8f8f2>.</color><color=#a6e22e>setPartial</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>statistics</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StatGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplayStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_NAME</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplayStatDefinition</color><color=#f8f8f2>.</color><color=#a6e22e>GROUP_DESC</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>groupCommit</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>GroupCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>configManager</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>nCommits</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_COMMITS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCommitAcks</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_COMMIT_ACKS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCommitSyncs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_COMMIT_SYNCS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCommitNoSyncs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_COMMIT_NO_SYNCS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nCommitWriteNoSyncs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_COMMIT_WRITE_NO_SYNCS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nAborts</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_ABORTS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nNameLNs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_NAME_LNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nLNs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_LNS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nElapsedTxnTime</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_ELAPSED_TXN_TIME</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>nMessageQueueOverflows</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_MESSAGE_QUEUE_OVERFLOWS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>minCommitProcessingNanos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongMinZeroStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>MIN_COMMIT_PROCESSING_NANOS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>maxCommitProcessingNanos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongMaxZeroStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>MAX_COMMIT_PROCESSING_NANOS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalCommitProcessingNanos</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>TOTAL_COMMIT_PROCESSING_NANOS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalCommitLagMs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>TOTAL_COMMIT_LAG_MS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>latestCommitLagMs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>LATEST_COMMIT_LAG_MS</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>replayLoggingThresholdNs</color> <color=#f92672>=</color>
+        <color=#f8f8f2>MILLISECONDS</color><color=#f8f8f2>.</color><color=#a6e22e>toNanos</color><color=#f8f8f2>(</color><color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLAY_LOGGING_THRESHOLD</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>BlockingQueue</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#a6e22e>getOutputQueue</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>outputQueue</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Reinitialize for replay from a new feeder */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>reset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#f8f8f2>LongStat</color> <color=#a6e22e>getMessageQueueOverflows</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nMessageQueueOverflows</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Actions that must be taken before the recovery checkpoint, whether the environment is</color>
+<color=#75715e>   * read/write or read/only.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>preRecoveryCheckpointInit</color><color=#f8f8f2>(</color><color=#f8f8f2>RecoveryInfo</color> <color=#f8f8f2>recoveryInfo</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>recoveryInfo</color><color=#f8f8f2>.</color><color=#a6e22e>replayTxns</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * ReplayTxns need to know about their owning activeTxn map,</color>
+<color=#75715e>       * so they can remove themselves at close. We are casting upwards,</color>
+<color=#75715e>       * because the non-HA code is prohibited from referencing</color>
+<color=#75715e>       * Replication classes, and the RecoveryInfo.replayTxns collection</color>
+<color=#75715e>       * doesn't know that it's got ReplayTxns.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>((</color><color=#f8f8f2>ReplayTxn</color><color=#f8f8f2>)</color> <color=#f8f8f2>txn</color><color=#f8f8f2>).</color><color=#a6e22e>registerWithActiveTxns</color><color=#f8f8f2>(</color><color=#f8f8f2>activeTxns</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>().</color><color=#a6e22e>getRange</color><color=#f8f8f2>().</color><color=#a6e22e>getLast</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>TxnInfo</color> <color=#a6e22e>getLastReplayedTxn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastReplayedTxn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getLastReplayedVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * When mastership changes, all inflight replay transactions are aborted. Replay transactions need</color>
+<color=#75715e>   * only be aborted by the node that has become the new master (who was previously a Replica). The</color>
+<color=#75715e>   * replay transactions on the other replicas who have not changed roles are resolved by the abort</color>
+<color=#75715e>   * record issued by said new master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>abortOldTxns</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>masterNodeId</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>replayTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>copyActiveTxns</color><color=#f8f8f2>().</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Use NULL for the DTVLSN since it's being written as the MASTER</color>
+<color=#75715e>       * despite being a ReplayTxn; it will be corrected when it's</color>
+<color=#75715e>       * written to the log.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>MASTER</color><color=#f8f8f2>,</color> <color=#f8f8f2>masterNodeId</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#e6db74>"Unexpected txns in activeTxns = "</color> <color=#f92672>+</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateCommitStats</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>needsAck</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>syncPolicy</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>startTimeNanos</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterCommitTimeMs</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>replicaCommitTimeMs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>now</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>commitNanos</color> <color=#f92672>=</color> <color=#f8f8f2>now</color> <color=#f92672>-</color> <color=#f8f8f2>startTimeNanos</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>commitNanos</color> <color=#f92672>></color> <color=#f8f8f2>ackTimeoutLogThresholdNs</color> <color=#f92672>&&</color> <color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replay commit time: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>commitNanos</color> <color=#f92672>/</color> <color=#ae81ff>1000000</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" ms exceeded log threshold: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>ackTimeoutLogThresholdNs</color> <color=#f92672>/</color> <color=#ae81ff>1000000</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>nCommits</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needsAck</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCommitAcks</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>syncPolicy</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>SYNC</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCommitSyncs</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>syncPolicy</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>NO_SYNC</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCommitNoSyncs</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>syncPolicy</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE_NO_SYNC</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nCommitWriteNoSyncs</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Unknown sync policy: "</color> <color=#f92672>+</color> <color=#f8f8f2>syncPolicy</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>totalCommitProcessingNanos</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>commitNanos</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>minCommitProcessingNanos</color><color=#f8f8f2>.</color><color=#a6e22e>setMin</color><color=#f8f8f2>(</color><color=#f8f8f2>commitNanos</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>maxCommitProcessingNanos</color><color=#f8f8f2>.</color><color=#a6e22e>setMax</color><color=#f8f8f2>(</color><color=#f8f8f2>commitNanos</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Tally the lag between master and replica commits, even if clock skew</color>
+<color=#75715e>     * makes the lag appear negative.  The documentation already warns that</color>
+<color=#75715e>     * the value will be affected by clock skew, so users can adjust for</color>
+<color=#75715e>     * that, but only if we don't throw the information way.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>replicaLagMs</color> <color=#f92672>=</color> <color=#f8f8f2>replicaCommitTimeMs</color> <color=#f92672>-</color> <color=#f8f8f2>masterCommitTimeMs</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalCommitLagMs</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaLagMs</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>latestCommitLagMs</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>replicaLagMs</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Apply the operation represented by this log entry on this replica node. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>replayEntry</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>startNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>MasterSyncException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>InputWireRecord</color> <color=#f8f8f2>wireRecord</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getWireRecord</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getLogEntry</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Sanity check that the replication stream is in sequence. We want to</color>
+<color=#75715e>     * forestall any possible corruption from replaying invalid entries.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>().</color><color=#a6e22e>follows</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Rep stream not sequential. Current VLSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" next log entry VLSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINEST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Replaying "</color> <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>repTxn</color> <color=#f92672>=</color> <color=#f8f8f2>getReplayTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactionId</color><color=#f8f8f2>(),</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>updateReplicaSequences</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getEntryType</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color> <color=#f92672>=</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LOG_TXN_COMMIT</color><color=#f8f8f2>.</color><color=#a6e22e>equalsType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Commit</color> <color=#f8f8f2>commitEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>Protocol</color><color=#f8f8f2>.</color><color=#a6e22e>Commit</color><color=#f8f8f2>)</color> <color=#f8f8f2>entry</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>needsAck</color> <color=#f92672>=</color> <color=#f8f8f2>commitEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getNeedsAck</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>txnSyncPolicy</color> <color=#f92672>=</color> <color=#f8f8f2>commitEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaSyncPolicy</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>implSyncPolicy</color> <color=#f92672>=</color>
+            <color=#f8f8f2>needsAck</color> <color=#f92672>?</color> <color=#f8f8f2>groupCommit</color><color=#f8f8f2>.</color><color=#a6e22e>getImplSyncPolicy</color><color=#f8f8f2>(</color><color=#f8f8f2>txnSyncPolicy</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>noAckSyncPolicy</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>logReplay</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>needsAck</color><color=#f8f8f2>,</color> <color=#f8f8f2>implSyncPolicy</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>TxnCommit</color> <color=#f8f8f2>commit</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TxnCommit</color><color=#f8f8f2>)</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>dtvlsn</color> <color=#f92672>=</color> <color=#f8f8f2>updateDTVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>commit</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needsAck</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Only wait if the replica is not lagging and the</color>
+<color=#75715e>           * durability requires it.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getVLSNFreezeLatch</color><color=#f8f8f2>().</color><color=#a6e22e>awaitThaw</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getMasterStatus</color><color=#f8f8f2>().</color><color=#a6e22e>assertSync</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>commit</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>implSyncPolicy</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>commit</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterNodeId</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>dtvlsn</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterCommitTimeMs</color> <color=#f92672>=</color> <color=#f8f8f2>commit</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>().</color><color=#a6e22e>getTime</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>lastReplayedTxn</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TxnInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>masterCommitTimeMs</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>updateCommitStats</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>needsAck</color><color=#f8f8f2>,</color> <color=#f8f8f2>implSyncPolicy</color><color=#f8f8f2>,</color> <color=#f8f8f2>startNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>masterCommitTimeMs</color><color=#f8f8f2>,</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getEndTime</color><color=#f8f8f2>());</color>
+
+        <color=#75715e>/* Respond to the feeder. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needsAck</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/*</color>
+<color=#75715e>           * Need an ack, either buffer it, for sync group commit, or</color>
+<color=#75715e>           * queue it.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>groupCommit</color><color=#f8f8f2>.</color><color=#a6e22e>bufferAck</color><color=#f8f8f2>(</color><color=#f8f8f2>startNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnSyncPolicy</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The group refresh and recalculation can be expensive, since</color>
+<color=#75715e>         * it may require a database read. Do it after the ack.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupDbChange</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>canRefreshGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>refreshCachedGroup</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>recalculateGlobalCBVLSN</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>nElapsedTxnTime</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>elapsedTime</color><color=#f8f8f2>());</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LOG_TXN_ABORT</color><color=#f8f8f2>.</color><color=#a6e22e>equalsType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>nAborts</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>TxnAbort</color> <color=#f8f8f2>abort</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>TxnAbort</color><color=#f8f8f2>)</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>abortContext</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>(</color><color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINEST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"abort called for "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>txnId</color>
+                  <color=#f92672>+</color> <color=#e6db74>" masterId="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>abort</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterNodeId</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" repContext="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>abortContext</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>long</color> <color=#f8f8f2>dtvlsn</color> <color=#f92672>=</color> <color=#f8f8f2>updateDTVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>abort</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>abort</color><color=#f8f8f2>(</color><color=#f8f8f2>abortContext</color><color=#f8f8f2>,</color> <color=#f8f8f2>abort</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterNodeId</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dtvlsn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>lastReplayedTxn</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TxnInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>abort</color><color=#f8f8f2>.</color><color=#a6e22e>getTime</color><color=#f8f8f2>().</color><color=#a6e22e>getTime</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupDbChange</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>canRefreshGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Refresh is the safe thing to do on an abort, since a</color>
+<color=#75715e>           * refresh may have been held back from an earlier commit</color>
+<color=#75715e>           * due to this active transaction.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>refreshCachedGroup</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>nElapsedTxnTime</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>elapsedTime</color><color=#f8f8f2>());</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>LOG_NAMELN_TRANSACTIONAL</color><color=#f8f8f2>.</color><color=#a6e22e>equalsType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getReplica</color><color=#f8f8f2>().</color><color=#a6e22e>clearDbTreeCache</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>nNameLNs</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>applyNameLN</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nLNs</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#75715e>/* A data operation. */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getLogEntry</color><color=#f8f8f2>()</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>applyLN</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Remember the last VLSN applied by this txn. */</color>
+      <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>setLastAppliedVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>addErrorMessage</color><color=#f8f8f2>(</color><color=#e6db74>"Problem seen replaying entry "</color> <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>elapsedNs</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>startNs</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elapsedNs</color> <color=#f92672>></color> <color=#f8f8f2>replayLoggingThresholdNs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Replay time for entry type:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>NANOSECONDS</color><color=#f8f8f2>.</color><color=#a6e22e>toMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>elapsedNs</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>"ms "</color>
+                <color=#f92672>+</color> <color=#e6db74>"exceeded threshold:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>NANOSECONDS</color><color=#f8f8f2>.</color><color=#a6e22e>toMillis</color><color=#f8f8f2>(</color><color=#f8f8f2>replayLoggingThresholdNs</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>"ms"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Update the replica's in-memory DTVLSN using the value in the commit/abort entry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In the normal course of events, DTVLSNs should not decrease. However, there is just one</color>
+<color=#75715e>   * exception: if the rep stream transitions from a post to a pre-dtvlsn stream, it will transition</color>
+<color=#75715e>   * from a positive to the UNINITIALIZED_VLSN_SEQUENCE.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A transition from a pre to a post-dtvlsn transition (from zero to some positive value),</color>
+<color=#75715e>   * observes the "DTVLSNs should not decrease" rule automatically.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the DTVLSN entry in the log txnEnd record so it can be used in the commit/abort</color>
+<color=#75715e>   *     operation for replay</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>updateDTVLSN</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>TxnEnd</color> <color=#f8f8f2>txnEnd</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>txnEnd</color><color=#f8f8f2>.</color><color=#a6e22e>getDTVLSN</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnDTVLSN</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED_VLSN_SEQUENCE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * A pre DTVLSN format entry, simply set it as the in-memory DTVLSN</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>prevDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>setDTVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>prevDTVLSN</color> <color=#f92672>!=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED_VLSN_SEQUENCE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Transitioned to pre DTVLSN stream."</color>
+                <color=#f92672>+</color> <color=#e6db74>" DTVLSN:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>prevDTVLSN</color>
+                <color=#f92672>+</color> <color=#e6db74>" at VLSN:"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>lastReplayedDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Sanity check. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnDTVLSN</color> <color=#f92672><</color> <color=#f8f8f2>lastReplayedDTVLSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>msg</color> <color=#f92672>=</color>
+          <color=#e6db74>"DTVLSNs must be in ascending order in the stream. "</color>
+              <color=#f92672>+</color> <color=#e6db74>" prev DTVLSN:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedDTVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" next DTVLSN:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>txnDTVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" at VLSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>.</color><color=#a6e22e>getSequence</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>lastReplayedDTVLSN</color> <color=#f92672>==</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>UNINITIALIZED_VLSN_SEQUENCE</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>txnDTVLSN</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Transitioned to post DTVLSN stream."</color>
+              <color=#f92672>+</color> <color=#e6db74>" DTVLSN:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>txnDTVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" at VLSN:"</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>lastReplayedDTVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>setDTVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>txnDTVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Queue the request ack for an async ack write to the network. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>queueAck</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputQueue</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>ie</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * Have the higher levels treat it like an IOE and</color>
+<color=#75715e>       * exit the thread.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>(</color><color=#e6db74>"Ack I/O interrupted"</color><color=#f8f8f2>,</color> <color=#f8f8f2>ie</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Logs information associated with the replay of the txn commit */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>logReplay</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>needsAck</color><color=#f8f8f2>,</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>syncPolicy</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>needsAck</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replay: got commit for txn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>", ack needed, replica sync policy="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>syncPolicy</color>
+              <color=#f92672>+</color> <color=#e6db74>" vlsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Replay: got commit for txn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" ack not needed"</color>
+              <color=#f92672>+</color> <color=#e6db74>" vlsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true if there are no other activeTxns that have also modified the membership database</color>
+<color=#75715e>   * and are still open, since they could potentially hold write locks that would block the read</color>
+<color=#75715e>   * locks acquired during the refresh operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param txn the current txn being committed or aborted</color>
+<color=#75715e>   * @return true if there are no open transactions that hold locks on the membership database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>canRefreshGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use synchronized rather than copyActiveTxns, since this is called</color>
+<color=#75715e>     * during replay and there is no nested locking to worry about.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeTxns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// TODO: very inefficient</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>atxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>getMap</color><color=#f8f8f2>().</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>atxn</color> <color=#f92672>==</color> <color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>atxn</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupDbChange</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Update this replica's node, txn and database sequences with any ids in this log entry. We can</color>
+<color=#75715e>   * call update, even if the replay id doesn't represent a new lowest-id point, or if the apply is</color>
+<color=#75715e>   * not successful, because the apply checks that the replay id is < the sequence on the replica.</color>
+<color=#75715e>   * We just want to ensure that if this node becomes the master, its sequences are in sync with</color>
+<color=#75715e>   * what came before in the replication stream, and ids are not incorrectly reused.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>updateReplicaSequences</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* For now, we assume all replay entries have a txn id. */</color>
+    <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnManager</color><color=#f8f8f2>().</color><color=#a6e22e>updateFromReplay</color><color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getTransactionId</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/* If it's a database operation, update the database id. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logEntry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NameLNLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>NameLNLogEntry</color> <color=#f8f8f2>nameLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NameLNLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>nameLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#66d9ef>false</color> <color=#75715e>/*isDupDb*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>NameLN</color> <color=#f8f8f2>nameLN</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NameLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>nameLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>updateFromReplay</color><color=#f8f8f2>(</color><color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Obtain a ReplayTxn to represent the incoming operation. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplayTxn</color> <color=#a6e22e>getReplayTxn</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>registerTxnImmediately</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>useTxn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeTxns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>useTxn</color> <color=#f92672>=</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txnId</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>useTxn</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Durability will be explicitly specified when</color>
+<color=#75715e>         * ReplayTxn.commit is called, so TransactionConfig.DEFAULT is</color>
+<color=#75715e>         * fine.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>registerTxnImmediately</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>useTxn</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplayTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>TransactionConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>,</color> <color=#f8f8f2>logger</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>useTxn</color> <color=#f92672>=</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>ReplayTxn</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>TransactionConfig</color><color=#f8f8f2>.</color><color=#a6e22e>DEFAULT</color><color=#f8f8f2>,</color> <color=#f8f8f2>txnId</color><color=#f8f8f2>,</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>,</color> <color=#f8f8f2>logger</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#a6e22e>@Override</color>
+                <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>registerImmediately</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+                  <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+                <color=#f8f8f2>}</color>
+              <color=#f8f8f2>};</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>useTxn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Replays the NameLN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that the operations: remove, rename and truncate need to establish write locks on the</color>
+<color=#75715e>   * database. Any open handles are closed by this operation by virtue of the ReplayTxn's</color>
+<color=#75715e>   * importunate property. The application will receive a LockPreemptedException if it subsequently</color>
+<color=#75715e>   * accesses the database handle.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>applyNameLN</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>InputWireRecord</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>NameLNLogEntry</color> <color=#f8f8f2>nameLNEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NameLNLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getLogEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>NameLN</color> <color=#f8f8f2>nameLN</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NameLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>nameLNEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>databaseName</color> <color=#f92672>=</color> <color=#f8f8f2>StringUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fromUTF8</color><color=#f8f8f2>(</color><color=#f8f8f2>nameLNEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbOpReplicationContext</color> <color=#f8f8f2>repContext</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>DbOpReplicationContext</color><color=#f8f8f2>(</color><color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>(),</color> <color=#f8f8f2>nameLNEntry</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>DbOperationType</color> <color=#f8f8f2>opType</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getDbOperationType</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>opType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>case</color> <color=#f8f8f2>CREATE</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>{</color>
+            <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getCreateConfig</color><color=#f8f8f2>().</color><color=#a6e22e>getReplicaConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color>
+                <color=#f8f8f2>repImpl</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>()</color>
+                    <color=#f8f8f2>.</color><color=#a6e22e>createReplicaDb</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * We rely on the RepGroupDB.DB_ID value, so make sure</color>
+<color=#75715e>             * it's what we expect for this internal replicated</color>
+<color=#75715e>             * database.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>RepGroupDB</color><color=#f8f8f2>.</color><color=#a6e22e>DB_ID</color><color=#f8f8f2>)</color>
+                <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>DbType</color><color=#f8f8f2>.</color><color=#a6e22e>REP_GROUP</color><color=#f8f8f2>.</color><color=#a6e22e>getInternalName</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseName</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Database: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>DbType</color><color=#f8f8f2>.</color><color=#a6e22e>REP_GROUP</color><color=#f8f8f2>.</color><color=#a6e22e>getInternalName</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" is associated with id: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>().</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" and not the reserved database id: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>RepGroupDB</color><color=#f8f8f2>.</color><color=#a6e22e>DB_ID</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#f8f8f2>TriggerManager</color><color=#f8f8f2>.</color><color=#a6e22e>runOpenTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>case</color> <color=#f8f8f2>REMOVE</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>removeReplicaDb</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>(),</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>TriggerManager</color><color=#f8f8f2>.</color><color=#a6e22e>runRemoveTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Database: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" Id: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" not found on the Replica."</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>case</color> <color=#f8f8f2>TRUNCATE</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getTruncateOldDbId</color><color=#f8f8f2>());</color>
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>TruncateDbResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+                  <color=#f8f8f2>repImpl</color>
+                      <color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>()</color>
+                      <color=#f8f8f2>.</color><color=#a6e22e>truncateReplicaDb</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>TriggerManager</color><color=#f8f8f2>.</color><color=#a6e22e>runTruncateTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>newDb</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Database: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" Id: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" not found on the Replica."</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>case</color> <color=#f8f8f2>RENAME</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+            <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color>
+                  <color=#f8f8f2>repImpl</color>
+                      <color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>()</color>
+                      <color=#f8f8f2>.</color><color=#a6e22e>renameReplicaDb</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>,</color> <color=#f8f8f2>nameLN</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+              <color=#f8f8f2>TriggerManager</color><color=#f8f8f2>.</color><color=#a6e22e>runRenameTriggers</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+                  <color=#e6db74>"Database rename from: "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                      <color=#f92672>+</color> <color=#e6db74>" to "</color>
+                      <color=#f92672>+</color> <color=#f8f8f2>databaseName</color>
+                      <color=#f92672>+</color> <color=#e6db74>" failed, name not found on the Replica."</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>case</color> <color=#f8f8f2>UPDATE_CONFIG</color><color=#f8f8f2>:</color>
+          <color=#f8f8f2>{</color>
+            <color=#75715e>/* Get the replicated database configurations. */</color>
+            <color=#f8f8f2>DatabaseConfig</color> <color=#f8f8f2>dbConfig</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>getCreateConfig</color><color=#f8f8f2>().</color><color=#a6e22e>getReplicaConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>/* Update the NameLN and write it to the log. */</color>
+            <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>nameLN</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+            <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>dbName</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>updateNameLN</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+
+            <color=#75715e>/* Set the new configurations to DatabaseImpl. */</color>
+            <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setConfigProperties</color><color=#f8f8f2>(</color><color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbName</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbConfig</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>modifyDbRoot</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Illegal database op type of "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>opType</color>
+                  <color=#f92672>+</color> <color=#e6db74>" from "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color>
+                  <color=#f92672>+</color> <color=#e6db74>" database="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>databaseName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>releaseDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>applyLN</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>InputWireRecord</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getLogEntry</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If this is a change to the rep group db, remember at commit time,</color>
+<color=#75715e>     * and refresh this node's group metadata.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>RepGroupDB</color><color=#f8f8f2>.</color><color=#a6e22e>DB_ID</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repTxn</color><color=#f8f8f2>.</color><color=#a6e22e>noteRepGroupDbChange</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Note that we don't have to worry about serializable isolation when</color>
+<color=#75715e>     * applying a replicated txn; serializable isolation in only an issue</color>
+<color=#75715e>     * for txns that take read locks, and a replicated txn consists only of</color>
+<color=#75715e>     * write operations.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>getReplica</color><color=#f8f8f2>().</color><color=#a6e22e>getDbCache</color><color=#f8f8f2>().</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>(</color><color=#f8f8f2>wireRecord</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>makeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>repTxn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cursorConfig*/</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>OperationResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>ln</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* In a dup DB, do not expect embedded LNs or non-empty data. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>()</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isEmbeddedLN</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>().</color><color=#a6e22e>length</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEnv</color><color=#f8f8f2>(),</color>
+            <color=#e6db74>"[#25288] emb="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isEmbeddedLN</color><color=#f8f8f2>()</color>
+                <color=#f92672>+</color> <color=#e6db74>" key="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>())</color>
+                <color=#f92672>+</color> <color=#e6db74>" data="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>())</color>
+                <color=#f92672>+</color> <color=#e6db74>" vlsn="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNSequence</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Perform an exact search by key. Use a partial data entry</color>
+<color=#75715e>         * (delDataEntry) to avoid reading old data.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>replayKeyEntry</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>());</color>
+
+        <color=#f8f8f2>result</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>searchForReplay</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>replayKeyEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>delDataEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockMode</color><color=#f8f8f2>.</color><color=#a6e22e>RMW</color><color=#f8f8f2>,</color> <color=#f8f8f2>SearchMode</color><color=#f8f8f2>.</color><color=#a6e22e>SET</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>deleteForReplay</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>replayKeyEntry</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>replayDataEntry</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>ln</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>());</color>
+
+        <color=#f8f8f2>result</color> <color=#f92672>=</color>
+            <color=#f8f8f2>DbInternal</color><color=#f8f8f2>.</color><color=#a6e22e>putForReplay</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>cursor</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>replayKeyEntry</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>replayDataEntry</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>ln</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiration</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isExpirationInHours</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>PutMode</color><color=#f8f8f2>.</color><color=#a6e22e>OVERWRITE</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INCOMPLETE</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Replicated operation could  not be applied. "</color> <color=#f92672>+</color> <color=#f8f8f2>wireRecord</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Go through all active txns and rollback up to but not including the log entry represented by</color>
+<color=#75715e>   * the matchpoint VLSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Effectively truncate these rolled back log entries by making them invisible. Flush the log</color>
+<color=#75715e>   * first, to make sure these log entries are out of the log buffers and are on disk, so we can</color>
+<color=#75715e>   * reliably find them through the FileManager.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Rollback steps are described in</color>
+<color=#75715e>   * https://sleepycat.oracle.com/trac/wiki/Logging#Recoverysteps. In summary,</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>1. Log and fsync a new RollbackStart record 2. Do the rollback in memory. There is no need</color>
+<color=#75715e>   * to explicitly log INs made dirty by the rollback operation. 3. Do invisibility masking by</color>
+<color=#75715e>   * overwriting LNs. 4. Fsync all overwritten log files at this point. 5. Write a RollbackEnd</color>
+<color=#75715e>   * record, for ease of debugging</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that application read txns can continue to run during syncup. Reader txns cannot access</color>
+<color=#75715e>   * records that are being rolled back, because they are in txns that are not committed, i.e, they</color>
+<color=#75715e>   * are write locked. The rollback interval never includes committed txns, and we do a hard</color>
+<color=#75715e>   * recovery if it would include them.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>rollback</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>String</color> <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_START</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplayTxn</color><color=#f92672>></color> <color=#f8f8f2>localActiveTxns</color> <color=#f92672>=</color> <color=#f8f8f2>copyActiveTxns</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>localActiveTxns</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* no live read/write txns, nothing to do. */</color>
+        <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_NO_ACTIVE</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>().</color><color=#a6e22e>getRange</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* nothing to roll back. */</color>
+        <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_RANGE_EQUALS</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setSyncupProgress</color><color=#f8f8f2>(</color><color=#f8f8f2>SyncupProgress</color><color=#f8f8f2>.</color><color=#a6e22e>DO_ROLLBACK</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Stop the log file backup service, since the files will be in an</color>
+<color=#75715e>       * inconsistent state while the rollback is in progress.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>shutdownNetworkBackup</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Set repImpl's isRollingBack to true, and invalidate all the in</color>
+<color=#75715e>       * progress DbBackup.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setBackupProhibited</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>invalidateBackups</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>));</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * 1. Log RollbackStart. The fsync guarantees that this marker will</color>
+<color=#75715e>       * be present in the log for recovery. It also ensures that all log</color>
+<color=#75715e>       * entries will be flushed to disk and the TxnChain will not have</color>
+<color=#75715e>       * to worry about entries that are in log buffers when constructing</color>
+<color=#75715e>       * the rollback information.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>LogManager</color> <color=#f8f8f2>logManager</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>rollbackStart</color> <color=#f92672>=</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ROLLBACK_START</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>new</color> <color=#f8f8f2>RollbackStart</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>localActiveTxns</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>()));</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>rollbackStartLsn</color> <color=#f92672>=</color>
+          <color=#f8f8f2>logManager</color><color=#f8f8f2>.</color><color=#a6e22e>logForceFlush</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>rollbackStart</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// fsyncRequired,</color>
+              <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>NO_REPLICATE</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_LOG_RBSTART</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * 2. Do rollback in memory. Undo any operations that were logged</color>
+<color=#75715e>       * after the matchpointLsn, and save the LSNs for those log</color>
+<color=#75715e>       * entries.. There should be something to undo, because we checked</color>
+<color=#75715e>       * earlier that there were log entries after the matchpoint.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>rollbackLsns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ArrayList</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>replayTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>localActiveTxns</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>txnRollbackLsns</color> <color=#f92672>=</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>rollback</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Txns that were entirely rolled back should have been removed</color>
+<color=#75715e>         * from the activeTxns map.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>checkRemoved</color><color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#e6db74>"Should have removed "</color> <color=#f92672>+</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>.</color><color=#a6e22e>addAll</color><color=#f8f8f2>(</color><color=#f8f8f2>txnRollbackLsns</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_MEM_ROLLBACK</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dumpActiveTxns</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * 3 & 4 - Mark the rolled back log entries as invisible.  But</color>
+<color=#75715e>       * before doing so, invoke any registered rewrite listeners, so the</color>
+<color=#75715e>       * application knows that existing log files will be modified.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * After all are done, fsync the set of files. By waiting, some may</color>
+<color=#75715e>       * have made it out on their own.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>LogFileRewriteListener</color> <color=#f8f8f2>listener</color> <color=#f92672>=</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogRewriteListener</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>listener</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>listener</color><color=#f8f8f2>.</color><color=#a6e22e>rewriteLogFiles</color><color=#f8f8f2>(</color><color=#f8f8f2>getFileNames</color><color=#f8f8f2>(</color><color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>RollbackTracker</color><color=#f8f8f2>.</color><color=#a6e22e>makeInvisible</color><color=#f8f8f2>(</color><color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackLsns</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_INVISIBLE</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * 5. Log RollbackEnd. Flush it so that we can use it to optimize</color>
+<color=#75715e>       * recoveries later on. If the RollbackEnd exists, we can skip the</color>
+<color=#75715e>       * step of re-making LNs invisible.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>logManager</color><color=#f8f8f2>.</color><color=#a6e22e>logForceFlush</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ROLLBACK_END</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>RollbackEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>rollbackStartLsn</color><color=#f8f8f2>)),</color>
+          <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// fsyncRequired</color>
+          <color=#f8f8f2>ReplicationContext</color><color=#f8f8f2>.</color><color=#a6e22e>NO_REPLICATE</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Restart the backup service only if all the steps of the</color>
+<color=#75715e>       * rollback were successful.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>().</color><color=#a6e22e>restartNetworkBackup</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>setBackupProhibited</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>rollbackStatus</color> <color=#f92672>=</color> <color=#f8f8f2>RBSTATUS_FINISH</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Reset the lastReplayedVLSN so it's correct when we resume. */</color>
+      <color=#f8f8f2>lastReplayedVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>matchpointVLSN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Rollback to matchpoint "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>matchpointVLSN</color>
+              <color=#f92672>+</color> <color=#e6db74>" at "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" status="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>rollbackStatus</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For debugging support */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpActiveTxns</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"matchpointLsn="</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>matchpointLsn</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>replayTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>copyActiveTxns</color><color=#f8f8f2>().</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"txn id="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" locks="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getWriteLockIds</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"lastLogged="</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLsn</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#a6e22e>getFileNames</color><color=#f8f8f2>(</color><color=#f8f8f2>List</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>lsns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color> <color=#f8f8f2>fileNums</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color> <color=#f8f8f2>files</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>File</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>lsns</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileNums</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileNums</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>files</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>File</color><color=#f8f8f2>(</color><color=#f8f8f2>FileManager</color><color=#f8f8f2>.</color><color=#a6e22e>getFileName</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>files</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>checkRemoved</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>isClosed</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>())</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Make a copy of activeTxns to avoid holding its mutex while iterating. Can be used whenever the</color>
+<color=#75715e>   * cost of the HashMap copy is not significant.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplayTxn</color><color=#f92672>></color> <color=#a6e22e>copyActiveTxns</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>getMap</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Release all transactions, database handles, etc held by the replay unit. The Replicator is</color>
+<color=#75715e>   * closing down and Replay will not be invoked again.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>replayTxn</color> <color=#f8f8f2>:</color> <color=#f8f8f2>copyActiveTxns</color><color=#f8f8f2>().</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Unregistering open replay txn: "</color> <color=#f92672>+</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>cleanup</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>fine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Replay txn: "</color> <color=#f92672>+</color> <color=#f8f8f2>replayTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" unregistration failed: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a copy of the statistics associated with Replay */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>StatGroup</color> <color=#a6e22e>getStats</color><color=#f8f8f2>(</color><color=#f8f8f2>StatsConfig</color> <color=#f8f8f2>config</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StatGroup</color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#f8f8f2>statistics</color><color=#f8f8f2>.</color><color=#a6e22e>cloneGroup</color><color=#f8f8f2>(</color><color=#f8f8f2>config</color><color=#f8f8f2>.</color><color=#a6e22e>getClear</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>resetStats</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>statistics</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* For unit tests */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>SimpleTxnMap</color><color=#f92672><</color><color=#f8f8f2>ReplayTxn</color><color=#f92672>></color> <color=#a6e22e>getActiveTxns</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>activeTxns</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpState</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"lastReplayedTxn="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedTxn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" lastReplayedVLSN="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplayedVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>" numActiveReplayTxns="</color><color=#f8f8f2>).</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>activeTxns</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\n"</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Write out any pending acknowledgments. See GroupCommit.flushPendingAcks for details. This</color>
+<color=#75715e>   * method is invoked after each log entry is read from the replication stream.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param nowNs the time at the reading of the log entry</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>flushPendingAcks</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>nowNs</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>groupCommit</color><color=#f8f8f2>.</color><color=#a6e22e>flushPendingAcks</color><color=#f8f8f2>(</color><color=#f8f8f2>nowNs</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** See GroupCommit.getPollIntervalNs(long) */</color>
+  <color=#66d9ef>long</color> <color=#a6e22e>getPollIntervalNs</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>defaultNs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>groupCommit</color><color=#f8f8f2>.</color><color=#a6e22e>getPollIntervalNs</color><color=#f8f8f2>(</color><color=#f8f8f2>defaultNs</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Implements group commit. It's really a substructure of Replay and exists mainly for modularity</color>
+<color=#75715e>   * reasons.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Since replay is single threaded, the group commit mechanism works differently in the replica</color>
+<color=#75715e>   * than in the master. In the replica, SYNC transactions are converted into NO_SYNC transactions</color>
+<color=#75715e>   * and executed immediately, but their acknowledgments are delayed until after either the</color>
+<color=#75715e>   * REPLICA_GROUP_COMMIT_INTERVAL (the max amount the first transaction in the group is delayed)</color>
+<color=#75715e>   * has expired, or the size of the group (as specified by REPLICA_MAX_GROUP_COMMIT) has been</color>
+<color=#75715e>   * exceeded.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>GroupCommit</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Size determines max fsync commits that can be grouped. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color><color=#f92672>[]</color> <color=#f8f8f2>pendingCommitAcks</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Number of entries currently in pendingCommitAcks */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nPendingAcks</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If this time limit is reached, the group will be forced to commit.</color>
+<color=#75715e>     * Invariant: nPendingAcks > 0 ==> limitGroupCommitNs > 0</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>limitGroupCommitNs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The time interval that an open group is held back. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>groupCommitIntervalNs</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nGroupCommitTimeouts</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nGroupCommitMaxExceeded</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nGroupCommits</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LongStat</color> <color=#f8f8f2>nGroupCommitTxns</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>GroupCommit</color><color=#f8f8f2>(</color><color=#f8f8f2>DbConfigManager</color> <color=#f8f8f2>configManager</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>pendingCommitAcks</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>long</color><color=#f92672>[</color><color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_MAX_GROUP_COMMIT</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>nPendingAcks</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>groupCommitIntervalMs</color> <color=#f92672>=</color>
+          <color=#f8f8f2>configManager</color><color=#f8f8f2>.</color><color=#a6e22e>getDuration</color><color=#f8f8f2>(</color><color=#f8f8f2>RepParams</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICA_GROUP_COMMIT_INTERVAL</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>groupCommitIntervalNs</color> <color=#f92672>=</color> <color=#f8f8f2>NANOSECONDS</color><color=#f8f8f2>.</color><color=#a6e22e>convert</color><color=#f8f8f2>(</color><color=#f8f8f2>groupCommitIntervalMs</color><color=#f8f8f2>,</color> <color=#f8f8f2>MILLISECONDS</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nGroupCommitTimeouts</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_GROUP_COMMIT_TIMEOUTS</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>nGroupCommitMaxExceeded</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_GROUP_COMMIT_MAX_EXCEEDED</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>nGroupCommitTxns</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_GROUP_COMMIT_TXNS</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>nGroupCommits</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LongStat</color><color=#f8f8f2>(</color><color=#f8f8f2>statistics</color><color=#f8f8f2>,</color> <color=#f8f8f2>N_GROUP_COMMITS</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Returns true if group commits are enabled at the replica. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEnabled</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>pendingCommitAcks</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * The interval used to poll for incoming log entries. The time is lowered from the defaultNs</color>
+<color=#75715e>     * time, if there are pending acknowledgments.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param defaultNs the default poll interval</color>
+<color=#75715e>     * @return the actual poll interval</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>getPollIntervalNs</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>defaultNs</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>defaultNs</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>now</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>nanoTime</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>interval</color> <color=#f92672>=</color> <color=#f8f8f2>limitGroupCommitNs</color> <color=#f92672>-</color> <color=#f8f8f2>now</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>interval</color><color=#f8f8f2>,</color> <color=#f8f8f2>defaultNs</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Returns the sync policy to be implemented at the replica. If group commit is active, and SYNC</color>
+<color=#75715e>     * is requested it will return NO_SYNC instead to delay the fsync.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param txnSyncPolicy the sync policy as stated in the txn</color>
+<color=#75715e>     * @return the sync policy to be implemented by the replica</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>SyncPolicy</color> <color=#a6e22e>getImplSyncPolicy</color><color=#f8f8f2>(</color><color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>txnSyncPolicy</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>txnSyncPolicy</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>SYNC</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>isEnabled</color><color=#f8f8f2>())</color>
+          <color=#f92672>?</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>NO_SYNC</color>
+          <color=#f8f8f2>:</color> <color=#f8f8f2>txnSyncPolicy</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Buffers the acknowledgment if the commit calls for a sync, or if there are pending</color>
+<color=#75715e>     * acknowledgments to ensure that acks are sent in order.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param nowNs the current time</color>
+<color=#75715e>     * @param ackTxn the txn associated with the ack</color>
+<color=#75715e>     * @param txnSyncPolicy the sync policy as request by the committing txn</color>
+<color=#75715e>     * @return true if the ack has been buffered</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#a6e22e>bufferAck</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>nowNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplayTxn</color> <color=#f8f8f2>ackTxn</color><color=#f8f8f2>,</color> <color=#f8f8f2>SyncPolicy</color> <color=#f8f8f2>txnSyncPolicy</color><color=#f8f8f2>)</color>
+        <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isEnabled</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>((</color><color=#f8f8f2>txnSyncPolicy</color> <color=#f92672>==</color> <color=#f8f8f2>SyncPolicy</color><color=#f8f8f2>.</color><color=#a6e22e>SYNC</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>pendingCommitAcks</color><color=#f92672>[</color><color=#f8f8f2>nPendingAcks</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>ackTxn</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>==</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* First txn in group, start the clock. */</color>
+        <color=#f8f8f2>limitGroupCommitNs</color> <color=#f92672>=</color> <color=#f8f8f2>nowNs</color> <color=#f92672>+</color> <color=#f8f8f2>groupCommitIntervalNs</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>flushPendingAcks</color><color=#f8f8f2>(</color><color=#f8f8f2>nowNs</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Flush if there are pending acks and either the buffer limit or the group interval has been</color>
+<color=#75715e>     * reached.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * @param nowNs the current time (passed in to minimize system calls)</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>flushPendingAcks</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>nowNs</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+          <color=#f92672>||</color> <color=#f8f8f2>((</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>!=</color> <color=#f8f8f2>pendingCommitAcks</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color>
+              <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>NanoTimeUtil</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>nowNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>limitGroupCommitNs</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Update statistics. */</color>
+      <color=#f8f8f2>nGroupCommits</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>nGroupCommitTxns</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nPendingAcks</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>NanoTimeUtil</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>nowNs</color><color=#f8f8f2>,</color> <color=#f8f8f2>limitGroupCommitNs</color><color=#f8f8f2>)</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nGroupCommitTimeouts</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nPendingAcks</color> <color=#f92672>>=</color> <color=#f8f8f2>pendingCommitAcks</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nGroupCommitMaxExceeded</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* flush log buffer and fsync to disk */</color>
+      <color=#f8f8f2>repImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>flushSync</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* commits are on disk, send out acknowledgments on the network. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nPendingAcks</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>queueAck</color><color=#f8f8f2>(</color><color=#f8f8f2>pendingCommitAcks</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pendingCommitAcks</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>nPendingAcks</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>limitGroupCommitNs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Simple helper class to package a Txn vlsn and its associated commit time. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>TxnInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>txnVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>private</color> <color=#a6e22e>TxnInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>txnVLSN</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>txnVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>txnVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>masterTxnEndTime</color> <color=#f92672>=</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getTxnVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>txnVLSN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMasterTxnEndTime</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>" VLSN: "</color> <color=#f92672>+</color> <color=#f8f8f2>txnVLSN</color> <color=#f92672>+</color> <color=#e6db74>" masterTxnEndTime="</color> <color=#f92672>+</color> <color=#66d9ef>new</color> <color=#f8f8f2>Date</color><color=#f8f8f2>(</color><color=#f8f8f2>masterTxnEndTime</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

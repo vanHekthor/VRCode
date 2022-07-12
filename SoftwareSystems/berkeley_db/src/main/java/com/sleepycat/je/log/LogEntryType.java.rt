@@ -1,0 +1,991 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * LogEntryType is an enumeration of all log entry types.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Log entries are versioned. When changing the persistent form of a log entry in any way that is</color>
+<color=#75715e> * incompatible with prior releases, make sure the LogEntry instance is capable of reading in older</color>
+<color=#75715e> * versions from the log and be sure to increment LOG_VERSION. The LogEntry.readEntry and</color>
+<color=#75715e> * Loggable.readFromLog methods should check the actual version of the entry. If it is less than</color>
+<color=#75715e> * LOG_VERSION, the old version should be converted to the current version.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Prior to LOG_VERSION 6, each log entry type had a separate version number that was incremented</color>
+<color=#75715e> * only when that log version changed. From LOG_VERSION 6 onward, all types use the same version,</color>
+<color=#75715e> * the LOG_VERSION constant. For versions prior to 6, the readEntry and readFromLog methods will be</color>
+<color=#75715e> * checking the old per-type version. There is no overlap between the old per-type versions and the</color>
+<color=#75715e> * LOG_VERSION values, because the per-type values are all below 6. [#15365]</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The LogEntry instance must be sure that older versions are converted in memory into a correct</color>
+<color=#75715e> * instance of the newest version, so when that LogEntry object is written again as the result of</color>
+<color=#75715e> * migration, eviction, the resulting new log entry conforms to the requirements of the new version.</color>
+<color=#75715e> * If context objects are required for data conversion, the conversion can be done in the</color>
+<color=#75715e> * Node.postFetchInit method.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Starting with LOG_VERSION 9, log entries that can be included in the replication stream must</color>
+<color=#75715e> * be able to write themselves in the format for the immediately previous log version, to allow</color>
+<color=#75715e> * replication during an upgrade when the master has been upgraded and a replica has not. Starting</color>
+<color=#75715e> * with LOG_VERSION 8, log entries that support replication must implement {@link</color>
+<color=#75715e> * ReplicableLogEntry}. When changes are made to replicable log entries for LOG_VERSION 9 and later,</color>
+<color=#75715e> * those entries need to support writing in the previous version's format.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LogEntryType</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Version of the file header, which identifies the version of all entries in that file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Changes to log entries for each version are:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 3 --------- [12328] Add main and dupe tree fanout values for DatabaseImpl. [12557]</color>
+<color=#75715e>   * Add IN LSN array compression. [11597] Add a change to FileSummaryLNs: obsolete offset tracking</color>
+<color=#75715e>   * was added and multiple records are stored for a single file rather than a single record. Each</color>
+<color=#75715e>   * record contains the offsets that were tracked since the last record was written. [11597] Add</color>
+<color=#75715e>   * the full obsolete LSN in LNLogEntry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 4 --------- [#14422] Bump MapLN version from 1 to 2. Instead of a String for the</color>
+<color=#75715e>   * comparator class name, store either a serialized string or Comparator.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 5 --------- [#15195] FileSummaryLN version 3. Add FileSummary.obsoleteLNSize and</color>
+<color=#75715e>   * obsoleteLNSizeCounted fields.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 6 (in JE 3.3.X) --------- [#15365] From this point onward, all log entries have the</color>
+<color=#75715e>   * same version, LOG_VERSION, rather than using per-type versions. [#15365] DatabaseImpl stores a</color>
+<color=#75715e>   * map of DbFileSummaries.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>[#13467] Convert duplicatesAllowed boolean to DUPS_ALLOWED_BIT flag in DatabaseImpl. Add</color>
+<color=#75715e>   * REPLICATED_BIT flag to DatabaseImpl. [#13467] Add REPLICATED_BIT to DbTree. [#13467] Add</color>
+<color=#75715e>   * ReplicatedDatabaseConfig to NameLN_TX to support replication of database operations.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>[#15581] Add lastAllocateReplicatedDbId to DbTree [#16083] Add replication master node ID to</color>
+<color=#75715e>   * txn commit/abort</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 7 (in JE 4.0) --------------------- Add the invisible bit in the entry header</color>
+<color=#75715e>   * version field. Add the RollbackStart log entry type Add the RollbackEnd log entry type Add the</color>
+<color=#75715e>   * Matchpoint log entry type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 8 (in JE 5.0) --------------------- Made provisions for storing Triggers in a</color>
+<color=#75715e>   * DatabaseImpl.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Database IDs enlarged from int or packed int, to long or packed long (note that packed int</color>
+<color=#75715e>   * and packed long are compatible). [#18540]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Add new log entry types for LN delete, insert and update. [#18055]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Apply optimization to omit key size for some internal LNs, in addition to user LNs. [#18055]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>LN no longer has node ID. [#18633]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Add FileSummary.maxLNSize. [#18633]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>VLSN is optionally maintained in LogEntryHeader for cleaner migrated LNs and a new</color>
+<color=#75715e>   * VLSN_PRESENT entry header flag is used to signify the presence of the VLSN. PRESERVE_VLSN_BIT</color>
+<color=#75715e>   * was added to DbTree to correspond to the je.env.preserveRecordVersion environment config param.</color>
+<color=#75715e>   * [#19476]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Dup tree representation changed to use two-part keys. Deprecated: DIN, DBIN, DupCountLN,</color>
+<color=#75715e>   * INDeleteInfo, INDupDeleteInfo. Removed DatabaseImpl.maxDupTreeEntriesPerNode. [#19165]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 9 (in JE 6.0) --------------------- See comment above about ReplicableLogEntry.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>BIN-deltas are now represented as BINs using the new BINDeltaLogEntry (log entry type</color>
+<color=#75715e>   * NewBINDelta).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 10 (in JE 6.2) ---------------------- Each BIN-delta stores the total and max number</color>
+<color=#75715e>   * of entries in the previous full version of the same BIN. A BIN-delta may also store a bloom</color>
+<color=#75715e>   * filter for the keys in the full BIN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 11 (in JE 6.3) ---------------------- LN log records have additional info to handle</color>
+<color=#75715e>   * embedded records. See LNLogEntry for details. Also, BIN log records include the VLSNs of</color>
+<color=#75715e>   * embedded records.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Added LOG_IMMUTABLE_FILE entry type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 12 (in JE 7.0) ---------------------- Added expiration info to LNs and BIN slots.</color>
+<color=#75715e>   * The LN's expiration time is replicated, so this changes the replication format. Also added the</color>
+<color=#75715e>   * "have abort LSN" flag, to avoid writing a byte for a null LSN, and moved the flags to the front</color>
+<color=#75715e>   * to support the new forReplication format.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For ReplicableLogEntry and VersionedWriteLoggable, added the forReplication parameter to</color>
+<color=#75715e>   * write methods to support a replication format variation. This allows omitting some fields from</color>
+<color=#75715e>   * an entry when they are not needed by replication.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>LNLogEntry in forReplication mode no longer includes the abortLSN or the abortKnownDeleted</color>
+<color=#75715e>   * flag. This is a format change because these were used by Replay in earlier versions.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Txn and VersionedWriteTxnEnd (Commit and Abort) in forReplication mode now always includes a</color>
+<color=#75715e>   * null prevLsn field, which only occupies one byte. However, this is not strictly a format</color>
+<color=#75715e>   * change, because this field has never been used by Replay.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 13 (in JE 7.1) ----------------------</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Added dtvlsn field to LOG_TXN_END entry to support efficient persistent tracking of the</color>
+<color=#75715e>   * DTVLN (Durable Transaction VLSN).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 14 (in JE 7.3) ----------------------</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Added LOG_RESTORE_REQUIRED to indicate that the environment's log is no longer consistent,</color>
+<color=#75715e>   * and some curative action must happen before the environment can be recovered.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Version 15 (in JE 7.5) ----------------------</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Fixed a bug in mutation of a BIN-delta to a full BIN where the identifierKey was not set</color>
+<color=#75715e>   * correctly. The identifierKey can only be checked by the BtreeVerifier when the log was</color>
+<color=#75715e>   * initially created using log version 15 or greater. Added new field DbTree.initialLogVersion to</color>
+<color=#75715e>   * support this.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The GlobalCBVLSN is no longer updated in the rep group DB when all nodes in a rep group have</color>
+<color=#75715e>   * been updated to 7.5 or later. The network restore protocol no longer relies on the</color>
+<color=#75715e>   * GlobalCBVLSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>The _jeReservedFilesDb internal DB (DbType.RESERVED_FILES) was added. Uses a new LN log</color>
+<color=#75715e>   * entry type: LOG_RESERVED_FILE_LN. Contains metadata used to manage reserved files.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOG_VERSION</color> <color=#f92672>=</color> <color=#ae81ff>15</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The latest log version for which the replicated log format of any replicable log entry class</color>
+<color=#75715e>   * changed. Replication uses this value to determine if the latest version of the replication</color>
+<color=#75715e>   * stream can be understood by an earlier software version. This field is needed to account for</color>
+<color=#75715e>   * cases where log entry format changes only apply to non-replicable entries, or only to the</color>
+<color=#75715e>   * local, not replicated, form of replicable entries, the as was the case for log versions 9, 10,</color>
+<color=#75715e>   * and 11.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOG_VERSION_HIGHEST_REPLICABLE</color> <color=#f92672>=</color> <color=#ae81ff>13</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FIRST_LOG_VERSION</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The earliest log version for which replicable log entries support writing themselves in older</color>
+<color=#75715e>   * versions, to support replication to older nodes during upgrades.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOG_VERSION_REPLICATE_OLDER</color> <color=#f92672>=</color> <color=#ae81ff>9</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The log version that added expiration info to LNs and BIN slots for JE</color>
+<color=#75715e>   * 7.0.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOG_VERSION_EXPIRE_INFO</color> <color=#f92672>=</color> <color=#ae81ff>12</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The log version that introduced the dtvlsn field in commit log entries.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOG_VERSION_DURABLE_VLSN</color> <color=#f92672>=</color> <color=#ae81ff>13</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Should be used for reading the entry header of the file header, since the actual version is not</color>
+<color=#75715e>   * known until the FileHeader item is read.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>UNKNOWN_FILE_HEADER_VERSION</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Collection of log entry type classes, used to read the log.  Note that</color>
+<color=#75715e>   * this must be declared before any instances of LogEntryType, since the</color>
+<color=#75715e>   * constructor uses this map. Each statically defined LogEntryType should</color>
+<color=#75715e>   * register itself with this collection.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>MAX_TYPE_NUM</color> <color=#f92672>=</color> <color=#ae81ff>40</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color><color=#f92672>[]</color> <color=#f8f8f2>LOG_TYPES</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f92672>[</color><color=#f8f8f2>MAX_TYPE_NUM</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Enumeration of log entry types. The log entry type represents the 2 byte</color>
+<color=#75715e>   * field that starts every log entry. The top byte is the log type, the</color>
+<color=#75715e>   * bottom byte holds the version value, provisional bit, replicated bit,</color>
+<color=#75715e>   * and invisible bit.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Log type(8 bits)</color>
+<color=#75715e>   * Provisional(2 bits) Replicated(1 bit) Invisible(1 bit) Version(5 bits)</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The top byte (log type) identifies the type and can be used to lookup</color>
+<color=#75715e>   * the LogEntryType object, while the bottom byte has information about the</color>
+<color=#75715e>   * entry (instance) of this type.  The bottom byte is effectively entry</color>
+<color=#75715e>   * header information that is common to all types and is managed by methods</color>
+<color=#75715e>   * in LogEntryHeader. See LogEntryHeader.java</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/*  Node types */</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Deprecated transactional LN entry type, use LOG_DEL_LN_TRANSACTIONAL,</color>
+<color=#75715e>   * LOG_INS_LN_TRANSACTIONAL, LOG_UPD_LN_TRANSACTIONAL instead according to</color>
+<color=#75715e>   * the operation type.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_OLD_LN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"LN_TX"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>LN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Deprecated LN entry type, use LOG_DEL_LN, LOG_INS_LN, LOG_UPD_LN instead</color>
+<color=#75715e>   * according to the operation type.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_OLD_LN</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>2</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"LN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>LN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Never used</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_MAPLN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>3</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"MapLN_TX"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>MapLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* Logging changes DB utilization. */</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_MAPLN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>4</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"MapLN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>MapLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* Logging changes DB utilization. */</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_NAMELN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>5</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"NameLN_TX"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>NameLNLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_NAMELN</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>6</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"NameLN"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>NameLNLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DEL_DUPLN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>7</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DelDupLN_TX"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>DeletedDupLNLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DEL_DUPLN</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>8</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DelDupLN"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>DeletedDupLNLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by DupConvert and some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DUPCOUNTLN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>9</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DupCountLN_TX"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>DupCountLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>OLD_DUP</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by DupConvert and some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DUPCOUNTLN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>10</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DupCountLN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>DupCountLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>OLD_DUP</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_FILESUMMARYLN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>11</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"FileSummaryLN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>FileSummaryLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* Logging changes file utilization. */</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_IN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>12</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"IN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>INLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>IN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>IN</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_BIN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>13</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"BIN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>INLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>BIN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>IN</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by DupConvert and some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DIN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>14</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DIN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>INLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>DIN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>OLD_DUP</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by DupConvert and some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DBIN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>15</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DBIN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>INLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>DBIN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>OLD_DUP</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The root entry of the DbTree, it saves the root information for name</color>
+<color=#75715e>   * and id database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DBTREE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>16</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DbTree"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>dbi</color><color=#f8f8f2>.</color><color=#a6e22e>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* Logging changes DB utilization. */</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Transactional entries */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_TXN_COMMIT</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>17</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Commit"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>CommitLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* To ensure DTVLSN is in sync with VLSN */</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_TXN_ABORT</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>18</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Abort"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>AbortLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>INSIDE_LATCH</color><color=#f8f8f2>,</color> <color=#75715e>/* To ensure DTVLSN is in sync with VLSN */</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_CKPT_START</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>19</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"CkptStart"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>recovery</color><color=#f8f8f2>.</color><color=#a6e22e>CheckpointStart</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_CKPT_END</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>20</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"CkptEnd"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>recovery</color><color=#f8f8f2>.</color><color=#a6e22e>CheckpointEnd</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_IN_DELETE_INFO</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>21</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"INDelete"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>INDeleteInfo</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 9, replaced by "live" LOG_BIN_DELTA. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_OLD_BIN_DELTA</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>22</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"BINDelta"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>OldBINDeltaLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>OldBINDelta</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_OLD_DUP_BIN_DELTA</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>23</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"DupBINDelta"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>OldBINDeltaLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>OldBINDelta</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Although this is replicable, it is never replicated except in tests. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_TRACE</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>24</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Trace"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>TraceLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* File header */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_FILE_HEADER</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>25</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"FileHeader"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>FileHeaderEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>FileHeader</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/* Obsolete in version 8, only used by some log readers. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_IN_DUPDELETE_INFO</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>26</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"INDupDelete"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>dupConvert</color><color=#f8f8f2>.</color><color=#a6e22e>INDupDeleteInfo</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_TXN_PREPARE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>27</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Prepare"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>txn</color><color=#f8f8f2>.</color><color=#a6e22e>TxnPrepare</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_ROLLBACK_START</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>28</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"RollbackStart"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>txn</color><color=#f8f8f2>.</color><color=#a6e22e>RollbackStart</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_ROLLBACK_END</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>29</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"RollbackEnd"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>txn</color><color=#f8f8f2>.</color><color=#a6e22e>RollbackEnd</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_MATCHPOINT</color> <color=#f92672>=</color>
+      <color=#f8f8f2>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>30</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Matchpoint"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>MatchpointLogEntry</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DEL_LN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>31</color><color=#f8f8f2>,</color> <color=#e6db74>"DEL_LN_TX"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_DEL_LN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>32</color><color=#f8f8f2>,</color> <color=#e6db74>"DEL_LN"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_INS_LN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>33</color><color=#f8f8f2>,</color> <color=#e6db74>"INS_LN_TX"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_INS_LN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>34</color><color=#f8f8f2>,</color> <color=#e6db74>"INS_LN"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_UPD_LN_TRANSACTIONAL</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>35</color><color=#f8f8f2>,</color> <color=#e6db74>"UPD_LN_TX"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_UPD_LN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>UserLNLogEntryType</color><color=#f8f8f2>((</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>36</color><color=#f8f8f2>,</color> <color=#e6db74>"UPD_LN"</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_BIN_DELTA</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>37</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"NewBINDelta"</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>new</color> <color=#f8f8f2>BINDeltaLogEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>BIN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>IN</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_IMMUTABLE_FILE</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>38</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"ImmutableFile"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>log</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>.</color><color=#a6e22e>EmptyLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_RESTORE_REQUIRED</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>39</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"RestoreRequired"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>SingleItemEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>log</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color><color=#f8f8f2>.</color><color=#a6e22e>RestoreRequired</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>LOG_RESERVED_FILE_LN</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f8f8f2>)</color> <color=#ae81ff>40</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"ReservedFileLN"</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>LN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>Txnal</color><color=#f8f8f2>.</color><color=#a6e22e>NON_TXNAL</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*** If you add new types, be sure to update MAX_TYPE_NUM at the top.***/</color>
+
+  <color=#75715e>/* Persistent fields */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color> <color=#75715e>// persistent value for this entry type</color>
+
+  <color=#75715e>/* Transient fields */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Attributes</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/* Whether the log entry holds a transactional information. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Does this log entry be marshalled outside or inside the log write</color>
+<color=#75715e>   * latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Marshall</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Can this log entry be put in the replication stream? */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Replicable</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Constructors</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** For base class support. */</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * This constructor only used when the LogEntryType is being used as a key</color>
+<color=#75715e>   * for a map. No log types can be defined outside this package.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>typeNum</color> <color=#f92672>=</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>displayName</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used to create a map key for reporting that is not a real type. */</color>
+  <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>typeNum</color> <color=#f92672>></color> <color=#f8f8f2>MAX_TYPE_NUM</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>typeNum</color> <color=#f92672>=</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>displayName</color> <color=#f92672>=</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logEntry</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a non-replicable log type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param isTransactional whether this type of log entry holds data involved in a transaction. For</color>
+<color=#75715e>   *     example, transaction commit and LN data records are transactional, but INs are not.</color>
+<color=#75715e>   * @param marshallBehavior whether this type of log entry may be serialized outside the log write</color>
+<color=#75715e>   *     latch. This is true of the majority of types. Certain types like the FileSummaryLN rely on</color>
+<color=#75715e>   *     the log write latch to enforce serial semantics.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>LogEntryType</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Marshall</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>LOCAL</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>nodeType</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a replicable log type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param isTransactional whether this type of log entry holds data involved in a transaction</color>
+<color=#75715e>   * @param marshallBehavior whether this type of log entry may be serialized outside the log write</color>
+<color=#75715e>   *     latch</color>
+<color=#75715e>   * @param replicationPossible whether this type of log entry can be shared with a replication</color>
+<color=#75715e>   *     group</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>createReplicableLogEntryType</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicableLogEntry</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Marshall</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Replicable</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>nodeType</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Internal constructor for all log types. Don't create instances using this directly, to improve</color>
+<color=#75715e>   * error checking.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#a6e22e>LogEntryType</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Marshall</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Replicable</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>typeNum</color> <color=#f92672>=</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>displayName</color> <color=#f92672>=</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logEntry</color> <color=#f92672>=</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color> <color=#f92672>=</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>marshallBehavior</color> <color=#f92672>=</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replicationPossible</color> <color=#f92672>=</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>nodeType</color> <color=#f92672>=</color> <color=#f8f8f2>nodeType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>setLogType</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LOG_TYPES</color><color=#f92672>[</color><color=#f8f8f2>typeNum</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#66d9ef>this</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>logEntry</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>replicationPossible</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>replicationPossible</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicable</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>logEntry</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>ReplicableLogEntry</color>
+        <color=#f8f8f2>:</color> <color=#e6db74>"Replicable log types must have replicable log entries"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return the static version of this type */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>typeNum</color> <color=#f92672><=</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>typeNum</color> <color=#f92672>></color> <color=#f8f8f2>MAX_TYPE_NUM</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LOG_TYPES</color><color=#f92672>[</color><color=#f8f8f2>typeNum</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get a copy of all types for unit testing. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color> <color=#a6e22e>getAllTypes</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>MAX_TYPE_NUM</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>LOG_TYPES</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return the log entry type owned by the shared, static version */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getSharedLogEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return a clone of the log entry type for a given log type. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntry</color> <color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>logEntry</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color> <color=#a6e22e>getTypeNum</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if type number is valid. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isValidType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>typeNum</color> <color=#f92672>></color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>typeNum</color> <color=#f92672><=</color> <color=#f8f8f2>MAX_TYPE_NUM</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toStringNoVersion</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Check for equality without making a new object. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equalsType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>typeNum</color> <color=#f92672>==</color> <color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Override Object.equals. Ignore provisional bit when checking for</color>
+<color=#75715e>   * equality.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Same instance? */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color> <color=#f92672>==</color> <color=#f8f8f2>obj</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Is it the right type of object? */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>obj</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>typeNum</color> <color=#f92672>==</color> <color=#f8f8f2>((</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>)</color> <color=#f8f8f2>obj</color><color=#f8f8f2>).</color><color=#a6e22e>typeNum</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** This is used as a hash key. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>hashCode</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>enum</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>TXNAL</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>NON_TXNAL</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isTxnal</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Txnal</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>isTxnal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>isTxnal</color> <color=#f92672>=</color> <color=#f8f8f2>isTxnal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isTransactional</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>isTxnal</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if this log entry has transactional information in it, like a commit or abort</color>
+<color=#75715e>   * record, or a transactional LN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTransactional</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>enum</color> <color=#f8f8f2>Marshall</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>OUTSIDE_LATCH</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>INSIDE_LATCH</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Marshall</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>marshallOutsideLatch</color> <color=#f92672>=</color> <color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>marshallOutsideLatch</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>marshallOutsideLatch</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if this log entry should be marshalled into a buffer outside the log write latch.</color>
+<color=#75715e>   * Currently, the FileSummaryLN and MapLN (which contains DbFileSummary objects) and the commit</color>
+<color=#75715e>   * and abort log entries (due to their DTVLSN fields) need to be logged inside the log write</color>
+<color=#75715e>   * latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>marshallOutsideLatch</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>marshallBehavior</color><color=#f8f8f2>.</color><color=#a6e22e>marshallOutsideLatch</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if the type of this LogEntryType is equivalent to typeB. Version is used as a</color>
+<color=#75715e>   * factor in the comparison when new log entry types are introduced in one release, which</color>
+<color=#75715e>   * supercede existing types.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>compareTypeAndVersion</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>versionA</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>versionB</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>typeNum</color> <color=#f92672>==</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Indicates whether this type of log entry is shared in a replicated</color>
+<color=#75715e>   * environment or not, and whether it can be used as a replication</color>
+<color=#75715e>   * matchpoint.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>enum</color> <color=#f8f8f2>Replicable</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>REPLICABLE_MATCH</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>REPLICABLE_NO_MATCH</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>),</color>
+    <color=#f8f8f2>LOCAL</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isReplicable</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isMatchable</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>Replicable</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>isReplicable</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isMatchable</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicable</color> <color=#f92672>=</color> <color=#f8f8f2>isReplicable</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>isMatchable</color> <color=#f92672>=</color> <color=#f8f8f2>isMatchable</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isReplicable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>isReplicable</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isMatchable</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>isMatchable</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if this type of log entry can be part of the replication stream. For example, INs</color>
+<color=#75715e>   * can never be replicated, while LNs are replicated only if their owning database is replicated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReplicationPossible</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicable</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if this type of log entry can serve as the synchronization matchpoint for the</color>
+<color=#75715e>   * replication stream. That generally means that this log entry contains an replication node ID.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSyncPoint</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>replicationPossible</color><color=#f8f8f2>.</color><color=#a6e22e>isMatchable</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if this type of log entry can serve as the synchronization matchpoint for the</color>
+<color=#75715e>   * replication stream.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isSyncPoint</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>).</color><color=#a6e22e>isSyncPoint</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Type of Btree node. */</color>
+  <color=#66d9ef>enum</color> <color=#f8f8f2>NodeType</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Not a Btree node. */</color>
+    <color=#f8f8f2>NONE</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/* Internal node. Does not include old-format DIN/DBIN. */</color>
+    <color=#f8f8f2>IN</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/* DIN/DBIN/DupCountLN in old-format duplicates database. */</color>
+    <color=#f8f8f2>OLD_DUP</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/* LNs representing records in internal databases. */</color>
+    <color=#f8f8f2>LN_INTERNAL</color><color=#f8f8f2>,</color>
+
+    <color=#75715e>/* LNs representing ordinary user records.  */</color>
+    <color=#f8f8f2>LN_USER</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isNodeType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color> <color=#f92672>!=</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>NONE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isUserLNType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color> <color=#f92672>==</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLNType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color> <color=#f92672>==</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_INTERNAL</color> <color=#f92672>||</color> <color=#f8f8f2>isUserLNType</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isINType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color> <color=#f92672>==</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>IN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isOldDupType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nodeType</color> <color=#f92672>==</color> <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>OLD_DUP</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Return true if the two types are equal. Handles the situation where new log entry types were</color>
+<color=#75715e>   * introduced in one release, that are actually equivalent to old, deprecated types.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>compareTypeAndVersion</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>versionA</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeA</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>versionB</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryA</color> <color=#f92672>=</color> <color=#f8f8f2>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>typeA</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>entryA</color><color=#f8f8f2>.</color><color=#a6e22e>compareTypeAndVersion</color><color=#f8f8f2>(</color><color=#f8f8f2>versionA</color><color=#f8f8f2>,</color> <color=#f8f8f2>versionB</color><color=#f8f8f2>,</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>UserLNLogEntryType</color> <color=#66d9ef>extends</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>UserLNLogEntryType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color> <color=#f8f8f2>Txnal</color> <color=#f8f8f2>txnal</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>typeNum</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>displayName</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>create</color><color=#f8f8f2>(</color><color=#f8f8f2>com</color><color=#f8f8f2>.</color><color=#a6e22e>sleepycat</color><color=#f8f8f2>.</color><color=#a6e22e>je</color><color=#f8f8f2>.</color><color=#a6e22e>tree</color><color=#f8f8f2>.</color><color=#a6e22e>LN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color><color=#f8f8f2>),</color>
+          <color=#f8f8f2>txnal</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Marshall</color><color=#f8f8f2>.</color><color=#a6e22e>OUTSIDE_LATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>Replicable</color><color=#f8f8f2>.</color><color=#a6e22e>REPLICABLE_NO_MATCH</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>LN_USER</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>compareTypeAndVersion</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>versionA</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>versionB</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* If the other entry is newer, the types should match. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>versionA</color> <color=#f92672><=</color> <color=#f8f8f2>versionB</color> <color=#f92672>&&</color> <color=#f8f8f2>getTypeNum</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the other entry is older, the type might be an old,</color>
+<color=#75715e>       * deprecated, equivalent type.</color>
+<color=#75715e>       */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>versionA</color> <color=#f92672>></color> <color=#f8f8f2>versionB</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>isEquivalentOldType</color><color=#f8f8f2>(</color><color=#f8f8f2>typeB</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * In this case, the other entry's version is older or newer but it</color>
+<color=#75715e>       * doesn't matter -- it's completely the wrong type.</color>
+<color=#75715e>       */</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEquivalentOldType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>typeB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isTransactional</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>typeB</color> <color=#f92672>==</color> <color=#f8f8f2>LOG_OLD_LN</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>()))</color>
+                <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>isTransactional</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>typeB</color> <color=#f92672>==</color> <color=#f8f8f2>LOG_OLD_LN_TRANSACTIONAL</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

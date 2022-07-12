@@ -1,0 +1,1890 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.CacheMode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DiskLimitException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.ChecksumException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.CleanerFileReader</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogItem</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.Trace</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LNLogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.FileNotFoundException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Reads all entries in a log file and either determines them to be obsolete or active. Active LNs</color>
+<color=#75715e> * are migrated immediately (by logging them). Active INs are marked for migration by setting the</color>
+<color=#75715e> * dirty flag.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>May be invoked explicitly by calling doClean, or woken up if used as a daemon thread.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>FileProcessor</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DaemonThread</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The number of LN log entries after we process pending LNs. If we do this too seldom, the</color>
+<color=#75715e>   * pending LN queue may grow large, and it isn't budgeted memory. If we process it too often, we</color>
+<color=#75715e>   * will repeatedly request a non-blocking lock for the same locked node.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>PROCESS_PENDING_EVERY_N_LNS</color> <color=#f92672>=</color> <color=#ae81ff>100</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Cleaner</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileSelector</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationProfile</color> <color=#f8f8f2>profile</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>UtilizationCalculator</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** @see #onWakeup() */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>activate</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastWakeupLsn</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The first thread (out of N cleaner threads) does certain housekeeping</color>
+<color=#75715e>   * duties that don't need to be done by all threads.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>firstThread</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Log version for the target file. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>fileLogVersion</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Per Run counters. Reset before each file is processed. */</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of full IN (BIN or UIN) logrecs that were known to be apriory</color>
+<color=#75715e>   * obsolete and did not need any further processing (i.e., they did not</color>
+<color=#75715e>   * need to be searched-for in the tree). These include logrecs whose</color>
+<color=#75715e>   * offset is recorded in the FS DB, or whose DB has been deleted or is</color>
+<color=#75715e>   * being deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nINsObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of full IN (BIN or UIN) logrecs that were not known apriory to</color>
+<color=#75715e>   * be obsolete, and as a result, needed further processing.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nINsCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of full IN (BIN or UIN) logrecs that were found to be obsolete</color>
+<color=#75715e>   * after having been looked up in the tree.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nINsDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of full IN (BIN or UIN) logrecs that were still active and were</color>
+<color=#75715e>   * marked dirty so that they will be migrated during the next ckpt.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nINsMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of BIN-delta logrecs that were known to be apriory</color>
+<color=#75715e>   * obsolete and did not need any further processing (i.e., they did not</color>
+<color=#75715e>   * need to be searched-for in the tree). These include logrecs whose</color>
+<color=#75715e>   * offset is recorded in the FS DB, or whose DB has been deleted or is</color>
+<color=#75715e>   * being deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nBINDeltasObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of BIN-delta logrecs that were not known apriory to be obsolete,</color>
+<color=#75715e>   * and as a result, needed further processing.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nBINDeltasCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of BIN-delta logrecs that were found to be obsolete after having</color>
+<color=#75715e>   * been looked up in the tree.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nBINDeltasDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of BIN-delta logrecs that were still active and were marked</color>
+<color=#75715e>   * dirty so that they will be migrated during the next ckpt.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nBINDeltasMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were known to be apriory obsolete and did not</color>
+<color=#75715e>   * need any further processing (for example, they did not need to be</color>
+<color=#75715e>   * searched-for in the tree). These include logrecs that are immediately</color>
+<color=#75715e>   * obsolete, or whose offset is recorded in the FS DB, or whose DB has been</color>
+<color=#75715e>   * deleted or is being deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were expired.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsExpiredThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were not known apriory to be obsolete, and as</color>
+<color=#75715e>   * a result, needed further processing. These include LNs that had to be</color>
+<color=#75715e>   * searched-for in the tree as well as the nLNQueueHitsThisRun (see below).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were processed without tree search. Let L1 and</color>
+<color=#75715e>   * L2 be two LN logrecs and R1 and R2 be their associated records. We will</color>
+<color=#75715e>   * avoid a tree search for L1 if L1 is in the to-be-proccessed cache when</color>
+<color=#75715e>   * L2 is processed, R2 must be searched-for in the tree, R2 is found in a</color>
+<color=#75715e>   * BIN B, and L1 is also pointed-to by a slot in B.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNQueueHitsThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were found to be obsolete after haning been</color>
+<color=#75715e>   * processed further.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs whose LSN had to be locked in order to check their</color>
+<color=#75715e>   * obsoleteness, and this non-blocking lock request was denied (and as a</color>
+<color=#75715e>   * result, the logrec was placed in the "pending LNs" queue.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsLockedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of LN logrecs that were still active and were migrated.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * This applies to temporary DBs only. It is the number of LN logrecs that</color>
+<color=#75715e>   * were still active, but intead of migrating them, we attached the LN to</color>
+<color=#75715e>   * the meory-resident tree and marked the LN as dirty.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nLNsMarkedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Number of log entries read during cleaning.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>nEntriesReadThisRun</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>nRepeatIteratorReadsThisRun</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>FileProcessor</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>firstThread</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Cleaner</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>UtilizationProfile</color> <color=#f8f8f2>profile</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>UtilizationCalculator</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>FileSelector</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>env</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cleaner</color> <color=#f92672>=</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileSelector</color> <color=#f92672>=</color> <color=#f8f8f2>fileSelector</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>profile</color> <color=#f92672>=</color> <color=#f8f8f2>profile</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>calculator</color> <color=#f92672>=</color> <color=#f8f8f2>calculator</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>firstThread</color> <color=#f92672>=</color> <color=#f8f8f2>firstThread</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Return the number of retries when a deadlock exception occurs. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#a6e22e>nDeadlockRetries</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nDeadlockRetries</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>activateOnWakeup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>activate</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The thread is woken, either by an explicit notify (call to {@link Cleaner#wakeupActivate()}, or</color>
+<color=#75715e>   * when the timed wakeup interval elapses.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In the former case (a call to wakeupActivate), the 'activate' field will be true and the</color>
+<color=#75715e>   * doClean method is called here. This happens when the number of bytes written exceeds the</color>
+<color=#75715e>   * cleanerBytesInterval, a config change is made that could impact cleaning, etc.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In the latter case (the wakeup interval elapsed), 'activate' will be false. In this case,</color>
+<color=#75715e>   * when there has been no writing since the last wakeup, we perform cleaning and checkpointing, if</color>
+<color=#75715e>   * needed to reclaim space. This handles the situation where writing stops, but cleaning or</color>
+<color=#75715e>   * checkpointing or reserved file deletion may be needed. See {@link</color>
+<color=#75715e>   * com.sleepycat.je.EnvironmentConfig#CLEANER_WAKEUP_INTERVAL}.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In all cases, when a disk limit is in violation we always call the doClean method to ensure</color>
+<color=#75715e>   * that {@link Cleaner#manageDiskUsage()} is called in this situation. This is important to free</color>
+<color=#75715e>   * disk space whenever possible.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>onWakeup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>activate</color> <color=#f92672>&&</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>getDiskLimitViolation</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * This is a timed wakeup and no disk limit is violated. We should</color>
+<color=#75715e>       * only call doClean if writing has stopped.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>nextLsn</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>getNextLsn</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lastWakeupLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>nextLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * If the last LSN in the log has changed since the last timed</color>
+<color=#75715e>         * wakeup, do nothing, because writing has not stopped. As long</color>
+<color=#75715e>         * as writing continues, we expect the cleaner and checkpointer</color>
+<color=#75715e>         * to be woken via their byte interval params.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>lastWakeupLsn</color> <color=#f92672>=</color> <color=#f8f8f2>nextLsn</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * There has been no writing since the last wakeup. Schedule a</color>
+<color=#75715e>       * checkpoint, if needed to reclaim disk space for already cleaned</color>
+<color=#75715e>       * files. Then fall through and activate (call doClean).</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getCheckpointer</color><color=#f8f8f2>().</color><color=#a6e22e>wakeupAfterNoWrites</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>doClean</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*invokedFromDaemon*/</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*cleanMultipleFiles*/</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*forceCleaning*/</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>activate</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Selects files to clean and cleans them. It returns the number of successfully cleaned files.</color>
+<color=#75715e>   * May be called by the daemon thread or programatically.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param invokedFromDaemon currently has no effect.</color>
+<color=#75715e>   * @param cleanMultipleFiles is true to clean until we're under budget, or false to clean at most</color>
+<color=#75715e>   *     one file.</color>
+<color=#75715e>   * @param forceCleaning is true to clean even if we're not under the utilization threshold.</color>
+<color=#75715e>   * @return the number of files cleaned, not including files cleaned unsuccessfully.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>int</color> <color=#a6e22e>doClean</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>invokedFromDaemon</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>cleanMultipleFiles</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forceCleaning</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isClosed</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Get all file summaries including tracked files.  Tracked files may</color>
+<color=#75715e>     * be ready for cleaning if there is a large cache and many files have</color>
+<color=#75715e>     * not yet been flushed and do not yet appear in the profile map.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color><color=#f92672>></color> <color=#f8f8f2>fileSummaryMap</color> <color=#f92672>=</color>
+        <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>getFileSummaryMap</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*includeTrackedFiles*/</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Clean until no more files are selected.  */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>nOriginalLogFiles</color> <color=#f92672>=</color> <color=#f8f8f2>fileSummaryMap</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nFilesCleaned</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Stop if the daemon is paused or the environment is closing. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>invokedFromDaemon</color> <color=#f92672>&&</color> <color=#f8f8f2>isPaused</color><color=#f8f8f2>())</color> <color=#f92672>||</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isClosing</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Manage disk usage (refresh stats and delete files) periodically.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Do this before cleaning, to reduce the chance of filling the</color>
+<color=#75715e>       * disk while cleaning and migrating/logging LNs. Also do it after</color>
+<color=#75715e>       * cleaning (before deciding whether to clean another file), even</color>
+<color=#75715e>       * if there are no more files to clean, to ensure space is freed</color>
+<color=#75715e>       * after a long run.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>manageDiskUsage</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Stop if we cannot write because of a disk limit violation. */</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>checkDiskLimitViolation</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DiskLimitException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>invokedFromDaemon</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Process pending LNs periodically.  Pending LNs can prevent file</color>
+<color=#75715e>       * deletion.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>processPending</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nFilesCleaned</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* If we should only clean one file, stop now. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>cleanMultipleFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Don't clean forever. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nFilesCleaned</color> <color=#f92672>>=</color> <color=#f8f8f2>nOriginalLogFiles</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Refresh file summary info for next file selection. */</color>
+        <color=#f8f8f2>fileSummaryMap</color> <color=#f92672>=</color> <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>getFileSummaryMap</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*includeTrackedFiles*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Select the next file for cleaning and update the Cleaner's</color>
+<color=#75715e>       * read-only file collections.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Pair</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f92672>></color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+          <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>selectFileForCleaning</color><color=#f8f8f2>(</color><color=#f8f8f2>calculator</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileSummaryMap</color><color=#f8f8f2>,</color> <color=#f8f8f2>forceCleaning</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Stop if no file is selected for cleaning. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>first</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>requiredUtil</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>second</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>twoPass</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>requiredUtil</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>finished</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>fileDeleted</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileNumValue</color> <color=#f92672>=</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>runId</color> <color=#f92672>=</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>totalRuns</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>MemoryBudget</color> <color=#f8f8f2>budget</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>nFilesCleaned</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>fileChosenHook</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Perform 1st pass of 2-pass cleaning. */</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>passOneMsg</color> <color=#f92672>=</color> <color=#e6db74>""</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>recalcSummary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expTracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExpirationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumValue</color><color=#f8f8f2>);</color>
+
+          <color=#f8f8f2>processFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalcSummary</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>INSummary</color><color=#f8f8f2>(),</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>expiredSize</color> <color=#f92672>=</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiredBytes</color><color=#f8f8f2>(</color><color=#f8f8f2>TTL</color><color=#f8f8f2>.</color><color=#a6e22e>currentSystemTime</color><color=#f8f8f2>());</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>recalcSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getObsoleteSize</color><color=#f8f8f2>();</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>recalcUtil</color> <color=#f92672>=</color>
+              <color=#f8f8f2>FileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>utilization</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteSize</color> <color=#f92672>+</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalcSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color><color=#f8f8f2>);</color>
+
+          <color=#f8f8f2>passOneMsg</color> <color=#f92672>=</color>
+              <color=#e6db74>" pass1RecalcObsolete="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>obsoleteSize</color>
+                  <color=#f92672>+</color> <color=#e6db74>" pass1RecalcExpired="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>expiredSize</color>
+                  <color=#f92672>+</color> <color=#e6db74>" pass1RecalcUtil="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>recalcUtil</color>
+                  <color=#f92672>+</color> <color=#e6db74>" pass1RequiredUtil="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>requiredUtil</color><color=#f8f8f2>;</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>recalcUtil</color> <color=#f92672>></color> <color=#f8f8f2>requiredUtil</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+            <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nRevisalRuns</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+            <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>putFile</color><color=#f8f8f2>(</color><color=#f8f8f2>expTracker</color><color=#f8f8f2>,</color> <color=#f8f8f2>expiredSize</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>logMsg</color> <color=#f92672>=</color>
+                <color=#e6db74>"CleanerRevisalRun "</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>runId</color>
+                    <color=#f92672>+</color> <color=#e6db74>" on file 0x"</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumValue</color><color=#f8f8f2>)</color>
+                    <color=#f92672>+</color> <color=#e6db74>" ends:"</color>
+                    <color=#f92672>+</color> <color=#f8f8f2>passOneMsg</color><color=#f8f8f2>;</color>
+
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#f8f8f2>logMsg</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>removeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>budget</color><color=#f8f8f2>);</color>
+
+            <color=#f8f8f2>finished</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>resetPerRunCounters</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nCleanerRuns</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>twoPass</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nTwoPassRuns</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Keep track of estimated and true utilization. */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>estimatedFileSummary</color> <color=#f92672>=</color>
+            <color=#f8f8f2>fileSummaryMap</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>fileSummaryMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>).</color><color=#a6e22e>clone</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>recalculatedFileSummary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>INSummary</color> <color=#f8f8f2>inSummary</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>INSummary</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>msgHeader</color> <color=#f92672>=</color>
+            <color=#f8f8f2>(</color><color=#f8f8f2>twoPass</color> <color=#f92672>?</color> <color=#e6db74>"CleanerTwoPassRun "</color> <color=#f8f8f2>:</color> <color=#e6db74>"CleanerRun "</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#f8f8f2>runId</color>
+                <color=#f92672>+</color> <color=#e6db74>" on file 0x"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumValue</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>beginMsg</color> <color=#f92672>=</color> <color=#f8f8f2>msgHeader</color> <color=#f92672>+</color> <color=#e6db74>" begins:"</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/* Trace is unconditional for log-based debugging. */</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINE</color><color=#f8f8f2>,</color> <color=#f8f8f2>beginMsg</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Process all log entries in the file. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>processFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>recalculatedFileSummary</color><color=#f8f8f2>,</color> <color=#f8f8f2>inSummary</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#f8f8f2>nFilesCleaned</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* File is fully processed, update stats. */</color>
+        <color=#f8f8f2>accumulatePerRunCounters</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>finished</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/* Trace is unconditional for log-based debugging. */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>endMsg</color> <color=#f92672>=</color>
+            <color=#f8f8f2>msgHeader</color>
+                <color=#f92672>+</color> <color=#e6db74>" ends:"</color>
+                <color=#f92672>+</color> <color=#e6db74>" invokedFromDaemon="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>invokedFromDaemon</color>
+                <color=#f92672>+</color> <color=#e6db74>" finished="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>finished</color>
+                <color=#f92672>+</color> <color=#e6db74>" fileDeleted="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>fileDeleted</color>
+                <color=#f92672>+</color> <color=#e6db74>" nEntriesRead="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nEntriesReadThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nINsObsolete="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nINsObsoleteThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nINsCleaned="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nINsCleanedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nINsDead="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nINsDeadThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nINsMigrated="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nINsMigratedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nBINDeltasObsolete="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nBINDeltasObsoleteThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nBINDeltasCleaned="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nBINDeltasCleanedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nBINDeltasDead="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nBINDeltasDeadThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nBINDeltasMigrated="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nBINDeltasMigratedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsObsolete="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsObsoleteThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsCleaned="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsCleanedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsDead="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsDeadThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsExpired="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsExpiredThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsMigrated="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsMigratedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsMarked="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsMarkedThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNQueueHits="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNQueueHitsThisRun</color>
+                <color=#f92672>+</color> <color=#e6db74>" nLNsLocked="</color>
+                <color=#f92672>+</color> <color=#f8f8f2>nLNsLockedThisRun</color><color=#f8f8f2>;</color>
+
+        <color=#f8f8f2>Trace</color><color=#f8f8f2>.</color><color=#a6e22e>trace</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>endMsg</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Only construct INFO level message if needed. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>estUtil</color> <color=#f92672>=</color>
+              <color=#f8f8f2>(</color><color=#f8f8f2>estimatedFileSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>estimatedFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>utilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+          <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>recalcUtil</color> <color=#f92672>=</color> <color=#f8f8f2>recalculatedFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>utilization</color><color=#f8f8f2>();</color>
+
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>endMsg</color>
+                  <color=#f92672>+</color> <color=#e6db74>" inSummary="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>inSummary</color>
+                  <color=#f92672>+</color> <color=#e6db74>" estSummary="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>estimatedFileSummary</color>
+                  <color=#f92672>+</color> <color=#e6db74>" recalcSummary="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>recalculatedFileSummary</color>
+                  <color=#f92672>+</color> <color=#e6db74>" estimatedUtil="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>estUtil</color>
+                  <color=#f92672>+</color> <color=#e6db74>" recalcUtil="</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>recalcUtil</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>passOneMsg</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileNotFoundException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * File was deleted.  Although it is possible that the file was</color>
+<color=#75715e>         * deleted externally it is much more likely that the file was</color>
+<color=#75715e>         * deleted normally after being cleaned earlier.  This can</color>
+<color=#75715e>         * occur when tracked obsolete information is collected and</color>
+<color=#75715e>         * processed after the file has been cleaned and deleted.</color>
+<color=#75715e>         * Since the file does not exist, ignore the error so that the</color>
+<color=#75715e>         * cleaner will continue.  Remove the file completely from the</color>
+<color=#75715e>         * FileSelector, UtilizationProfile and ExpirationProfile so</color>
+<color=#75715e>         * that we don't repeatedly attempt to process it. [#15528]</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>fileDeleted</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>removeDeletedFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>removeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>removeFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>budget</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Missing file 0x"</color> <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" ignored by cleaner"</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Cleaner"</color><color=#f8f8f2>,</color> <color=#e6db74>"doClean"</color><color=#f8f8f2>,</color> <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INTEGRITY</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>DiskLimitException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>WARNING</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Cleaning of file 0x"</color>
+                <color=#f92672>+</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>toHexString</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>" aborted because of disk limit violation: "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>invokedFromDaemon</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>RuntimeException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Cleaner"</color><color=#f8f8f2>,</color> <color=#e6db74>"doClean"</color><color=#f8f8f2>,</color> <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>finished</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>fileDeleted</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>putBackFileForCleaning</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>nFilesCleaned</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Calculates expired bytes without performing any migration or other side effects. The expired</color>
+<color=#75715e>   * sizes will not overlap with obsolete data, because expired sizes are accumulated only for</color>
+<color=#75715e>   * non-obsolete entries.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param fileNum file to read.</color>
+<color=#75715e>   * @return the expiration tracker.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ExpirationTracker</color> <color=#a6e22e>countExpiration</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>tracker</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ExpirationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>processFile</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>FileSummary</color><color=#f8f8f2>(),</color> <color=#66d9ef>new</color> <color=#f8f8f2>INSummary</color><color=#f8f8f2>(),</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>traceAndLogException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Cleaner"</color><color=#f8f8f2>,</color> <color=#e6db74>"countExpiration"</color><color=#f8f8f2>,</color> <color=#e6db74>""</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INTEGRITY</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>tracker</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process all log entries in the given file.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Note that we gather obsolete offsets at the beginning of the method and do not check for</color>
+<color=#75715e>   * obsolete offsets of entries that become obsolete while the file is being processed. An entry in</color>
+<color=#75715e>   * this file can become obsolete before we process it when normal application activity deletes or</color>
+<color=#75715e>   * updates the entry. Also, large numbers of entries also become obsolete as the result of LN</color>
+<color=#75715e>   * migration while processing the file, but these Checking the TrackedFileSummary while processing</color>
+<color=#75715e>   * the file would be expensive if it has many entries, because we perform a linear search in the</color>
+<color=#75715e>   * TFS. There is a tradeoff between the cost of the TFS lookup and its benefit, which is to avoid</color>
+<color=#75715e>   * a tree search if the entry is obsolete. Many more lookups for non-obsolete entries than</color>
+<color=#75715e>   * obsolete entries will typically be done. Because of the high cost of the linear search,</color>
+<color=#75715e>   * especially when processing large log files, we do not check the TFS. [#19626]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param fileNum the file being cleaned.</color>
+<color=#75715e>   * @param fileSummary used to return the true utilization.</color>
+<color=#75715e>   * @param inSummary used to return IN utilization info for debugging.</color>
+<color=#75715e>   * @param expTracker if non-null, enables countOnly mode, in which expiration info is returned via</color>
+<color=#75715e>   *     this param, obsolete info returned via fileSummary does not include expired data, and no</color>
+<color=#75715e>   *     migration is performed, i.e., there are no side effects.</color>
+<color=#75715e>   * @return false if we aborted file processing because the environment is being closed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processFile</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>,</color> <color=#f8f8f2>INSummary</color> <color=#f8f8f2>inSummary</color><color=#f8f8f2>,</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>countOnly</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>expTracker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LockManager</color> <color=#f8f8f2>lockManager</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnManager</color><color=#f8f8f2>().</color><color=#a6e22e>getLockManager</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Get the current obsolete offsets for this file. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>PackedOffsets</color> <color=#f8f8f2>obsoleteOffsets</color> <color=#f92672>=</color>
+        <color=#f8f8f2>profile</color><color=#f8f8f2>.</color><color=#a6e22e>getObsoleteDetailPacked</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f92672>!</color><color=#f8f8f2>countOnly</color> <color=#75715e>/*logUpdate*/</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>PackedOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>Iterator</color> <color=#f8f8f2>obsoleteIter</color> <color=#f92672>=</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>nextObsolete</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Copy to local variables because they are mutable properties. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>readBufferSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>lookAheadCacheSize</color> <color=#f92672>=</color> <color=#f8f8f2>countOnly</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>lookAheadCacheSize</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Add the overhead of this method to the budget.  Two read buffers are</color>
+<color=#75715e>     * allocated by the file reader. The log size of the offsets happens to</color>
+<color=#75715e>     * be the same as the memory overhead.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>adjustMem</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>obsoleteOffsets</color><color=#f8f8f2>.</color><color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>lookAheadCacheSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>MemoryBudget</color> <color=#f8f8f2>budget</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getMemoryBudget</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>budget</color><color=#f8f8f2>.</color><color=#a6e22e>updateAdminMemoryUsage</color><color=#f8f8f2>(</color><color=#f8f8f2>adjustMem</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Evict after updating the budget. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>DO_CRITICAL_EVICTION</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>daemonEviction</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * We keep a look ahead cache of non-obsolete LNs.  When we lookup a</color>
+<color=#75715e>     * BIN in processLN, we also process any other LNs in that BIN that are</color>
+<color=#75715e>     * in the cache.  This can reduce the number of tree lookups.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LookAheadCache</color> <color=#f8f8f2>lookAheadCache</color> <color=#f92672>=</color> <color=#f8f8f2>countOnly</color> <color=#f92672>?</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>LookAheadCache</color><color=#f8f8f2>(</color><color=#f8f8f2>lookAheadCacheSize</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * For obsolete entries we must check for pending deleted DBs.  To</color>
+<color=#75715e>     * avoid the overhead of DbTree.getDb on every entry we keep a set of</color>
+<color=#75715e>     * all DB IDs encountered and do the check once per DB at the end.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color> <color=#f8f8f2>checkPendingDbSet</color> <color=#f92672>=</color> <color=#f8f8f2>countOnly</color> <color=#f92672>?</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use local caching to reduce DbTree.getDb overhead.  Do not call</color>
+<color=#75715e>     * releaseDb after getDb with the dbCache, since the entire dbCache</color>
+<color=#75715e>     * will be released at the end of this method.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color> <color=#f8f8f2>dbCache</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DbTree</color> <color=#f8f8f2>dbMapTree</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Expired entries are counted obsolete so that this is reflected in</color>
+<color=#75715e>     * total utilization. A separate tracker is used so it can be added in</color>
+<color=#75715e>     * a single call under the log write latch.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LocalUtilizationTracker</color> <color=#f8f8f2>localTracker</color> <color=#f92672>=</color>
+        <color=#f8f8f2>countOnly</color> <color=#f92672>?</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#66d9ef>new</color> <color=#f8f8f2>LocalUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Keep track of all database IDs encountered. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color> <color=#f8f8f2>databases</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><></color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Create the file reader. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>CleanerFileReader</color> <color=#f8f8f2>reader</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>CleanerFileReader</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>),</color>
+            <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>fileSummary</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>inSummary</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>expTracker</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Validate all entries before ever deleting a file. */</color>
+    <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>setAlwaysValidateChecksum</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>TreeLocation</color> <color=#f8f8f2>location</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeLocation</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>nProcessedLNs</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>nProcessedEntries</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>readNextEntryAllowExceptions</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>nProcessedEntries</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nEntriesRead</color><color=#f8f8f2>.</color><color=#a6e22e>increment</color><color=#f8f8f2>();</color>
+
+        <color=#66d9ef>int</color> <color=#f8f8f2>nReads</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getAndResetNReads</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nReads</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nDiskReads</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nReads</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLsn</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isLN</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isLN</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isIN</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isIN</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isBINDelta</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isOldBINDelta</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isOldBINDelta</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isDbTree</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isDbTree</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>boolean</color> <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>expirationTime</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/* Remember the version of the log file. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>isFileHeader</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileLogVersion</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getFileHeader</color><color=#f8f8f2>().</color><color=#a6e22e>getLogVersion</color><color=#f8f8f2>();</color>
+          <color=#75715e>/* No expiration info exists before version 12. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countOnly</color> <color=#f92672>&&</color> <color=#f8f8f2>fileLogVersion</color> <color=#f92672><</color> <color=#ae81ff>12</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color> <color=#75715e>// TODO caller must abort also</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Stop if the daemon is shut down. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>countOnly</color> <color=#f92672>&&</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isClosing</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Exit loop if we can't write. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>countOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>checkDiskLimitViolation</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Update background reads. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nReads</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>updateBackgroundReads</color><color=#f8f8f2>(</color><color=#f8f8f2>nReads</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Sleep if background read/write limit was exceeded. */</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>sleepAfterBackgroundIO</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/* Check for a known obsolete node. */</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextObsolete</color> <color=#f92672><</color> <color=#f8f8f2>fileOffset</color> <color=#f92672>&&</color> <color=#f8f8f2>obsoleteIter</color><color=#f8f8f2>.</color><color=#a6e22e>hasNext</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>nextObsolete</color> <color=#f92672>=</color> <color=#f8f8f2>obsoleteIter</color><color=#f8f8f2>.</color><color=#a6e22e>next</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nextObsolete</color> <color=#f92672>==</color> <color=#f8f8f2>fileOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Check for the entry type next because it is very cheap. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isLN</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isIN</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isBINDelta</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isOldBINDelta</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isDbTree</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Consider all entries we do not process as obsolete. */</color>
+          <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Ignore deltas before log version 8.  Before the change to</color>
+<color=#75715e>         * place deltas in the Btree (in JE 5.0), all deltas were</color>
+<color=#75715e>         * considered obsolete by the cleaner.  Processing an old delta</color>
+<color=#75715e>         * would be very wasteful (a Btree lookup, and possibly</color>
+<color=#75715e>         * dirtying and flushing a BIN), and for duplicates databases</color>
+<color=#75715e>         * could cause an exception due to the key format change.</color>
+<color=#75715e>         * [#21405]</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f8f8f2>isOldBINDelta</color> <color=#f92672>&&</color> <color=#f8f8f2>fileLogVersion</color> <color=#f92672><</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Maintain a set of all databases encountered. */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabaseId</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbId</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>databases</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Get database. This is postponed until we need it, to reduce</color>
+<color=#75715e>         * contention in DbTree.getDb.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f8f8f2>dbId</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Clear DB cache after dbCacheClearCount entries, to</color>
+<color=#75715e>           * prevent starving other threads that need exclusive</color>
+<color=#75715e>           * access to the MapLN (for example, DbTree.deleteMapLN).</color>
+<color=#75715e>           * [#21015]</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>nProcessedEntries</color> <color=#f92672>%</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>dbCacheClearCount</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDbs</color><color=#f8f8f2>(</color><color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>dbCache</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>lockTimeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * If the DB is gone, this entry is obsolete.  If delete</color>
+<color=#75715e>           * cleanup is in progress, we will put the DB into the DB</color>
+<color=#75715e>           * pending set further below.  This entry will be declared</color>
+<color=#75715e>           * deleted after the delete cleanup is finished.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Also ignore INs in dup DBs before log version 8.  These must</color>
+<color=#75715e>         * be obsolete, just as DINs and DBINs must be obsolete (and</color>
+<color=#75715e>         * are also ignored here) after dup DB conversion.  Also, the</color>
+<color=#75715e>         * old format IN key cannot be used for lookups. [#21405]</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f8f8f2>isIN</color> <color=#f92672>&&</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>fileLogVersion</color> <color=#f92672><</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLNLogEntry</color><color=#f8f8f2>();</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * SR 14583: In JE 2.0 and later we can assume that all</color>
+<color=#75715e>           * deleted LNs are obsolete. Either the delete committed</color>
+<color=#75715e>           * and the BIN parent is marked with a pending deleted bit,</color>
+<color=#75715e>           * or the delete rolled back, in which case there is no</color>
+<color=#75715e>           * reference to this entry. JE 1.7.1 and earlier require a</color>
+<color=#75715e>           * tree lookup because deleted LNs may still be reachable</color>
+<color=#75715e>           * through their BIN parents.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>fileLogVersion</color> <color=#f92672>></color> <color=#ae81ff>2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/* "Immediately obsolete" LNs can be discarded. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isLNImmediatelyObsolete</color><color=#f8f8f2>()</color> <color=#f92672>||</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isEmbeddedLN</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Check for expired LN. If locked, add to pending queue.</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isObsolete</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>countOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+            <color=#f8f8f2>expirationTime</color> <color=#f92672>=</color>
+                <color=#f8f8f2>TTL</color><color=#f8f8f2>.</color><color=#a6e22e>expirationToSystemTime</color><color=#f8f8f2>(</color><color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiration</color><color=#f8f8f2>(),</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>isExpirationInHours</color><color=#f8f8f2>());</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>expiresWithin</color><color=#f8f8f2>(</color><color=#f8f8f2>expirationTime</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color> <color=#f92672>-</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getTtlLnPurgeDelay</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>lockManager</color><color=#f8f8f2>.</color><color=#a6e22e>isLockUncontended</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>addPendingLN</color><color=#f8f8f2>(</color>
+                    <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>LNInfo</color><color=#f8f8f2>(</color><color=#66d9ef>null</color> <color=#75715e>/*LN*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(),</color> <color=#f8f8f2>expirationTime</color><color=#f8f8f2>));</color>
+                <color=#f8f8f2>nLNsLockedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+                <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+              <color=#f8f8f2>}</color>
+
+              <color=#f8f8f2>isObsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+              <color=#f8f8f2>nLNsExpiredThisRun</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+              <color=#75715e>/*</color>
+<color=#75715e>               * Inexact counting is used to avoid overhead of</color>
+<color=#75715e>               * adding obsolete offset.</color>
+<color=#75715e>               */</color>
+              <color=#f8f8f2>localTracker</color><color=#f8f8f2>.</color><color=#a6e22e>countObsoleteNodeInexact</color><color=#f8f8f2>(</color>
+                  <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*type*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastEntrySize</color><color=#f8f8f2>(),</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Skip known obsolete nodes. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isObsolete</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* Count obsolete stats. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>countOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>nLNsObsoleteThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isBINDelta</color> <color=#f92672>||</color> <color=#f8f8f2>isOldBINDelta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>nBINDeltasObsoleteThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>nINsObsoleteThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* Update the pending DB set for obsolete entries. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkPendingDbSet</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>dbId</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* Count utilization for obsolete entry. */</color>
+          <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>countObsolete</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* If not obsolete, count expired. */</color>
+        <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>countExpired</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/* Don't process further if we are only calculating. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Evict before processing each entry. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>DO_CRITICAL_EVICTION</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>daemonEviction</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* The entry is not known to be obsolete -- process it now. */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>lookAheadCache</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>checkPendingDbSet</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>lnEntry</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLNLogEntry</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>targetLN</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>lnEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+
+          <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>),</color> <color=#66d9ef>new</color> <color=#f8f8f2>LNInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>targetLN</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>expirationTime</color><color=#f8f8f2>));</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>isFull</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>processLN</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>location</color><color=#f8f8f2>,</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Process pending LNs before proceeding in order to</color>
+<color=#75715e>           * prevent the pending list from growing too large.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>nProcessedLNs</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nProcessedLNs</color> <color=#f92672>%</color> <color=#f8f8f2>PROCESS_PENDING_EVERY_N_LNS</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>processPending</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>}</color>
+
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>targetIN</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>targetIN</color><color=#f8f8f2>.</color><color=#a6e22e>setDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+          <color=#f8f8f2>processIN</color><color=#f8f8f2>(</color><color=#f8f8f2>targetIN</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isOldBINDelta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>OldBINDelta</color> <color=#f8f8f2>delta</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getOldBINDelta</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>processOldBINDelta</color><color=#f8f8f2>(</color><color=#f8f8f2>delta</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isBINDelta</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>delta</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getBINDelta</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>processBINDelta</color><color=#f8f8f2>(</color><color=#f8f8f2>delta</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isDbTree</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>rewriteMapTreeRoot</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>assert</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Don't process further if we are only calculating. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Process remaining queued LNs. */</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>DO_CRITICAL_EVICTION</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>daemonEviction</color><color=#f8f8f2>(</color><color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>processLN</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>location</color><color=#f8f8f2>,</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>);</color>
+        <color=#75715e>/* Sleep if background read/write limit was exceeded. */</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>sleepAfterBackgroundIO</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Update the pending DB set. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>pendingDbId</color> <color=#f8f8f2>:</color> <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>pendingDbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>lockTimeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>addPendingDB</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Update reader stats. */</color>
+      <color=#f8f8f2>nEntriesReadThisRun</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getNumRead</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>nRepeatIteratorReadsThisRun</color> <color=#f92672>=</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getNRepeatIteratorReads</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getUtilizationProfile</color><color=#f8f8f2>().</color><color=#a6e22e>flushLocalTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>localTracker</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_CHECKSUM</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Subtract the overhead of this method from the budget. */</color>
+      <color=#f8f8f2>budget</color><color=#f8f8f2>.</color><color=#a6e22e>updateAdminMemoryUsage</color><color=#f8f8f2>(</color><color=#ae81ff>0</color> <color=#f92672>-</color> <color=#f8f8f2>adjustMem</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Release all cached DBs. */</color>
+      <color=#f8f8f2>dbMapTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseDbs</color><color=#f8f8f2>(</color><color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* File is fully processed, update status information. */</color>
+    <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>addCleanedFile</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>databases</color><color=#f8f8f2>,</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getFirstVLSN</color><color=#f8f8f2>(),</color> <color=#f8f8f2>reader</color><color=#f8f8f2>.</color><color=#a6e22e>getLastVLSN</color><color=#f8f8f2>(),</color> <color=#f8f8f2>budget</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Processes the first LN in the look ahead cache and removes it from the cache. While the BIN is</color>
+<color=#75715e>   * latched, look through the BIN for other LNs in the cache; if any match, process them to avoid a</color>
+<color=#75715e>   * tree search later.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processLN</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>TreeLocation</color> <color=#f8f8f2>location</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LookAheadCache</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color><color=#f92672>></color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>DatabaseId</color><color=#f92672>></color> <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Get the first LN from the queue. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>offset</color> <color=#f92672>=</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>nextOffset</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>offset</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>lnFromLog</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>keyFromLog</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>offset</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Refresh the DB before processing an LN, in case the DB has been</color>
+<color=#75715e>     * deleted since it was added to the lookAheadCache.  If the DB has</color>
+<color=#75715e>     * been deleted, perform the housekeeping tasks for an obsolete LN.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Normally the DB will already be present (and non-deleted) in the</color>
+<color=#75715e>     * dbCache. But because of the lookAheadCache and the periodic clearing</color>
+<color=#75715e>     * of the dbCache in processFile, it's possible for a DB to be deleted</color>
+<color=#75715e>     * in between placing it in the lookAheadCache and the call to</color>
+<color=#75715e>     * processLN. [#22202]</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseId</color> <color=#f8f8f2>dbId</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDbTree</color><color=#f8f8f2>().</color><color=#a6e22e>getDb</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>,</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>lockTimeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbCache</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nLNsObsoleteThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkPendingDbSet</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>checkPendingDbSet</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>dbId</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>nLNsCleanedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Status variables are used to generate debug tracing info. */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>processedHere</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color> <color=#75715e>// The LN was cleaned here.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN is no longer in use.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// This method completed.</color>
+
+    <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color><color=#f92672>></color> <color=#f8f8f2>pendingLNs</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>tree</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/* Find parent of this LN. */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>parentFound</color> <color=#f92672>=</color>
+          <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getParentBINForChildLN</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>location</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>keyFromLog</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*splitsAllowed*/</color><color=#f8f8f2>,</color>
+              <color=#66d9ef>false</color> <color=#75715e>/*blindDeltaOps*/</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>bin</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>location</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>parentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Now we're at the BIN parent for this LN.  If knownDeleted, LN is</color>
+<color=#75715e>       * deleted and can be purged.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Process this LN that was found in the tree. */</color>
+      <color=#f8f8f2>processedHere</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>pendingLN</color> <color=#f92672>=</color> <color=#f8f8f2>processFoundLN</color><color=#f8f8f2>(</color><color=#f8f8f2>info</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color> <color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingLN</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>pendingLNs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>pendingLNs</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>pendingLN</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * For all other non-deleted LNs in this BIN, lookup their LSN</color>
+<color=#75715e>       * in the LN queue and process any matches.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getNEntries</color><color=#f8f8f2>();</color> <color=#f8f8f2>i</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>binLsn</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>!=</color> <color=#f8f8f2>index</color>
+            <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryKnownDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color>
+            <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEntryPendingDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color>
+            <color=#f92672>&&</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>binLsn</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>Long</color> <color=#f8f8f2>myOffset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>binLsn</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>myInfo</color> <color=#f92672>=</color> <color=#f8f8f2>lookAheadCache</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>myOffset</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/* If the offset is in the cache, it's a match. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>myInfo</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>nLNQueueHitsThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>nLNsCleanedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+            <color=#f8f8f2>pendingLN</color> <color=#f92672>=</color> <color=#f8f8f2>processFoundLN</color><color=#f8f8f2>(</color><color=#f8f8f2>myInfo</color><color=#f8f8f2>,</color> <color=#f8f8f2>binLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>binLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingLN</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingLNs</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+                <color=#f8f8f2>pendingLNs</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+              <color=#f8f8f2>}</color>
+              <color=#f8f8f2>pendingLNs</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>binLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>pendingLN</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* BIN must not be latched when synchronizing on FileSelector. */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pendingLNs</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>pendingLNs</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSelector</color><color=#f8f8f2>.</color><color=#a6e22e>addPendingLN</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(),</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>processedHere</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>logFine</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>CLEAN_LN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lnFromLog</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>completed</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*migrated*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Processes an LN that was found in the tree. Lock the LN's LSN and then migrates the LN, if the</color>
+<color=#75715e>   * LSN of the LN log entry is the active LSN in the tree.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param info identifies the LN log entry.</color>
+<color=#75715e>   * @param logLsn is the LSN of the log entry.</color>
+<color=#75715e>   * @param treeLsn is the LSN found in the tree.</color>
+<color=#75715e>   * @param bin is the BIN found in the tree; is latched on method entry and exit.</color>
+<color=#75715e>   * @param index is the BIN index found in the tree.</color>
+<color=#75715e>   * @return a non-null LNInfo if it should be added to the pending LN list, after releasing the BIN</color>
+<color=#75715e>   *     latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LNInfo</color> <color=#a6e22e>processFoundLN</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>lnFromLog</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getLN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isTemporary</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>isTemporary</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Status variables are used to generate debug tracing info. */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN is no longer in use.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>migrated</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// The LN was in use and is migrated.</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color> <color=#75715e>// This method completed.</color>
+
+    <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>tree</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Before migrating an LN, we must lock it and then check to see</color>
+<color=#75715e>       * whether it is obsolete or active.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * 1. If the LSN in the tree and in the log are the same, we will</color>
+<color=#75715e>       * attempt to migrate it.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * 2. If the LSN in the tree is < the LSN in the log, the log entry</color>
+<color=#75715e>       * is obsolete, because this LN has been rolled back to a previous</color>
+<color=#75715e>       * version by a txn that aborted.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * 3. If the LSN in the tree is > the LSN in the log, the log entry</color>
+<color=#75715e>       * is obsolete, because the LN was advanced forward by some</color>
+<color=#75715e>       * now-committed txn.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * 4. If the LSN in the tree is a null LSN, the log entry is</color>
+<color=#75715e>       * obsolete. A slot can only have a null LSN if the record has</color>
+<color=#75715e>       * never been written to disk in a deferred write database, and</color>
+<color=#75715e>       * in that case the log entry must be for a past, deleted version</color>
+<color=#75715e>       * of that record.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lnFromLog</color><color=#f8f8f2>.</color><color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color> <color=#f92672>&&</color> <color=#f8f8f2>fileLogVersion</color> <color=#f92672><=</color> <color=#ae81ff>2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * SR 14583: After JE 2.0, deleted LNs are never found in the</color>
+<color=#75715e>         * tree, since we can assume they're obsolete and correctly</color>
+<color=#75715e>         * marked as such in the obsolete offset tracking. JE 1.7.1 and</color>
+<color=#75715e>         * earlier did not use the pending deleted bit, so deleted LNs</color>
+<color=#75715e>         * may still be reachable through their BIN parents.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>setPendingDeleted</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Case 4: The LN in the tree is a never-written LN for a</color>
+<color=#75715e>         * deferred-write db, so the LN in the file is obsolete.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>logLsn</color> <color=#f92672>&&</color> <color=#f8f8f2>isTemporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Temporary databases are always non-transactional.  If the</color>
+<color=#75715e>         * tree and log LSNs are different then we know that the logLsn</color>
+<color=#75715e>         * is obsolete.  Even if the LN is locked, the tree cannot be</color>
+<color=#75715e>         * restored to the logLsn because no abort is possible without</color>
+<color=#75715e>         * a transaction.  We should consider a similar optimization in</color>
+<color=#75715e>         * the future for non-transactional durable databases.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isTemporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Get a lock on the LN if we will migrate it now. (Temporary</color>
+<color=#75715e>         * DB LNs are dirtied below and migrated later.)</color>
+<color=#75715e>         *</color>
+<color=#75715e>         * We can hold the latch on the BIN since we always attempt to</color>
+<color=#75715e>         * acquire a non-blocking read lock.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>locker</color> <color=#f92672>=</color> <color=#f8f8f2>BasicLocker</color><color=#f8f8f2>.</color><color=#a6e22e>createBasicLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*noWait*/</color><color=#f8f8f2>);</color>
+        <color=#75715e>/* Don't allow this short-lived lock to be preempted/stolen. */</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>setPreemptable</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockRet</color> <color=#f92672>=</color>
+            <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>READ</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lockRet</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * LN is currently locked by another Locker, so we can't</color>
+<color=#75715e>           * assume anything about the value of the LSN in the bin.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>nLNsLockedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+
+          <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LNInfo</color><color=#f8f8f2>(</color><color=#66d9ef>null</color> <color=#75715e>/*LN*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>(),</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getExpirationTime</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* The LN is obsolete and can be purged. */</color>
+          <color=#f8f8f2>nLNsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The LN must be migrated because it is not obsolete, the lock was</color>
+<color=#75715e>       * not denied, and treeLsn==logLsn.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>obsolete</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isEmbeddedLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"LN is embedded although its associated logrec (at "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>logLsn</color>
+                <color=#f92672>+</color> <color=#e6db74>" does not have the embedded flag on"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * For active LNs in non-temporary DBs, migrate the LN now.</color>
+<color=#75715e>       * In this case we acquired a lock on the LN above.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * If the LN is not resident, populate it using the LN we read</color>
+<color=#75715e>       * from the log so it does not have to be fetched.  We must</color>
+<color=#75715e>       * call postFetchInit to initialize MapLNs that have not been</color>
+<color=#75715e>       * fully initialized yet [#13191].  When explicitly migrating</color>
+<color=#75715e>       * (for a non-temporary DB) we will evict the LN after logging.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Note that we do not load LNs from the off-heap cache here</color>
+<color=#75715e>       * because it's unnecessary. We have the current LN in hand</color>
+<color=#75715e>       * (from the log) and the off-heap cache does not hold dirty</color>
+<color=#75715e>       * LNs, so the IN in hand is identical to the off-heap LN.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * MapLNs must be logged by DbTree.modifyDbRoot (the Tree root</color>
+<color=#75715e>       * latch must be held) [#23492]. Here we simply dirty it via</color>
+<color=#75715e>       * setDirty, which ensures it will be logged during the next</color>
+<color=#75715e>       * checkpoint. Delaying until the next checkpoint also allows</color>
+<color=#75715e>       * for write absorption, since MapLNs are often logged every</color>
+<color=#75715e>       * checkpoint due to utilization changes.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * For temporary databases, we wish to defer logging for as</color>
+<color=#75715e>       * long as possible.  Therefore, dirty the LN to ensure it is</color>
+<color=#75715e>       * flushed before its parent is written.  Because we do not</color>
+<color=#75715e>       * attempt to lock temporary database LNs (see above) we know</color>
+<color=#75715e>       * that if it is non-obsolete, the tree and log LSNs are equal.</color>
+<color=#75715e>       * If the LN from the log was populated here, it will be left</color>
+<color=#75715e>       * in place for logging at a later time.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Also for temporary databases, make both the target LN and</color>
+<color=#75715e>       * the BIN or IN parent dirty. Otherwise, when the BIN or IN is</color>
+<color=#75715e>       * evicted in the future, it will be written to disk without</color>
+<color=#75715e>       * flushing its dirty, migrated LNs.  [#18227]</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>lnFromLog</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+        <color=#75715e>/* Ensure keys are transactionally correct. [#15704] */</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>attachNode</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>lnFromLog</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color> <color=#75715e>/*lnSlotKey*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>ID_DB_ID</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>MapLN</color> <color=#f8f8f2>targetLn</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>MapLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>targetLn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>targetLn</color><color=#f8f8f2>.</color><color=#a6e22e>getDatabase</color><color=#f8f8f2>().</color><color=#a6e22e>setDirty</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isTemporary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>((</color><color=#f8f8f2>LN</color><color=#f8f8f2>)</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>)).</color><color=#a6e22e>setDirty</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>setDirty</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>nLNsMarkedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>LN</color> <color=#f8f8f2>targetLn</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LN</color><color=#f8f8f2>)</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>targetLn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+        <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>logItem</color> <color=#f92672>=</color>
+            <color=#f8f8f2>targetLn</color><color=#f8f8f2>.</color><color=#a6e22e>log</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>db</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>null</color> <color=#75715e>/*locker*/</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>null</color> <color=#75715e>/*writeLockInfo*/</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>false</color> <color=#75715e>/*newEmbeddedLN*/</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+                <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getExpiration</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+                <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isExpirationInHours</color><color=#f8f8f2>(),</color>
+                <color=#66d9ef>false</color> <color=#75715e>/*newEmbeddedLN*/</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedSize</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>),</color>
+                <color=#66d9ef>false</color> <color=#75715e>/*isInsertion*/</color><color=#f8f8f2>,</color>
+                <color=#66d9ef>true</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>getMigrationRepContext</color><color=#f8f8f2>(</color><color=#f8f8f2>targetLn</color><color=#f8f8f2>));</color>
+
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>updateEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>targetLn</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNSequence</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Evict LN if we populated it with the log LN. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>lnFromLog</color> <color=#f92672>==</color> <color=#f8f8f2>targetLn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>evictLN</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Lock new LSN on behalf of existing lockers. */</color>
+        <color=#f8f8f2>CursorImpl</color><color=#f8f8f2>.</color><color=#a6e22e>lockAfterLsnChange</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logItem</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>locker</color> <color=#75715e>/*excludeLocker*/</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>nLNsMigratedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>migrated</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>operationEnd</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>logFine</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>CLEAN_LN</color><color=#f8f8f2>,</color> <color=#f8f8f2>lnFromLog</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>completed</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#f8f8f2>migrated</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If this OldBINDelta is still in use in the in-memory tree, dirty the associated BIN. The next</color>
+<color=#75715e>   * checkpoint will log a new delta or a full version, which will make this delta obsolete.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For OldBINDeltas, we do not optimize and must fetch the BIN if it is not resident.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processOldBINDelta</color><color=#f8f8f2>(</color><color=#f8f8f2>OldBINDelta</color> <color=#f8f8f2>deltaClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>nBINDeltasCleanedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Search Btree for the BIN associated with this delta.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>searchKey</color> <color=#f92672>=</color> <color=#f8f8f2>deltaClone</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>treeBin</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>().</color><color=#a6e22e>search</color><color=#f8f8f2>(</color><color=#f8f8f2>searchKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeBin</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* BIN for this delta is no longer in the tree. */</color>
+      <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Tree BIN is non-null and latched. */</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastLoggedLsn</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Current version was never logged. */</color>
+        <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>cmp</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cmp</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Log entry is obsolete. */</color>
+        <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Log entry is same or newer than what's in the tree.  Dirty the</color>
+<color=#75715e>       * BIN and let the checkpoint write it out.  There is no need to</color>
+<color=#75715e>       * prohibit a delta when the BIN is next logged (as is done when</color>
+<color=#75715e>       * migrating full INs) because logging a new delta will obsolete</color>
+<color=#75715e>       * this delta.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>setDirty</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>nBINDeltasMigratedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If this BIN-delta is still in use in the in-memory tree, dirty the associated BIN. The next</color>
+<color=#75715e>   * checkpoint will log a new delta or a full version, which will make this delta obsolete.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>We optimize by placing the delta from the log into the tree when the BIN is not resident.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processBINDelta</color><color=#f8f8f2>(</color><color=#f8f8f2>BIN</color> <color=#f8f8f2>deltaClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>nBINDeltasCleanedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Search for the BIN's parent by level, to avoid fetching the BIN. */</color>
+    <color=#f8f8f2>deltaClone</color><color=#f8f8f2>.</color><color=#a6e22e>setDatabase</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>deltaClone</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>SearchResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color>
+        <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>()</color>
+            <color=#f8f8f2>.</color><color=#a6e22e>getParentINForChildIN</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>deltaClone</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*useTargetLevel*/</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*doFetch*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>exactParentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* BIN for this delta is no longer in the tree. */</color>
+        <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Current version was never logged. */</color>
+        <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If cmp is > 0 then log entry is obsolete because it is older</color>
+<color=#75715e>       * than the version in the tree.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * If cmp is < 0 then log entry is also obsolete, because the old</color>
+<color=#75715e>       * parent slot was deleted and we're now looking at a completely</color>
+<color=#75715e>       * different IN due to the by-level search above.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>cmp</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cmp</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Log entry is obsolete. */</color>
+        <color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Log entry is the version that's in the tree. Dirty the BIN and</color>
+<color=#75715e>       * let the checkpoint write it out. There is no need to prohibit a</color>
+<color=#75715e>       * delta when the BIN is next logged (as is done when migrating</color>
+<color=#75715e>       * full BINs) because logging a new delta will obsolete this delta.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>BIN</color> <color=#f8f8f2>treeBin</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>loadIN</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeBin</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Place delta from log into tree to avoid fetching. */</color>
+        <color=#f8f8f2>treeBin</color> <color=#f92672>=</color> <color=#f8f8f2>deltaClone</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>latchNoUpdateLRU</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+        <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>attachNode</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>treeBin</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*lnSlotKey*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>CacheMode</color><color=#f8f8f2>.</color><color=#a6e22e>UNCHANGED</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Compress to reclaim space for expired slots, including dirty</color>
+<color=#75715e>       * slots. However, if treeBin is a BIN-delta, this does nothing.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>lazyCompress</color><color=#f8f8f2>(</color><color=#f8f8f2>treeBin</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*compressDirtySlots*/</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>setDirty</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>treeBin</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>nBINDeltasMigratedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If an IN is still in use in the in-memory tree, dirty it. The checkpoint invoked at the end of</color>
+<color=#75715e>   * the cleaning run will end up rewriting it.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>processIN</color><color=#f8f8f2>(</color><color=#f8f8f2>IN</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>dirtied</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>nINsCleanedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getTree</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>tree</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>IN</color> <color=#f8f8f2>inInTree</color> <color=#f92672>=</color> <color=#f8f8f2>findINInTree</color><color=#f8f8f2>(</color><color=#f8f8f2>tree</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>inInTree</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* IN is no longer in the tree.  Do nothing. */</color>
+        <color=#f8f8f2>nINsDeadThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>obsolete</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * IN is still in the tree.  Dirty it.  Checkpoint or eviction</color>
+<color=#75715e>         * will write it out.</color>
+<color=#75715e>         *</color>
+<color=#75715e>         * Prohibit the next delta, since the original version must be</color>
+<color=#75715e>         * made obsolete.</color>
+<color=#75715e>         *</color>
+<color=#75715e>         * Compress to reclaim space for expired slots, including dirty</color>
+<color=#75715e>         * slots.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>nINsMigratedThisRun</color><color=#f92672>++</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>inInTree</color><color=#f8f8f2>.</color><color=#a6e22e>setDirty</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>inInTree</color><color=#f8f8f2>.</color><color=#a6e22e>setProhibitNextDelta</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>lazyCompress</color><color=#f8f8f2>(</color><color=#f8f8f2>inInTree</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*compressDirtySlots*/</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>inInTree</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>dirtied</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>completed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>logFine</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>CLEAN_IN</color><color=#f8f8f2>,</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>completed</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsolete</color><color=#f8f8f2>,</color> <color=#f8f8f2>dirtied</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Given a clone of an IN that has been taken out of the log, try to find it in the tree and</color>
+<color=#75715e>   * verify that it is the current one in the log. Returns the node in the tree if it is found and</color>
+<color=#75715e>   * it is current re: LSN's. Otherwise returns null if the clone is not found in the tree or it's</color>
+<color=#75715e>   * not the latest version. Caller is responsible for unlatching the returned IN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>IN</color> <color=#a6e22e>findINInTree</color><color=#f8f8f2>(</color><color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Check if inClone is the root. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>inClone</color><color=#f8f8f2>.</color><color=#a6e22e>isRoot</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>IN</color> <color=#f8f8f2>rootIN</color> <color=#f92672>=</color> <color=#f8f8f2>isRoot</color><color=#f8f8f2>(</color><color=#f8f8f2>tree</color><color=#f8f8f2>,</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * inClone is a root, but no longer in use. Return now, because</color>
+<color=#75715e>         * a call to tree.getParentNode will return something</color>
+<color=#75715e>         * unexpected since it will try to find a parent.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>rootIN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* It's not the root.  Can we find it, and if so, is it current? */</color>
+    <color=#f8f8f2>inClone</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>SearchResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color>
+          <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>getParentINForChildIN</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*useTargetLevel*/</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*doFetch*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>exactParentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Note that treeLsn may be for a BIN-delta, see below. */</color>
+      <color=#f8f8f2>IN</color> <color=#f8f8f2>parent</color> <color=#f92672>=</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * The IN in the tree is a never-written IN for a DW db so the IN</color>
+<color=#75715e>       * in the file is obsolete. [#15588]</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If tree and log LSNs are equal, then we've found the exact IN we</color>
+<color=#75715e>       * read from the log.  We know the treeLsn is not for a BIN-delta,</color>
+<color=#75715e>       * because it is equal to LSN of the IN (or BIN) we read from the</color>
+<color=#75715e>       * log.  To avoid a fetch, we can place the inClone in the tree if</color>
+<color=#75715e>       * it is not already resident, or use the inClone to mutate the</color>
+<color=#75715e>       * delta in the tree to a full BIN.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color> <color=#f92672>==</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>IN</color> <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>loadIN</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/*</color>
+<color=#75715e>             * The BIN should be dirty here because the most</color>
+<color=#75715e>             * recently written logrec for it is a full-version</color>
+<color=#75715e>             * logrec. After that logrec was written, the BIN</color>
+<color=#75715e>             * was dirtied again, and then mutated to a delta.</color>
+<color=#75715e>             * So this delta should still be dirty.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>getDirty</color><color=#f8f8f2>());</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Since we want to clean the inClone full version of</color>
+<color=#75715e>             * the bin, we must mutate the cached delta to a full</color>
+<color=#75715e>             * BIN so that the next logrec for this BIN can be a</color>
+<color=#75715e>             * full-version logrec.</color>
+<color=#75715e>             */</color>
+            <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>in</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>mutateToFullBIN</color><color=#f8f8f2>((</color><color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*leaveFreeSlot*/</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>in</color> <color=#f92672>=</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>;</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * Latch before calling postFetchInit and attachNode to</color>
+<color=#75715e>           * make those operations atomic. Must use latchNoUpdateLRU</color>
+<color=#75715e>           * before the node is attached.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>latchNoUpdateLRU</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>in</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>attachNode</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>in</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*lnSlotKey*/</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#66d9ef>return</color> <color=#f8f8f2>in</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>inClone</color><color=#f8f8f2>.</color><color=#a6e22e>isUpperIN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* No need to deal with BIN-deltas. */</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If the tree and log LSNs are unequal, then we must get the full</color>
+<color=#75715e>       * version LSN in case the tree LSN is actually for a BIN-delta.</color>
+<color=#75715e>       * The only way to do that is to fetch the IN in the tree; however,</color>
+<color=#75715e>       * we only need the delta not the full BIN.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>BIN</color> <color=#f8f8f2>bin</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>fetchIN</color><color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>index</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>treeLsn</color> <color=#f92672>=</color> <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>getLastFullLsn</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Now compare LSNs, since we know treeLsn is the full version. */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>compareVal</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>treeLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If cmp is > 0 then log entry is obsolete because it is older</color>
+<color=#75715e>       * than the version in the tree.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * If cmp is < 0 then log entry is also obsolete, because the old</color>
+<color=#75715e>       * parent slot was deleted and we're now looking at a completely</color>
+<color=#75715e>       * different IN due to the by-level search above.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>compareVal</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Log entry is the full version associated with the BIN-delta</color>
+<color=#75715e>       * that's in the tree.  To avoid a fetch, we can use the inClone to</color>
+<color=#75715e>       * mutate the delta in the tree to a full BIN.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>isBINDelta</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>bin</color><color=#f8f8f2>.</color><color=#a6e22e>mutateToFullBIN</color><color=#f8f8f2>((</color><color=#f8f8f2>BIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*leaveFreeSlot*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>bin</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>exactParentFound</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color><color=#f8f8f2>.</color><color=#a6e22e>releaseLatch</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the current root in the tree, or null if the inClone is not the current root. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>RootDoWork</color> <color=#66d9ef>implements</color> <color=#f8f8f2>WithRootLatched</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>RootDoWork</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>db</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>inClone</color> <color=#f92672>=</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>logLsn</color> <color=#f92672>=</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>IN</color> <color=#a6e22e>doWork</color><color=#f8f8f2>(</color><color=#f8f8f2>ChildReference</color> <color=#f8f8f2>root</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>root</color> <color=#f92672>==</color> <color=#66d9ef>null</color>
+          <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>root</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color>
+          <color=#f92672>||</color> <color=#75715e>// deferred write root</color>
+          <color=#f8f8f2>(((</color><color=#f8f8f2>IN</color><color=#f8f8f2>)</color> <color=#f8f8f2>root</color><color=#f8f8f2>.</color><color=#a6e22e>fetchTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>)).</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeId</color><color=#f8f8f2>()))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * A root LSN less than the log LSN must be an artifact of when we</color>
+<color=#75715e>       * didn't properly propagate the logging of the rootIN up to the</color>
+<color=#75715e>       * root ChildReference.  We still do this for compatibility with</color>
+<color=#75715e>       * old log versions but may be able to remove it in the future.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>root</color><color=#f8f8f2>.</color><color=#a6e22e>getLsn</color><color=#f8f8f2>(),</color> <color=#f8f8f2>logLsn</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>IN</color> <color=#f8f8f2>rootIN</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>IN</color><color=#f8f8f2>)</color> <color=#f8f8f2>root</color><color=#f8f8f2>.</color><color=#a6e22e>fetchTarget</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>rootIN</color><color=#f8f8f2>.</color><color=#a6e22e>latch</color><color=#f8f8f2>(</color><color=#f8f8f2>Cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>UPDATE_GENERATION</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>rootIN</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Check if the cloned IN is the same node as the root in tree. Return the real root if it is,</color>
+<color=#75715e>   * null otherwise. If non-null is returned, the returned IN (the root) is latched -- caller is</color>
+<color=#75715e>   * responsible for unlatching it.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>IN</color> <color=#a6e22e>isRoot</color><color=#f8f8f2>(</color><color=#f8f8f2>Tree</color> <color=#f8f8f2>tree</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>RootDoWork</color> <color=#f8f8f2>rdw</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>RootDoWork</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>inClone</color><color=#f8f8f2>,</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>tree</color><color=#f8f8f2>.</color><color=#a6e22e>withRootLatchedShared</color><color=#f8f8f2>(</color><color=#f8f8f2>rdw</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Reset per-run counters. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>resetPerRunCounters</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>nINsObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nINsCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nINsDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nINsMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nBINDeltasObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nBINDeltasCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nBINDeltasDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nBINDeltasMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsObsoleteThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsExpiredThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsCleanedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsDeadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsMigratedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsMarkedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNQueueHitsThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nLNsLockedThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nEntriesReadThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>nRepeatIteratorReadsThisRun</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Add per-run counters to total counters. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>accumulatePerRunCounters</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nINsObsolete</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nINsObsoleteThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nINsCleaned</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nINsCleanedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nINsDead</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nINsDeadThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nINsMigrated</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nINsMigratedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nBINDeltasObsolete</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nBINDeltasObsoleteThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nBINDeltasCleaned</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nBINDeltasCleanedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nBINDeltasDead</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nBINDeltasDeadThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nBINDeltasMigrated</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nBINDeltasMigratedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsObsolete</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsObsoleteThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsExpired</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsExpiredThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsCleaned</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsCleanedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsDead</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsDeadThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsMigrated</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsMigratedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsMarked</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsMarkedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNQueueHits</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNQueueHitsThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nLNsLocked</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nLNsLockedThisRun</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>nRepeatIteratorReads</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>nRepeatIteratorReadsThisRun</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * A cache of LNInfo by LSN offset. Used to hold a set of LNs that are to be processed. Keeps</color>
+<color=#75715e>   * track of memory used, and when full (over budget) the next offset should be queried and</color>
+<color=#75715e>   * removed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>LookAheadCache</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>SortedMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color><color=#f92672>></color> <color=#f8f8f2>map</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxMem</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>usedMem</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LookAheadCache</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>lookAheadCacheSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>map</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TreeMap</color><color=#f92672><></color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>maxMem</color> <color=#f92672>=</color> <color=#f8f8f2>lookAheadCacheSize</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>usedMem</color> <color=#f92672>=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>TREEMAP_OVERHEAD</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>isEmpty</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>boolean</color> <color=#a6e22e>isFull</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>usedMem</color> <color=#f92672>>=</color> <color=#f8f8f2>maxMem</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Long</color> <color=#a6e22e>nextOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>firstKey</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>void</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>lsnOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>info</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>lsnOffset</color><color=#f8f8f2>,</color> <color=#f8f8f2>info</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>usedMem</color> <color=#f92672>+=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getMemorySize</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>usedMem</color> <color=#f92672>+=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>TREEMAP_ENTRY_OVERHEAD</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LNInfo</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>offset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LNInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>map</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>offset</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>usedMem</color> <color=#f92672>-=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>getMemorySize</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>usedMem</color> <color=#f92672>-=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>TREEMAP_ENTRY_OVERHEAD</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>info</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

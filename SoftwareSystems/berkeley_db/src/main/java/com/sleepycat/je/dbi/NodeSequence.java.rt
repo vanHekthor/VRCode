@@ -1,0 +1,139 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.dbi</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicLong</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * NodeSequence encapsulates the generation and maintenance of a sequence for generating node IDs,</color>
+<color=#75715e> * transient LSNs and other misc sequences.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>NodeSequence</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FIRST_LOCAL_NODE_ID</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FIRST_REPLICATED_NODE_ID</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>10</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Node IDs: We need to ensure that local and replicated nodes use</color>
+<color=#75715e>   * different number spaces for their ids, so there can't be any possible</color>
+<color=#75715e>   * conflicts.  Local, non replicated nodes use positive values starting</color>
+<color=#75715e>   * with 1, replicated nodes use negative values starting with -10.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Node ID values from 0 to -9 are reserved.  0 is not used and should be</color>
+<color=#75715e>   * avoided.  -1 is used to mean null or none, and should be used via the</color>
+<color=#75715e>   * Node.NULL_NODE_ID constant.  -2 through -9 are reserved for future use.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The local and replicated node ID sequences are initialized by the first</color>
+<color=#75715e>   * pass of recovery, after the log has been scanned for the latest used</color>
+<color=#75715e>   * node ID.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>lastAllocatedLocalNodeId</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>lastAllocatedReplicatedNodeId</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Transient LSNs are used for not-yet-logged DeferredWrite records and</color>
+<color=#75715e>   * for the EOF record used for Serializable isolation. Transient LSNs are</color>
+<color=#75715e>   * used to provide unique locks, and are only used during the life of an</color>
+<color=#75715e>   * environment, for non-persistent objects.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>lastAllocatedTransientLsnOffset</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>L</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Transient sequences. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nextBackupId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>L</color><color=#f8f8f2>);</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nextDatabaseCountId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>L</color><color=#f8f8f2>);</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nextDiskOrderedCursorId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>L</color><color=#f8f8f2>);</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>AtomicLong</color> <color=#f8f8f2>nextNetworkRestoreId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>L</color><color=#f8f8f2>);</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>NodeSequence</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initialize the counters in these methods rather than a constructor so we can control the</color>
+<color=#75715e>   * initialization more precisely.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>initRealNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lastAllocatedLocalNodeId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#f8f8f2>FIRST_LOCAL_NODE_ID</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>lastAllocatedReplicatedNodeId</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicLong</color><color=#f8f8f2>(</color><color=#f8f8f2>FIRST_REPLICATED_NODE_ID</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The last allocated local and replicated node IDs are used for ckpts. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getLastLocalNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastAllocatedLocalNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getLastReplicatedNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastAllocatedReplicatedNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** We get a new node ID of the appropriate kind when creating a new node. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextLocalNodeId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastAllocatedLocalNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>incrementAndGet</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>  public long getNextReplicatedNodeId() {</color>
+<color=#75715e>      return lastAllocatedReplicatedNodeId.decrementAndGet();</color>
+<color=#75715e>  }</color>
+<color=#75715e>  */</color>
+
+  <color=#75715e>/** Initialize the node IDs, from recovery. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLastNodeId</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lastReplicatedNodeId</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lastLocalNodeId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>lastAllocatedReplicatedNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>lastReplicatedNodeId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>lastAllocatedLocalNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>lastLocalNodeId</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Tracks the lowest replicated node ID used during a replay of the</color>
+<color=#75715e>   * replication stream, so that it's available as the starting point if this</color>
+<color=#75715e>   * replica transitions to being the master.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>updateFromReplay</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>replayNodeId</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isMaster</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayNodeId</color> <color=#f92672>></color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isRepConverted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"replay node id is unexpectedly positive "</color> <color=#f92672>+</color> <color=#f8f8f2>replayNodeId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>replayNodeId</color> <color=#f92672><</color> <color=#f8f8f2>lastAllocatedReplicatedNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>lastAllocatedReplicatedNodeId</color><color=#f8f8f2>.</color><color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#f8f8f2>replayNodeId</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Assign the next available transient LSN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextTransientLsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeTransientLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>lastAllocatedTransientLsnOffset</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextBackupId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nextBackupId</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextDatabaseCountId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nextDatabaseCountId</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextDiskOrderedCursorId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nextDiskOrderedCursorId</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getNextNetworkRestoreId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nextNetworkRestoreId</color><color=#f8f8f2>.</color><color=#a6e22e>getAndIncrement</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

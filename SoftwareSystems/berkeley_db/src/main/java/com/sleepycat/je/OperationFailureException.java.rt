@@ -1,0 +1,202 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.Locker</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Indicates that a failure has occurred that impacts the current operation and/or transaction. For</color>
+<color=#75715e> * failures that impact the environment as a whole, see {@link EnvironmentFailureException}. For an</color>
+<color=#75715e> * overview of all exceptions thrown by JE, see {@link DatabaseException}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If an explicit transaction applies to a method which threw this exception, the exception may</color>
+<color=#75715e> * indicate that {@link Transaction#abort} must be called, depending on the nature of the failure. A</color>
+<color=#75715e> * transaction is applicable to a method call in two cases.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ol></color>
+<color=#75715e> *   <li>When an explicit (non-null) {@code Transaction} instance is specified. This applies when</color>
+<color=#75715e> *       the {@code Transaction} is passed as a parameter to the method that throws the exception,</color>
+<color=#75715e> *       or when the {@code Transaction} is passed to {@link Database#openCursor} and a {@code</color>
+<color=#75715e> *       Cursor} method throws the exception.</color>
+<color=#75715e> *   <li>When a per-thread {@code Transaction} applies to the method that throws the exception.</color>
+<color=#75715e> *       Per-thread transactions apply when using {@link com.sleepycat.collections persistent</color>
+<color=#75715e> *       collections} with {@link com.sleepycat.collections.CurrentTransaction} or {@link</color>
+<color=#75715e> *       com.sleepycat.collections.TransactionRunner}, or when using XA transactions with {@link</color>
+<color=#75715e> *       XAEnvironment}.</color>
+<color=#75715e> * </ol></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>When a transaction is applicable to a method call, the application should catch {@code</color>
+<color=#75715e> * OperationFailureException} and then call {@link Transaction#isValid}. If {@code false} is</color>
+<color=#75715e> * returned, all {@code Cursor} instances that were created with the transaction must be closed and</color>
+<color=#75715e> * then {@link Transaction#abort} must be called. Also note that {@link Transaction#isValid} may be</color>
+<color=#75715e> * called at any time, not just during exception handling.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The use of the {@link Transaction#isValid} method allows JE to determine dynamically whether</color>
+<color=#75715e> * the failure requires an abort or not, and allows for this determination to change in future</color>
+<color=#75715e> * releases. Over time, internal improvements to error handling may allow more error conditions to</color>
+<color=#75715e> * be handled without invalidating the {@code Transaction}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The specific handling that is necessary for an {@code OperationFailureException} depends on</color>
+<color=#75715e> * the specific subclass thrown. See the javadoc for each method for information on which methods</color>
+<color=#75715e> * throw which {@code OperationFailureException}s and why.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If {@link Transaction#abort} is not called after an {@code OperationFailureException}</color>
+<color=#75715e> * invalidates the {@code Transaction}, all subsequent method calls using the {@code Transaction}</color>
+<color=#75715e> * will throw the same exception. This provides more than one opportunity to catch and handle the</color>
+<color=#75715e> * specific exception subclass that caused the failure.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>{@code OperationFailureException} is also thrown by methods where no transaction applies. In</color>
+<color=#75715e> * most cases the action required to handle the exception is the same as with a transaction,</color>
+<color=#75715e> * although of course no abort is necessary.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>However, please be aware that for some operations on a non-transactional {@code Database} or</color>
+<color=#75715e> * {@code EntityStore}, an {@code OperationFailureException} may cause data corruption. For example,</color>
+<color=#75715e> * see {@link SecondaryReferenceException}.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>There are two groups of operation failure subclasses worth noting since they apply to many</color>
+<color=#75715e> * methods: read operation failures and write operation failures. These are described below. <a</color>
+<color=#75715e> * name="readFailures"></color>
+<color=#75715e> *</color>
+<color=#75715e> * <h3>Read Operation Failures</h3></color>
+<color=#75715e> *</color>
+<color=#75715e> * </a></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Read operations are all those performed by the {@code get} family of methods, for example,</color>
+<color=#75715e> * {@link Database#get Database.get}, {@link Cursor#getNext Cursor.getNext}, {@link</color>
+<color=#75715e> * com.sleepycat.persist.EntityIndex#get EntityIndex.get}, {@link</color>
+<color=#75715e> * com.sleepycat.persist.EntityCursor#next EntityCursor.next}, {@link</color>
+<color=#75715e> * com.sleepycat.collections.StoredMap#get StoredMap.get}, and {@link ForwardCursor#getNext</color>
+<color=#75715e> * ForwardCursor.getNext}. These methods may cause the following operation failures.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>{@link OperationFailureException} is the superclass of all read operation failures.</color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>{@link LockConflictException} is thrown if a lock conflict prevents the operation</color>
+<color=#75715e> *             from completing. A read operation may be blocked by another locker (transaction or</color>
+<color=#75715e> *             non-transactional cursor) that holds a write lock on the record.</color>
+<color=#75715e> *             <ul></color>
+<color=#75715e> *               <li>{@link com.sleepycat.je.rep.LockPreemptedException} is a subclass of {@code</color>
+<color=#75715e> *                   LockConflictException} that is thrown in a replicated environment on the</color>
+<color=#75715e> *                   Replica node, when the Master node has changed a record that was previously</color>
+<color=#75715e> *                   locked by the reading transaction or cursor.</color>
+<color=#75715e> *             </ul></color>
+<color=#75715e> *         <li>{@link SecondaryIntegrityException} is thrown if a primary-secondary relationship</color>
+<color=#75715e> *             integrity problem is detected while reading a primary database record via a secondary</color>
+<color=#75715e> *             index.</color>
+<color=#75715e> *         <li>{@link com.sleepycat.je.rep.DatabasePreemptedException} is thrown in a replicated</color>
+<color=#75715e> *             environment on the Replica node, when the Master node has truncated, removed or</color>
+<color=#75715e> *             renamed the database.</color>
+<color=#75715e> *         <li>Other {@link OperationFailureException} subclasses may be thrown if such an exception</color>
+<color=#75715e> *             was thrown earlier and caused the transaction to be invalidated.</color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * <a name="writeFailures"></color>
+<color=#75715e> *</color>
+<color=#75715e> * <h3>Write Operation Failures</h3></color>
+<color=#75715e> *</color>
+<color=#75715e> * </a></color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Write operations are all those performed by the {@code put} and {@code delete} families of</color>
+<color=#75715e> * methods, for example, {@link Database#put Database.put}, {@link Cursor#delete Cursor.delete},</color>
+<color=#75715e> * {@link com.sleepycat.persist.PrimaryIndex#put PrimaryIndex.put}, {@link</color>
+<color=#75715e> * com.sleepycat.persist.EntityCursor#delete EntityCursor.delete} and {@link</color>
+<color=#75715e> * com.sleepycat.collections.StoredMap#put StoredMap.put}. These methods may cause the following</color>
+<color=#75715e> * operation failures, although certain failures are only caused by {@code put} methods and others</color>
+<color=#75715e> * only by {@code delete} methods, as noted below.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <ul></color>
+<color=#75715e> *   <li>{@link OperationFailureException} is the superclass of all write operation failures.</color>
+<color=#75715e> *       <ul></color>
+<color=#75715e> *         <li>{@link LockConflictException} is thrown if a lock conflict prevents the operation</color>
+<color=#75715e> *             from completing. A write operation may be blocked by another locker (transaction or</color>
+<color=#75715e> *             non-transactional cursor) that holds a read or write lock on the record.</color>
+<color=#75715e> *         <li>{@link DiskLimitException} is thrown if a disk limit has been violated and this</color>
+<color=#75715e> *             prevents the operation from completing.</color>
+<color=#75715e> *         <li>{@link SecondaryConstraintException} is the superclass of all exceptions thrown when</color>
+<color=#75715e> *             a write operation fails because of a secondary constraint.</color>
+<color=#75715e> *             <ul></color>
+<color=#75715e> *               <li>{@link ForeignConstraintException} is thrown when an attempt to write a primary</color>
+<color=#75715e> *                   database record would insert a secondary record with a key that does not exist</color>
+<color=#75715e> *                   in a foreign key database, when the secondary key is configured as a foreign</color>
+<color=#75715e> *                   key. This exception is only thrown by {@code put} methods.</color>
+<color=#75715e> *               <li>{@link UniqueConstraintException} is thrown when an attempt to write a primary</color>
+<color=#75715e> *                   database record would insert a secondary record with a duplicate key, for</color>
+<color=#75715e> *                   secondaries that represent one-to-one and one-to-many relationships. This</color>
+<color=#75715e> *                   exception is only thrown by {@code put} methods.</color>
+<color=#75715e> *               <li>{@link DeleteConstraintException} is thrown when an attempt is made to delete a</color>
+<color=#75715e> *                   key from a foreign key database, when that key is referenced by a secondary</color>
+<color=#75715e> *                   database, and the secondary is configured to cause an abort in this situation.</color>
+<color=#75715e> *                   This exception is only thrown by {@code delete} methods.</color>
+<color=#75715e> *             </ul></color>
+<color=#75715e> *         <li>{@link SecondaryIntegrityException} is thrown if a primary-secondary relationship</color>
+<color=#75715e> *             integrity problem is detected while writing a record in a primary database that has</color>
+<color=#75715e> *             one or more secondary indices.</color>
+<color=#75715e> *         <li>{@link com.sleepycat.je.rep.DatabasePreemptedException} is thrown in a replicated</color>
+<color=#75715e> *             environment on a Replica node, when the Master node has truncated, removed or renamed</color>
+<color=#75715e> *             the database.</color>
+<color=#75715e> *         <li>{@link com.sleepycat.je.rep.ReplicaWriteException} is always thrown in a replicated</color>
+<color=#75715e> *             environment on a Replica node, since write operations are not allowed on a Replica.</color>
+<color=#75715e> *         <li>Other {@link OperationFailureException} subclasses may be thrown if such an exception</color>
+<color=#75715e> *             was thrown earlier and caused the transaction to be invalidated.</color>
+<color=#75715e> *       </ul></color>
+<color=#75715e> * </ul></color>
+<color=#75715e> *</color>
+<color=#75715e> * @since 4.0</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>OperationFailureException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>serialVersionUID</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>OperationFailureException</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>abortOnly</color><color=#f8f8f2>,</color> <color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>Throwable</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>abortOnly</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>setOnlyAbortable</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Only for use by bind/collection/persist exception subclasses.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>OperationFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#66d9ef>null</color> <color=#75715e>/*locker*/</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*abortOnly*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color> <color=#75715e>/*cause*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Only for use by wrapSelf methods.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>OperationFailureException</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For internal use only.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @hidden Must be implemented by every concrete subclass to return an instance of its own class,</color>
+<color=#75715e>   *     constructed with the given msg and this exception as parameters, e.g.: return new</color>
+<color=#75715e>   *     MyClass(msg, this);</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#f8f8f2>OperationFailureException</color> <color=#a6e22e>wrapSelf</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>msg</color><color=#f8f8f2>);</color>
+<color=#f8f8f2>}</color>

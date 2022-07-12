@@ -1,0 +1,177 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.txn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.OperationFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.Transaction</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Extends BasicLocker to share locks with another specific locker.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In general, a BuddyLocker can be used whenever the primary (API) locker is in use, and we need</color>
+<color=#75715e> * to lock a node and release that lock before the primary locker transaction ends. In other words,</color>
+<color=#75715e> * for this particular lock we don't want to use two-phase locking. To accomplish that we use a</color>
+<color=#75715e> * separate BuddyLocker instance to hold the lock, while sharing locks with the primary locker. The</color>
+<color=#75715e> * BuddyLocker can be closed to release this particular lock, without releasing the other locks held</color>
+<color=#75715e> * by the primary locker.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In particular, a ReadCommittedLocker extends BuddyLocker. The ReadCommittedLocker keeps track</color>
+<color=#75715e> * of read locks, while its buddy Txn keeps track of write locks. The two lockers must share locks</color>
+<color=#75715e> * to prevent conflicts.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>In addition, a BuddyLocker is used when acquiring a RANGE_INSERT lock. RANGE_INSERT only needs</color>
+<color=#75715e> * to be held until the point we have inserted the new node into the BIN. A separate locker is</color>
+<color=#75715e> * therefore used so we can release that lock separately when the insertion into the BIN is</color>
+<color=#75715e> * complete. But the RANGE_INSERT lock must not conflict with locks held by the primary locker. So a</color>
+<color=#75715e> * BuddyLocker is used that shares locks with the primary locker.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>BuddyLocker</color> <color=#66d9ef>extends</color> <color=#f8f8f2>BasicLocker</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a BuddyLocker. */</color>
+  <color=#66d9ef>protected</color> <color=#a6e22e>BuddyLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getDefaultNoWait</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>buddy</color> <color=#f92672>=</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>addBuddy</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>BuddyLocker</color> <color=#a6e22e>createBuddyLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>BuddyLocker</color><color=#f8f8f2>(</color><color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>removeBuddy</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the buddy locker. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#f8f8f2>Locker</color> <color=#a6e22e>getBuddy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Forwards this call to the buddy locker. This object itself is never transactional but the buddy</color>
+<color=#75715e>   * may be.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Txn</color> <color=#a6e22e>getTxnLocker</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnLocker</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Forwards this call to the buddy locker. This object itself is never transactional but the buddy</color>
+<color=#75715e>   * may be.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Transaction</color> <color=#a6e22e>getTransaction</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getTransaction</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Forwards this call to the base class and to the buddy locker. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>releaseNonTxnLocks</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>releaseNonTxnLocks</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>releaseNonTxnLocks</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether this locker can share locks with the given locker. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>sharesLocksWith</color><color=#f8f8f2>(</color><color=#f8f8f2>Locker</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>sharesLocksWith</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>buddy</color> <color=#f92672>==</color> <color=#f8f8f2>other</color> <color=#f92672>||</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getBuddy</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#66d9ef>this</color> <color=#f92672>||</color> <color=#f8f8f2>buddy</color> <color=#f92672>==</color> <color=#f8f8f2>other</color><color=#f8f8f2>.</color><color=#a6e22e>getBuddy</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the lock timeout of the buddy locker, since this locker has no independent timeout. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getLockTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getLockTimeout</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the transaction timeout of the buddy locker, since this locker has no independent</color>
+<color=#75715e>   * timeout.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnTimeout</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Sets the lock timeout of the buddy locker, since this locker has no independent timeout. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>setLockTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>timeout</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the transaction timeout of the buddy locker, since this locker has no independent timeout.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>timeout</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>setTxnTimeout</color><color=#f8f8f2>(</color><color=#f8f8f2>timeout</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether the buddy locker is timed out, since this locker has no independent timeout.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isTimedOut</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>isTimedOut</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the buddy locker's start time, since this locker has no independent timeout. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTxnStartMillis</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnStartMillis</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Forwards to the buddy locker, since the buddy may be transactional. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setOnlyAbortable</color><color=#f8f8f2>(</color><color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>cause</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>setOnlyAbortable</color><color=#f8f8f2>(</color><color=#f8f8f2>cause</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Forwards to the parent buddy locker, so the buddy can check itself and all of its child</color>
+<color=#75715e>   * buddies.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>checkPreempted</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>allowPreemptedLocker</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>OperationFailureException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>checkPreempted</color><color=#f8f8f2>(</color><color=#f8f8f2>allowPreemptedLocker</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Consider this locker replicated if its buddy (Txn) is replicated. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReplicated</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Consider this locker local-write if its buddy is local-write. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLocalWrite</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buddy</color><color=#f8f8f2>.</color><color=#a6e22e>isLocalWrite</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

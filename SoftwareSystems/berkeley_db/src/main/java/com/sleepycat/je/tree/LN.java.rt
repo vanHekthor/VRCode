@@ -1,0 +1,1099 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LNLogEntry</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.txn.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.SizeofMarker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Arrays</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collection</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collections</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** An LN represents a Leaf Node in the JE tree. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>LN</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Node</color> <color=#66d9ef>implements</color> <color=#f8f8f2>VersionedWriteLoggable</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BEGIN_TAG</color> <color=#f92672>=</color> <color=#e6db74>"<ln>"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>END_TAG</color> <color=#f92672>=</color> <color=#e6db74>"</ln>"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The log version of the most recent format change for this loggable.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #getLastFormatChange</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LAST_FORMAT_CHANGE</color> <color=#f92672>=</color> <color=#ae81ff>8</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Flags: bit fields</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * -Dirty means that the in-memory version is not present on disk.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>DIRTY_BIT</color> <color=#f92672>=</color> <color=#ae81ff>0x80000000</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CLEAR_DIRTY_BIT</color> <color=#f92672>=</color> <color=#f92672>~</color><color=#f8f8f2>DIRTY_BIT</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FETCHED_COLD_BIT</color> <color=#f92672>=</color> <color=#ae81ff>0x40000000</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>flags</color><color=#f8f8f2>;</color> <color=#75715e>// not persistent</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create an empty LN, to be filled in from the log. If VLSNs are preserved for this environment,</color>
+<color=#75715e>   * a VersionedLN will be created instead.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a new LN from a byte array. Pass a null byte array to create a deleted LN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Does NOT copy the byte array, so after calling this method the array is "owned" by the Btree</color>
+<color=#75715e>   * and should not be modified.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>LN</color> <color=#a6e22e>makeLN</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>dataParam</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getPreserveVLSN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>VersionedLN</color><color=#f8f8f2>(</color><color=#f8f8f2>dataParam</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LN</color><color=#f8f8f2>(</color><color=#f8f8f2>dataParam</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Create a new LN from a DatabaseEntry. Makes a copy of the byte array. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#f8f8f2>LN</color> <color=#a6e22e>makeLN</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getPreserveVLSN</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>VersionedLN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbt</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbt</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Does NOT copy the byte array, so after calling this method the array is "owned" by the Btree</color>
+<color=#75715e>   * and should not be modified.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>LN</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>setDirty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Makes a copy of the byte array. */</color>
+  <color=#f8f8f2>LN</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>dat</color> <color=#f92672>=</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dat</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>init</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>dat</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialOffset</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialOffset</color><color=#f8f8f2>(),</color>
+          <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>dat</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>setDirty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For Sizeof. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>LN</color><color=#f8f8f2>(</color><color=#f8f8f2>SizeofMarker</color> <color=#f8f8f2>marker</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dbt</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#f8f8f2>dbt</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>doff</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>dlen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>doff</color><color=#f8f8f2>,</color> <color=#f8f8f2>dlen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>getData</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>void</color> <color=#a6e22e>makeDeleted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDirty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>flags</color> <color=#f92672>&</color> <color=#f8f8f2>DIRTY_BIT</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setDirty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>DIRTY_BIT</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>clearDirty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color> <color=#75715e>// TODO make private</color>
+    <color=#f8f8f2>flags</color> <color=#f92672>&=</color> <color=#f8f8f2>CLEAR_DIRTY_BIT</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>getFetchedCold</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>flags</color> <color=#f92672>&</color> <color=#f8f8f2>FETCHED_COLD_BIT</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setFetchedCold</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>val</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>val</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>|=</color> <color=#f8f8f2>FETCHED_COLD_BIT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>flags</color> <color=#f92672>&=</color> <color=#f92672>~</color><color=#f8f8f2>FETCHED_COLD_BIT</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>postFetchInit</color><color=#f8f8f2>(</color><color=#f8f8f2>db</color><color=#f8f8f2>,</color> <color=#f8f8f2>sourceLsn</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * This flag is initially true for a fetched LN, and will be set to</color>
+<color=#75715e>     * false if the LN is accessed with any CacheMode other than UNCHANGED.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>setFetchedCold</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by CursorImpl to get the record version.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If VLSNs are not preserved for this environment, returns -1 which is the sequence for</color>
+<color=#75715e>   * VLSN.NULL_VLSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If VLSNs are preserved for this environment, this method is overridden by VersionedLN which</color>
+<color=#75715e>   * returns the VLSN sequence.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getVLSNSequence</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called by LogManager after writing an LN with a newly assigned VLSN, and called by LNLogEntry</color>
+<color=#75715e>   * after reading the LN with the VLSN from the log entry header.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If VLSNs are not preserved for this environment, does nothing.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If VLSNs are preserved for this environment, this method is overridden by VersionedLN which</color>
+<color=#75715e>   * stores the VLSN sequence.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setVLSNSequence</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>seq</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Do nothing. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * If you get to an LN, this subtree isn't valid for delete. True, the LN</color>
+<color=#75715e>   * may have been deleted, but you can't be sure without taking a lock, and</color>
+<color=#75715e>   * the validate -subtree-for-delete process assumes that bin compressing</color>
+<color=#75715e>   * has happened and there are no committed, deleted LNS hanging off the</color>
+<color=#75715e>   * BIN.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isValidForDelete</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns true by default, but is overridden by MapLN to prevent eviction of open databases. This</color>
+<color=#75715e>   * method is meant to be a guaranteed check and is used after a BIN has been selected for LN</color>
+<color=#75715e>   * stripping but before actually stripping an LN. [#13415]</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws DatabaseException from subclasses.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isEvictable</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>delete</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>makeDeleted</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>setDirty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>modify</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newData</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>newData</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>setDirty</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets data to empty and returns old data. Called when converting an old format LN in a</color>
+<color=#75715e>   * duplicates DB.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>setEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>retVal</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>retVal</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Add yourself to the in memory list if you're a type of node that should belong. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>rebuildINList</color><color=#f8f8f2>(</color><color=#f8f8f2>INList</color> <color=#f8f8f2>inList</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/*</color>
+<color=#75715e>     * Don't add, LNs don't belong on the list.</color>
+<color=#75715e>     */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Compute the approximate size of this node in memory for evictor invocation purposes. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>LN_OVERHEAD</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Release the memory budget for any objects referenced by this LN. For now, only release</color>
+<color=#75715e>   * treeAdmin memory, because treeMemory is handled in aggregate at the IN level. Over time,</color>
+<color=#75715e>   * transition all of the LN's memory budget to this, so we update the memory budget counters more</color>
+<color=#75715e>   * locally. Called when we are releasing a LN for garbage collection.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>releaseMemoryBudget</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// nothing to do for now, no treeAdmin memory</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTreeAdminMemory</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dumping</color>
+<color=#75715e>   */</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>beginTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>BEGIN_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>endTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>END_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>self</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>beginTag</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<data>"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>DUMP_TYPE</color><color=#f8f8f2>.</color><color=#a6e22e>dumpByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</data>"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>endTag</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>self</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Logging Support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Convenience logging method. See logInternal.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For a deferred-write database, the logging will not actually occur and a transient LSN will</color>
+<color=#75715e>   * be created and returned if the currLsn is NULL; otherwise the currLsn is returned.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>However, if the embeddedness of the LN changes, we must create a real logrec for the op. The</color>
+<color=#75715e>   * following scenario is an example of what can go wrong if we don't log embeddedness changes:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>- R1 exists before DB is opened in DW mode. - R1 is embedded, so its on-disk image has been</color>
+<color=#75715e>   * counted obsolete and might have been deleted already. - R1 is updated in DW mode, and its new</color>
+<color=#75715e>   * version, R2, is not embedded (and not logged). Furthermore, the slot LSN points to R1 still. -</color>
+<color=#75715e>   * R2 gets evicted and logged. As a result, R1 will be counted as obsolete again, because the slot</color>
+<color=#75715e>   * points to R1 and says R1 is not embedded.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If we do log embeddedness changes, then in the above scenario, R2 will be logged and this</color>
+<color=#75715e>   * logging will not count R1 as obsolete, because the embedded flag in the slot still says that R1</color>
+<color=#75715e>   * is embedded. After R2 is logged, the slot is updated (both the slot LSN and the embedded flag).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In general, the embedded flag in the slot must be in accord with the embedded flag in the</color>
+<color=#75715e>   * last logged version of a record, even if multiple updates were done on the record since the</color>
+<color=#75715e>   * last time it was logged and the current logging event.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogItem</color> <color=#a6e22e>optionalLog</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>currSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isDeferredWriteMode</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>currEmbeddedLN</color> <color=#f92672>==</color> <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogItem</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color> <color=#f92672>=</color> <color=#f8f8f2>assignTransientLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>locker</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>size</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>item</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>logInternal</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>locker</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>currSize</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color>
+          <color=#66d9ef>false</color> <color=#75715e>/*backgroundIO*/</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Convenience logging method, used to migrate an LN during cleaning. See logInternal. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogItem</color> <color=#a6e22e>log</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>currSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>backgroundIO</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>logInternal</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>locker</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>currSize</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>backgroundIO</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Generate and write to the log a logrec describing an operation O that is being performed on a</color>
+<color=#75715e>   * record R with key K. O may be an insertion, update, deletion, migration, or in the case of a DW</color>
+<color=#75715e>   * DB, an eviction or checkpoint of a dirty LN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Let T be the locker performing O. T is null in case of DW eviction/ckpt. Otherwise, T holds</color>
+<color=#75715e>   * a lock on R and it will keep that lock until it terminates. In case of a CUD op, the lock is an</color>
+<color=#75715e>   * exclusive one; in case of LN migration, it's a shared one (and T is non-transactional).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>- Let Rc be the current version of R (before O). The absence of R from the DB is considered</color>
+<color=#75715e>   * as a special "deleted" version. Rc may be the deleted version. - If T is a Txn, let Ra be the</color>
+<color=#75715e>   * version of R before T write-locked R. Ra may be the deleted version. Ra and Rc will be the same</color>
+<color=#75715e>   * if O is the very 1st op on R by T. - Let Rn be R's new version (after O). Rc and Rn will be the</color>
+<color=#75715e>   * same if O is migration or DW eviction/ckpt.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>- Let Ln be the LSN of the logrec that will be generated here to describe O. - Let Lc be the</color>
+<color=#75715e>   * current LSN value in R's slot, or NULL if no such slot exists currently. If an R slot exists,</color>
+<color=#75715e>   * then for a non-DW DB, Lc points to Rc, or may be NULL if Rc is the deleted version. But for a</color>
+<color=#75715e>   * DW DB, Lc may point to an older version than Rc, or it may be transient. - If T is a Txn, let</color>
+<color=#75715e>   * La be the LSN value in R's slot at the time T write-locked R, or NULL if no such slot existed</color>
+<color=#75715e>   * at that time.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param isInsertion Whether this CUDop is an insertion (possibly with slot reuse.</color>
+<color=#75715e>   * @param locker The locker T. If non-null, a write lock will be acquired by T on Ln's LSN.</color>
+<color=#75715e>   *     <p>WARNING: Be sure to pass null for the locker param if the new LSN should not be locked.</color>
+<color=#75715e>   * @param writeLockInfo It is non-null if and only if T is a Txn. It contains info that must be</color>
+<color=#75715e>   *     included in Ln to make it undoable if T aborts. Specifically, it contains:</color>
+<color=#75715e>   *     <p>- abortKD : True if Ra is the deleted version; false otherwise. - abortLSN : The La LSN</color>
+<color=#75715e>   *     as defined above. - abortKey : The key of Ra, if Ra was embedded in the parent BIN and the</color>
+<color=#75715e>   *     containing DB allows key updates. - abortData : The data of Ra, if Ra was embedded in the</color>
+<color=#75715e>   *     parent BIN.</color>
+<color=#75715e>   *     <p>When the new LSN is write-locked, a new WriteLockInfo is created and the above info is</color>
+<color=#75715e>   *     copied into it. Normally this parameter should be obtained from the prepareForInsert or</color>
+<color=#75715e>   *     prepareForUpdate method of CursorImpl.LockStanding.</color>
+<color=#75715e>   * @param newEmbeddedLN Whether Rn will be embedded into the parent BIN. If true, Ln will be</color>
+<color=#75715e>   *     counted as an "immediately obsolete" logrec.</color>
+<color=#75715e>   * @param newKey Rn's key. Note: Rn's data is not passed as a parameter to this method because it</color>
+<color=#75715e>   *     is stored in this LN. Rn (key and data) will be stored in Ln. Rn's key will also be stored</color>
+<color=#75715e>   *     in the parent BIN, and if newEmbeddedLN is true, Rn's data too will be stored there.</color>
+<color=#75715e>   * @param newExpiration the new expiration time in days or hours.</color>
+<color=#75715e>   * @param newExpirationInHours whether the new expiration time is in hours.</color>
+<color=#75715e>   * @param currEmbeddedLN Whether Rc's data is embedded into the parent BIN. If true, Lc has</color>
+<color=#75715e>   *     already been counted obsolete.</color>
+<color=#75715e>   * @param currLsn The Lc LSN as defined above. Is given as a param to this method to count the</color>
+<color=#75715e>   *     associated logrec as obsolete (which must done under the LWL), if it has not been counted</color>
+<color=#75715e>   *     already.</color>
+<color=#75715e>   * @param currSize The size of Lc (needed for obsolete counting).</color>
+<color=#75715e>   * @param isInsertion True if the operation is an insertion (including slot reuse). False</color>
+<color=#75715e>   *     otherwise.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogItem</color> <color=#a6e22e>logInternal</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>WriteLockInfo</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>currLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>currSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>backgroundIO</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>LN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color> <color=#f92672>||</color> <color=#f8f8f2>getClass</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#f8f8f2>VersionedLN</color><color=#f8f8f2>.</color><color=#a6e22e>class</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReadOnly</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Returning a NULL_LSN will not allow locking. */</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color><color=#e6db74>"Cannot log LNs in read-only env."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Check that a replicated txn is used for writing to a replicated DB,</color>
+<color=#75715e>     * and a non-replicated locker is used for writing to a</color>
+<color=#75715e>     * non-replicated DB. This is critical for avoiding corruption when HA</color>
+<color=#75715e>     * failover occurs [#23234] [#23330].</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * Two cases are exempt from this rule:</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *  - The locker is null only when performing internal logging (not a</color>
+<color=#75715e>     *    user operation), such as cleaner migration and deferred-write</color>
+<color=#75715e>     *    logging.  This is always non-transactional and non-replicated, so</color>
+<color=#75715e>     *    we can skip this check.  Note that the cleaner may migrate an LN</color>
+<color=#75715e>     *    in a replicated DB, but this is not part ot the rep stream.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *  - Only NameLNs that identify replicated DBs are replicated, not</color>
+<color=#75715e>     *    all NameLNs in the naming DB, so the naming DB is exempt.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     * This guard should never fire because of two checks made prior to</color>
+<color=#75715e>     * logging:</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *  - When a user txn in a replicated environment is not configured for</color>
+<color=#75715e>     *    local-write and a write operation is attempted (or when the</color>
+<color=#75715e>     *    opposite is true), the Cursor class will throw</color>
+<color=#75715e>     *    UnsupportedOperationException. See Locker.isLocalWrite.</color>
+<color=#75715e>     *</color>
+<color=#75715e>     *  - On a replica, writes to replicated DBs are disallowed even when</color>
+<color=#75715e>     *    local-write is false.  This is enforced by the ReadonlyTxn class</color>
+<color=#75715e>     *    which throws ReplicaWriteException in this case.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isNamingDB</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>DbTree</color><color=#f8f8f2>.</color><color=#a6e22e>NAME_DB_ID</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isNamingDB</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color>
+        <color=#f92672>&&</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>(</color><color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>()</color>
+                  <color=#f92672>?</color> <color=#e6db74>"Rep txn used to write to non-rep DB"</color>
+                  <color=#f8f8f2>:</color> <color=#e6db74>"Non-rep txn used to write to rep DB"</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>", class = "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>", txnId = "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>", dbName = "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDebugName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * As an additional safeguard, check that a replicated txn is used when</color>
+<color=#75715e>     * the operation is part of the rep stream, and that the inverse is</color>
+<color=#75715e>     * also true. The naming DB is exempt for the same reason as above.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>isNamingDB</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>isRepLocker</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>isReplicated</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repContext</color><color=#f8f8f2>.</color><color=#a6e22e>inReplicationStream</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>isRepLocker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>(</color><color=#f8f8f2>isRepLocker</color>
+                    <color=#f92672>?</color> <color=#e6db74>"Rep txn used to write outside of rep stream"</color>
+                    <color=#f8f8f2>:</color> <color=#e6db74>"Non-rep txn used to write in rep stream"</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#f8f8f2>((</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color>
+                    <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#e6db74>", class = "</color> <color=#f92672>+</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>getClass</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>", txnId = "</color> <color=#f92672>+</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>())</color>
+                    <color=#f8f8f2>:</color> <color=#e6db74>", null locker"</color><color=#f8f8f2>)</color>
+                <color=#f92672>+</color> <color=#e6db74>", dbName = "</color>
+                <color=#f92672>+</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getDebugName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>abortLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>abortKD</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortKey</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortData</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>abortVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN_SEQUENCE</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>abortExpiration</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>abortExpirationInHours</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>LogParams</color> <color=#f8f8f2>params</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>LogParams</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>isTransactional</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>getLogType</color><color=#f8f8f2>(</color><color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>txn</color> <color=#f92672>=</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>getTxnLocker</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>abortLsn</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortLsn</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortKD</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortKnownDeleted</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortKey</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortKey</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortData</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortData</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortVLSN</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortExpiration</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>getAbortExpiration</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>abortExpirationInHours</color> <color=#f92672>=</color> <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>isAbortExpirationInHours</color><color=#f8f8f2>();</color>
+
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteDupsAllowed</color> <color=#f92672>=</color> <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>isRolledBack</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>entryType</color> <color=#f92672>=</color> <color=#f8f8f2>getLogType</color><color=#f8f8f2>(</color><color=#f8f8f2>isInsertion</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>entry</color> <color=#f92672>=</color>
+        <color=#f8f8f2>createLogEntry</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>txn</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortLsn</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortKD</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortKey</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortData</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortVLSN</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortExpiration</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>abortExpirationInHours</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>repContext</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Always log temporary DB LNs as provisional.  This prevents the</color>
+<color=#75715e>     * possibility of a FileNotFoundException during recovery, since</color>
+<color=#75715e>     * temporary DBs are not checkpointed.  And it speeds recovery --</color>
+<color=#75715e>     * temporary DBs are removed during recovery anyway.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>provisional</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isTemporary</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>YES</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Provisional</color><color=#f8f8f2>.</color><color=#a6e22e>NO</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Dedice whether to count the current record version as obsolete.</color>
+<color=#75715e>     * Rc should not be counted as obsolete if:</color>
+<color=#75715e>     * (a) Rc == Ra; Ra (i.e. abortLsn) will be counted obsolete during</color>
+<color=#75715e>     * commit, or</color>
+<color=#75715e>     * (b) Rc was counted earlier as an "immediately obsolete" logrec.</color>
+<color=#75715e>     * This includes the cases where the DB is a dups DB, or the current</color>
+<color=#75715e>     * op is an insertion (which implies Rc is a deletion and as such has</color>
+<color=#75715e>     * been counted already) or Rc is embedded.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>abortLsn</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isLNImmediatelyObsolete</color><color=#f8f8f2>()</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>isInsertion</color>
+        <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>currEmbeddedLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldLsn</color> <color=#f92672>=</color> <color=#f8f8f2>currLsn</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>oldSize</color> <color=#f92672>=</color> <color=#f8f8f2>currSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>repContext</color> <color=#f92672>=</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>backgroundIO</color> <color=#f92672>=</color> <color=#f8f8f2>backgroundIO</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>params</color><color=#f8f8f2>.</color><color=#a6e22e>nodeDb</color> <color=#f92672>=</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Save obsolete size information to be used during commit. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>currLsn</color> <color=#f92672>==</color> <color=#f8f8f2>abortLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>.</color><color=#a6e22e>setAbortLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>currSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LogItem</color> <color=#f8f8f2>item</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Writing an LN_TX entry requires looking at the Txn's</color>
+<color=#75715e>         * lastLoggedTxn.  The Txn may be used by multiple threads so</color>
+<color=#75715e>         * ensure that the view we get is consistent. [#17204]</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>synchronized</color> <color=#f8f8f2>(</color><color=#f8f8f2>txn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>item</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>log</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>item</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getLogManager</color><color=#f8f8f2>().</color><color=#a6e22e>log</color><color=#f8f8f2>(</color><color=#f8f8f2>params</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Throwable</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * If any exception occurs while logging an LN, ensure that the</color>
+<color=#75715e>       * environment is invalidated. This will also ensure that the txn</color>
+<color=#75715e>       * cannot be committed.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>isValid</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>EnvironmentFailureReason</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INCOMPLETE</color><color=#f8f8f2>,</color> <color=#e6db74>"LN could not be logged"</color><color=#f8f8f2>,</color> <color=#f8f8f2>e</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>throw</color> <color=#f8f8f2>e</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Guarantee that if logging fails, we won't have a dirty LN in</color>
+<color=#75715e>       * the Btree.  This avoids incorrect assertions in other threads.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>clearDirty</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Lock the new LSN immediately after logging, with the BIN latched. Lock non-blocking, since no</color>
+<color=#75715e>     * contention is possible on the new LSN. If the locker is transactional, a new WriteLockInfo is</color>
+<color=#75715e>     * created for the new LSN and stored in the locker. lockResult points to that WriteLockInfo.</color>
+<color=#75715e>     * Since this new WriteLockInfo and the WriteLockInfo given as input to this method refer to the</color>
+<color=#75715e>     * same logical record, the info from the given WriteLockInfo is copied to the new one.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>newLsn</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>lsn</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockResult</color> <color=#f92672>=</color>
+          <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>lockResult</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color> <color=#f8f8f2>:</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>lockResult</color><color=#f8f8f2>.</color><color=#a6e22e>copyWriteLockInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>writeLockInfo</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* In a dup DB, do not expect embedded LNs or non-empty data. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getSortedDuplicates</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>newEmbeddedLN</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"[#25288] emb="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>newEmbeddedLN</color>
+              <color=#f92672>+</color> <color=#e6db74>" key="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>newKey</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" data="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>)</color>
+              <color=#f92672>+</color> <color=#e6db74>" vlsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>header</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" lsn="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>currLsn</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>item</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Each LN knows what kind of log entry it uses to log itself. Overridden</color>
+<color=#75715e>   * by subclasses.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>createLogEntry</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Txn</color> <color=#f8f8f2>txn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>abortLsn</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>abortKD</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>abortData</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>abortVLSN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>abortExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>abortExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ReplicationContext</color> <color=#f8f8f2>repContext</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><</color><color=#f8f8f2>LN</color><color=#f92672>></color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>entryType</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>dbImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getId</color><color=#f8f8f2>(),</color>
+        <color=#f8f8f2>txn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortKD</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortKey</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortData</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortVLSN</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortExpiration</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>abortExpirationInHours</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newKey</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>this</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newEmbeddedLN</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newExpiration</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>newExpirationInHours</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see Node#incFetchStats */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>incFetchStats</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isMiss</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getEvictor</color><color=#f8f8f2>().</color><color=#a6e22e>incLNFetchStats</color><color=#f8f8f2>(</color><color=#f8f8f2>isMiss</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see Node#getGenericLogType */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>getGenericLogType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogType</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>protected</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>getLogType</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>isInsert</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isTransactional</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>db</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>db</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>db</color><color=#f8f8f2>.</color><color=#a6e22e>getDbType</color><color=#f8f8f2>().</color><color=#a6e22e>getLogType</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>isInsert</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>isTransactional</color> <color=#f92672>?</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DEL_LN_TRANSACTIONAL</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DEL_LN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isInsert</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>isTransactional</color> <color=#f92672>?</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INS_LN_TRANSACTIONAL</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_INS_LN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>isTransactional</color> <color=#f92672>?</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_UPD_LN_TRANSACTIONAL</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_UPD_LN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The first time we optionally-log an LN in a DeferredWrite database, oldLsn will be NULL_LSN and</color>
+<color=#75715e>   * we'll assign a new transient LSN. When we do subsequent optional-log operations, the old LSN</color>
+<color=#75715e>   * will be non-null and to conserve transient LSNs we'll continue to use the previously assigned</color>
+<color=#75715e>   * LSN rather than assigning a new one. And of course, when old LSN is persistent we'll continue</color>
+<color=#75715e>   * to use it.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If locker is non-null, this method write-locks the new LSN, whether it has been assigned by</color>
+<color=#75715e>   * this method or not.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#a6e22e>assignTransientLsn</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>oldLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>Locker</color> <color=#f8f8f2>locker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldLsn</color> <color=#f92672>!=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newLsn</color> <color=#f92672>=</color> <color=#f8f8f2>oldLsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newLsn</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeSequence</color><color=#f8f8f2>().</color><color=#a6e22e>getNextTransientLsn</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Lock immediately after assigning a new LSN, with the BIN latched. Lock non-blocking, since no</color>
+<color=#75715e>     * contention is possible on the new LSN.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>locker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>LockResult</color> <color=#f8f8f2>lockResult</color> <color=#f92672>=</color>
+          <color=#f8f8f2>locker</color><color=#f8f8f2>.</color><color=#a6e22e>nonBlockingLock</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>LockType</color><color=#f8f8f2>.</color><color=#a6e22e>WRITE</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*jumpAheadOfWaiters*/</color><color=#f8f8f2>,</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>assert</color> <color=#f8f8f2>lockResult</color><color=#f8f8f2>.</color><color=#a6e22e>getLockGrant</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LockGrantType</color><color=#f8f8f2>.</color><color=#a6e22e>DENIED</color> <color=#f8f8f2>:</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>newLsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>newLsn</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see VersionedWriteLoggable#getLastFormatChange */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLastFormatChange</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LAST_FORMAT_CHANGE</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>VersionedWriteLoggable</color><color=#f92672>></color> <color=#a6e22e>getEmbeddedLoggables</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>emptyList</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>getLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*forReplication*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_VERSION</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*forReplication*/</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>calcLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>()</color> <color=#f92672>?</color> <color=#f92672>-</color><color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Calculates log size based on given dataLen, which is negative to calculate the size of a</color>
+<color=#75715e>   * deleted LN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>calcLogSize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dataLen</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPackedIntLogSize</color><color=#f8f8f2>(</color><color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getPackedIntLogSize</color><color=#f8f8f2>(</color><color=#f8f8f2>dataLen</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>dataLen</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>logVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>forReplication</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writePackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writePackedInt</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeBytesNoLength</color><color=#f8f8f2>(</color><color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672><</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Discard node ID from older version entry. */</color>
+      <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readLong</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color> <color=#f92672><</color> <color=#ae81ff>6</color> <color=#75715e>/*unpacked*/</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672><</color> <color=#ae81ff>6</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>dataExists</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readBoolean</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dataExists</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color> <color=#75715e>/*unpacked*/</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color> <color=#75715e>/*unpacked*/</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>>=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readBytesNoLength</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>size</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasReplicationFormat</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isReplicationFormatWorthwhile</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>srcVersion</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>destVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>Loggable</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>other</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>LN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LN</color> <color=#f8f8f2>otherLN</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>LN</color><color=#f8f8f2>)</color> <color=#f8f8f2>other</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>Arrays</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>otherLN</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>beginTag</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<data>"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>DUMP_TYPE</color><color=#f8f8f2>.</color><color=#a6e22e>dumpByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"hidden"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</data>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>endTag</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpKey</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Allows subclasses to add additional fields before the end tag.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"unused"</color><color=#f8f8f2>)</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Account for FileSummaryLN's extra marshaled memory. [#17462] */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>addExtraMarshaledMemorySize</color><color=#f8f8f2>(</color><color=#f8f8f2>BIN</color> <color=#f8f8f2>parentBIN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* Do nothing here.  Overwridden in FileSummaryLN. */</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * DatabaseEntry utilities</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Copies the non-deleted LN's byte array to the entry. Does not support partial data. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>setEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>isDeleted</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Copies the given byte array to the given destination entry, copying only partial data if the</color>
+<color=#75715e>   * entry is specified to be partial. If the byte array is null, clears the entry.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dest</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>bytes</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>partial</color> <color=#f92672>=</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>partial</color> <color=#f92672>?</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>partial</color> <color=#f92672>?</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialLength</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>></color> <color=#f8f8f2>bytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>off</color> <color=#f92672>></color> <color=#f8f8f2>bytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>bytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>off</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>bytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>newdata</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>newdata</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setOffset</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setSize</color><color=#f8f8f2>(</color><color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setOffset</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setSize</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Copies the given source entry to the given destination entry, copying only partial data if the</color>
+<color=#75715e>   * destination entry is specified to be partial.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>dest</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>src</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>src</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>srcBytes</color> <color=#f92672>=</color> <color=#f8f8f2>src</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>partial</color> <color=#f92672>=</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>off</color> <color=#f92672>=</color> <color=#f8f8f2>partial</color> <color=#f92672>?</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialOffset</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>partial</color> <color=#f92672>?</color> <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialLength</color><color=#f8f8f2>()</color> <color=#f8f8f2>:</color> <color=#f8f8f2>srcBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>off</color> <color=#f92672>+</color> <color=#f8f8f2>len</color> <color=#f92672>></color> <color=#f8f8f2>srcBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>off</color> <color=#f92672>></color> <color=#f8f8f2>srcBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>srcBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>off</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>newdata</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>srcBytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>off</color><color=#f8f8f2>,</color> <color=#f8f8f2>newdata</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>newdata</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setOffset</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setSize</color><color=#f8f8f2>(</color><color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setOffset</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>dest</color><color=#f8f8f2>.</color><color=#a6e22e>setSize</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns a byte array that is a complete copy of the data in a non-partial entry. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>copyEntryData</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f92672>!</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getPartial</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newData</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>newData</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>len</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>newData</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Merges the partial entry with the given byte array, effectively applying a partial entry to an</color>
+<color=#75715e>   * existing record, and returns a enw byte array.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#a6e22e>resolvePartialEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>entry</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>foundDataBytes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>foundDataBytes</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>dlen</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialLength</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>doff</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getPartialOffset</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>origlen</color> <color=#f92672>=</color> <color=#f8f8f2>foundDataBytes</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>oldlen</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>doff</color> <color=#f92672>+</color> <color=#f8f8f2>dlen</color> <color=#f92672>></color> <color=#f8f8f2>origlen</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>(</color><color=#f8f8f2>doff</color> <color=#f92672>+</color> <color=#f8f8f2>dlen</color><color=#f8f8f2>)</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origlen</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>len</color> <color=#f92672>=</color> <color=#f8f8f2>oldlen</color> <color=#f92672>-</color> <color=#f8f8f2>dlen</color> <color=#f92672>+</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>newData</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>len</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newData</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>ZERO_LENGTH_BYTE_ARRAY</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>newData</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>byte</color><color=#f92672>[</color><color=#f8f8f2>len</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>pos</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Keep 0..doff of the old data (truncating if doff > length). */</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>slicelen</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>doff</color> <color=#f92672><</color> <color=#f8f8f2>origlen</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>doff</color> <color=#f8f8f2>:</color> <color=#f8f8f2>origlen</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>slicelen</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>foundDataBytes</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>newData</color><color=#f8f8f2>,</color> <color=#f8f8f2>pos</color><color=#f8f8f2>,</color> <color=#f8f8f2>slicelen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>pos</color> <color=#f92672>+=</color> <color=#f8f8f2>doff</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Copy in the new data. */</color>
+    <color=#f8f8f2>slicelen</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>newData</color><color=#f8f8f2>,</color> <color=#f8f8f2>pos</color><color=#f8f8f2>,</color> <color=#f8f8f2>slicelen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>pos</color> <color=#f92672>+=</color> <color=#f8f8f2>slicelen</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* Append the rest of the old data (if any). */</color>
+    <color=#f8f8f2>slicelen</color> <color=#f92672>=</color> <color=#f8f8f2>origlen</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>doff</color> <color=#f92672>+</color> <color=#f8f8f2>dlen</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>slicelen</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>foundDataBytes</color><color=#f8f8f2>,</color> <color=#f8f8f2>doff</color> <color=#f92672>+</color> <color=#f8f8f2>dlen</color><color=#f8f8f2>,</color> <color=#f8f8f2>newData</color><color=#f8f8f2>,</color> <color=#f8f8f2>pos</color><color=#f8f8f2>,</color> <color=#f8f8f2>slicelen</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>newData</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

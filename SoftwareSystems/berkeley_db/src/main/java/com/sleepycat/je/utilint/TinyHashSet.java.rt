@@ -1,0 +1,210 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.utilint</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Iterator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.NoSuchElementException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import static</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException.assertState</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * TinyHashSet is used to optimize (for speed, not space) the case where a HashSet generally holds</color>
+<color=#75715e> * one or two elements. This saves us the cost of creating the HashSet and related elements as well</color>
+<color=#75715e> * as call Object.hashCode(). It was designed for holding the cursors of a BIN, which are often no</color>
+<color=#75715e> * more than two in number.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If (elem1 != null || elem2 != null), they are the only elements in the TinyHashSet. If (set !=</color>
+<color=#75715e> * null) then only the set's elements are in the TinyHashSet.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>It should never be true that: (elem1 != null || elem2 != null) and (set != null).</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This class does not support adding null elements, and only supports a few of the methods in</color>
+<color=#75715e> * the Set interface.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>TinyHashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>Iterable</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>set</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates an empty set. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>TinyHashSet</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#75715e>/** Creates a set with one element. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>TinyHashSet</color><color=#f8f8f2>(</color><color=#f8f8f2>T</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>elem1</color> <color=#f92672>=</color> <color=#f8f8f2>o</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Will return a fuzzy value if not under synchronized control.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>T</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>((</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>T</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>((</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+      <color=#75715e>/*</color>
+<color=#75715e>      if (set.size() > 2) {</color>
+<color=#75715e>          return true;</color>
+<color=#75715e>      }</color>
+<color=#75715e>      final Iterator<T> iter = set.iterator();</color>
+<color=#75715e>      if (iter.hasNext()) {</color>
+<color=#75715e>          elem1 = iter.next();</color>
+<color=#75715e>          if (iter.hasNext()) {</color>
+<color=#75715e>              elem2 = iter.next();</color>
+<color=#75715e>          }</color>
+<color=#75715e>      }</color>
+<color=#75715e>      set = null;</color>
+<color=#75715e>      */</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>elem1</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>elem2</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>T</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>((</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#f8f8f2>o</color> <color=#f92672>||</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>elem1</color> <color=#f92672>=</color> <color=#f8f8f2>o</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>elem2</color> <color=#f92672>=</color> <color=#f8f8f2>o</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>set</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#ae81ff>5</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>elem1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>elem2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>elem1</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>elem2</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>o</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#a6e22e>copy</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>((</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>set</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>ret</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>elem1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ret</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>elem2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>ret</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#a6e22e>iterator</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>assertState</color><color=#f8f8f2>((</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>set</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>set</color><color=#f8f8f2>.</color><color=#a6e22e>iterator</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>TwoElementIterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>,</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Iterator that returns only elem1 and elem2.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>TwoElementIterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#66d9ef>implements</color> <color=#f8f8f2>Iterator</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>TinyHashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>parent</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>returnedElem1</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>returnedElem2</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>TwoElementIterator</color><color=#f8f8f2>(</color><color=#f8f8f2>TinyHashSet</color><color=#f92672><</color><color=#f8f8f2>T</color><color=#f92672>></color> <color=#f8f8f2>parent</color><color=#f8f8f2>,</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>,</color> <color=#f8f8f2>T</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>parent</color> <color=#f92672>=</color> <color=#f8f8f2>parent</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>elem1</color> <color=#f92672>=</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>elem2</color> <color=#f92672>=</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>returnedElem1</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem1</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>returnedElem2</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>elem2</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>hasNext</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f92672>!</color><color=#f8f8f2>returnedElem1</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>returnedElem2</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>T</color> <color=#a6e22e>next</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>returnedElem1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>returnedElem1</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>elem1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>returnedElem2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>returnedElem2</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>elem2</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>NoSuchElementException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Examine elements in the reverse order they were returned, to remove the last returned element</color>
+<color=#75715e>     * when both elements were returned.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>remove</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>returnedElem2</color> <color=#f92672>&&</color> <color=#f8f8f2>elem2</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>elem2</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>returnedElem1</color> <color=#f92672>&&</color> <color=#f8f8f2>elem1</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>parent</color><color=#f8f8f2>.</color><color=#a6e22e>elem1</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>assertState</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

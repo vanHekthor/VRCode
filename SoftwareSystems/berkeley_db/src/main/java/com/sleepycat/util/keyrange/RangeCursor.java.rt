@@ -1,0 +1,1288 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.util.keyrange</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat.OpReadOptions</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.compat.DbCompat.OpResult</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.*</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * A cursor-like interface that enforces a key range. The method signatures are actually those of</color>
+<color=#75715e> * SecondaryCursor, but the pKey parameter may be null. It was done this way to avoid doubling the</color>
+<color=#75715e> * number of methods.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>This is not a fully general implementation of a range cursor and should not be used directly</color>
+<color=#75715e> * by applications; however, it may evolve into a generally useful range cursor some day.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Mark Hayes</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>RangeCursor</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The cursor and secondary cursor are the same object. The secCursor is null if the database is</color>
+<color=#75715e>   * not a secondary database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>SecondaryCursor</color> <color=#f8f8f2>secCursor</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The range is always non-null, but may be unbounded meaning that it is open and not used. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The pkRange may be non-null only if the range is a single-key range and the cursor is a</color>
+<color=#75715e>   * secondary cursor. It further restricts the range of primary keys in a secondary database.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** If the DB supported sorted duplicates, then calling Cursor.getSearchBothRange is allowed. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sortedDups</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The privXxx entries are used only when the range is bounded. We read into these private entries</color>
+<color=#75715e>   * to avoid modifying the caller's entry parameters in the case where we read successfully but the</color>
+<color=#75715e>   * key is out of range. In that case we return NOTFOUND and we want to leave the entry parameters</color>
+<color=#75715e>   * unchanged.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>privData</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The initialized flag is set to true whenever we successfully position the cursor. It is used to</color>
+<color=#75715e>   * implement the getNext/Prev logic for doing a getFirst/Last when the cursor is not initialized.</color>
+<color=#75715e>   * We can't rely on Cursor to do that for us, since if we position the underlying cursor</color>
+<color=#75715e>   * successfully but the key is out of range, we have no way to set the underlying cursor to</color>
+<color=#75715e>   * uninitialized. A range cursor always starts in the uninitialized state.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>initialized</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Creates a range cursor with a duplicate range. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>RangeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>KeyRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>KeyRange</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>sortedDups</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>range</color> <color=#f92672>=</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>pkRange</color> <color=#f92672>=</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>sortedDups</color> <color=#f92672>=</color> <color=#f8f8f2>sortedDups</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>init</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>secCursor</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create a cloned range cursor. The caller must clone the underlying cursor before using this</color>
+<color=#75715e>   * constructor, because cursor open/close is handled specially for CDS cursors outside this class.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>RangeCursor</color> <color=#a6e22e>dup</color><color=#f8f8f2>(</color><color=#66d9ef>boolean</color> <color=#f8f8f2>samePosition</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>RangeCursor</color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>RangeCursor</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>dupCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>samePosition</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>c</color><color=#f8f8f2>.</color><color=#a6e22e>init</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>c</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>CloneNotSupportedException</color> <color=#f8f8f2>neverHappens</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Used for opening and duping (cloning). */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>cursor</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>SecondaryCursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>secCursor</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryCursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>secCursor</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>privKey</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>privPKey</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>privData</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DatabaseEntry</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>privKey</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>privPKey</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>privData</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the cursor is initialized at a valid position. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isInitialized</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>initialized</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the underlying cursor. Used for cloning. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Cursor</color> <color=#a6e22e>getCursor</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * When an unbounded range is used, this method is called to use the callers entry parameters</color>
+<color=#75715e>   * directly, to avoid the extra step of copying between the private entries and the caller's</color>
+<color=#75715e>   * entries.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>privKey</color> <color=#f92672>=</color> <color=#f8f8f2>key</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>privPKey</color> <color=#f92672>=</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>privData</color> <color=#f92672>=</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Dups the cursor, sets the cursor and secCursor fields to the duped cursor, and returns the old</color>
+<color=#75715e>   * cursor. Always call endOperation in a finally clause after calling beginOperation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the returned cursor == the cursor field, the cursor is uninitialized and was not duped;</color>
+<color=#75715e>   * this case is handled correctly by endOperation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Cursor</color> <color=#a6e22e>beginOperation</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>dupCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>secCursor</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryCursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>oldCursor</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If the operation succeeded, leaves the duped cursor in place and closes the oldCursor. If the</color>
+<color=#75715e>   * operation failed, moves the oldCursor back in place and closes the duped cursor. oldCursor may</color>
+<color=#75715e>   * be null if beginOperation was not called, in cases where we don't need to dup the cursor.</color>
+<color=#75715e>   * Always call endOperation when a successful operation ends, in order to set the initialized</color>
+<color=#75715e>   * field.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>endOperation</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>!=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>key</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>swapData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>swapData</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>data</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>swapData</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>initialized</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>!=</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>cursor</color> <color=#f92672>=</color> <color=#f8f8f2>oldCursor</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>secCursor</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>SecondaryCursor</color><color=#f8f8f2>)</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Swaps the contents of the two entries. Used to return entry data to the caller when the</color>
+<color=#75715e>   * operation was successful.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>swapData</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>e1</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>e2</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>d1</color> <color=#f92672>=</color> <color=#f8f8f2>e1</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>o1</color> <color=#f92672>=</color> <color=#f8f8f2>e1</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>s1</color> <color=#f92672>=</color> <color=#f8f8f2>e1</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>e1</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>e2</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>e2</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>e2</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>e2</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>d1</color><color=#f8f8f2>,</color> <color=#f8f8f2>o1</color><color=#f8f8f2>,</color> <color=#f8f8f2>s1</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Shares the same byte array, offset and size between two entries. Used when copying the entry</color>
+<color=#75715e>   * data is not necessary because it is known that the underlying operation will not modify the</color>
+<color=#75715e>   * entry, for example, with getSearchKey.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>from</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>to</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>from</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>to</color><color=#f8f8f2>.</color><color=#a6e22e>setData</color><color=#f8f8f2>(</color><color=#f8f8f2>from</color><color=#f8f8f2>.</color><color=#a6e22e>getData</color><color=#f8f8f2>(),</color> <color=#f8f8f2>from</color><color=#f8f8f2>.</color><color=#a6e22e>getOffset</color><color=#f8f8f2>(),</color> <color=#f8f8f2>from</color><color=#f8f8f2>.</color><color=#a6e22e>getSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getFirst</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>isSingleKey</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f92672>!</color><color=#f8f8f2>sortedDups</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color>
+              <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginInclusive</color>
+              <color=#f92672>&&</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color>
+              <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginInclusive</color>
+              <color=#f92672>&&</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * This method will restart the operation when a key range is used and an insertion at the end of</color>
+<color=#75715e>   * the key range is performed in another thread. The restarts are needed because a sequence of</color>
+<color=#75715e>   * cursor movements is performed, and serializable isolation cannot be relied on to prevent</color>
+<color=#75715e>   * insertions in other threads. Without the restarts, getLast could return NOTFOUND when keys in</color>
+<color=#75715e>   * the range exist. This may only be an issue for JE since it uses record locking, while DB core</color>
+<color=#75715e>   * uses page locking.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getLast</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>getLastInPKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Final check on candidate key and pKey value. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672>&&</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>getLastInKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+        <color=#75715e>/* Final check on candidate key value. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Performs getLast operation when a main key range is specified but pkRange is null. Does</color>
+<color=#75715e>   * everything but the final checks for key in range, i.e., when SUCCESS is returned the caller</color>
+<color=#75715e>   * should do the final check.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getLastInKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Without an endKey, getLast returns the candidate record. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * K stands for the main key at the cursor position in the comments</color>
+<color=#75715e>     * below.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Found K >= endKey. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>endInclusive</color> <color=#f92672>&&</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/* K == endKey and endKey is inclusive. */</color>
+
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>sortedDups</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* If dups are not configured, we're done. */</color>
+            <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * If there are dups, we're positioned at endKey's first</color>
+<color=#75715e>           * dup and we want to move to its last dup. Move to the</color>
+<color=#75715e>           * first dup for the next main key (getNextNoDup) and then</color>
+<color=#75715e>           * the prev record. In the absence of insertions by other</color>
+<color=#75715e>           * threads, the prev record is the last dup for endKey.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * K > endKey. Move backward to the last dup for</color>
+<color=#75715e>             * endKey.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * endKey is the last main key in the DB. Its last dup</color>
+<color=#75715e>             * is the last key in the DB.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * K > endKey or endKey is exclusive (and K >= endKey). In</color>
+<color=#75715e>           * both cases, moving to the prev key finds the last key in</color>
+<color=#75715e>           * the range, whether or not there are dups.</color>
+<color=#75715e>           */</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * There are no keys >= endKey in the DB. The last key in the</color>
+<color=#75715e>         * range is the last key in the DB.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>checkEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The last call above (getPrev or getLast) returned a key</color>
+<color=#75715e>         * outside the endKey range. Another thread must have inserted</color>
+<color=#75715e>         * this key. Start over.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Performs getLast operation when both a main key range (which must be a single key range) and a</color>
+<color=#75715e>   * pkRange are specified. Does everything but the final checks for key and pKey in range, i.e.,</color>
+<color=#75715e>   * when SUCCESS is returned the caller should do the final two checks.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getLastInPKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* We can do an exact search when range and pkRange are single keys. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>isSingleKey</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>doGetSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * When dups are not configured, getSearchKey for the main key returns</color>
+<color=#75715e>     * the only possible candidate record.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>sortedDups</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * K stands for the main key and D for the duplicate (data item) at the</color>
+<color=#75715e>     * cursor position in the comments below</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+          <color=#75715e>/* Found D >= endKey. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endInclusive</color> <color=#f92672>||</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>compare</color><color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * D > endKey or endKey is exclusive (and D >= endKey).</color>
+<color=#75715e>             * In both cases, moving to the prev dup finds the last</color>
+<color=#75715e>             * key in the range.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+              <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>checkEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+              <color=#75715e>/*</color>
+<color=#75715e>               * getPrevDup returned a key outside the endKey</color>
+<color=#75715e>               * range. Another thread must have inserted this</color>
+<color=#75715e>               * key. Start over.</color>
+<color=#75715e>               */</color>
+              <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* Else D == endKey and endKey is inclusive. */</color>
+
+          <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#75715e>/* Else there are no dups >= endKey.  Fall through. */</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * We're here for one of two reasons:</color>
+<color=#75715e>       *  1. pkRange.endKey == null.</color>
+<color=#75715e>       *  2. There are no dups >= endKey for the main key (status</color>
+<color=#75715e>       *     returned by getSearchBothRange above was not SUCCESS).</color>
+<color=#75715e>       * In both cases, the last dup in the range is the last dup for the</color>
+<color=#75715e>       * main key.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>KeyRange</color><color=#f8f8f2>.</color><color=#a6e22e>copy</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * K == the main key and D is its first dup. We want to move to its</color>
+<color=#75715e>       * last dup. Move to the first dup for the next main key;</color>
+<color=#75715e>       * (getNextNoDup) and then the prev record. In the absence of</color>
+<color=#75715e>       * insertions by other threads, the prev record is the last dup for</color>
+<color=#75715e>       * the main key.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * K > main key and D is its first dup. Move to the prev record</color>
+<color=#75715e>         * which should be the last dup for the main key.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The main key specified is the last main key in the DB. Its</color>
+<color=#75715e>         * last dup is the last record in the DB.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>checkEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * The last call above (getPrev or getLast) returned a key</color>
+<color=#75715e>         * outside the endKey range. Another thread must have inserted</color>
+<color=#75715e>         * this key. Start over.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getNext</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNext</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>checkEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNext</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getNextNoDup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getPrev</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLast</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>checkBegin</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getPrevNoDup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getLast</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>singleKey</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getSearchBoth</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getSearchKeyRange</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>))))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getSearchBothRange</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color>
+          <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>pKey</color><color=#f8f8f2>))))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getSearchRecordNumber</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>check</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>shareData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetSearchRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getNextDup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Cursor not initialized"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>endKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>checkEnd</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getPrevDup</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Cursor not initialized"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>OpResult</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>hasBound</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>setParams</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pkRange</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>beginKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>Cursor</color> <color=#f8f8f2>oldCursor</color> <color=#f92672>=</color> <color=#f8f8f2>beginOperation</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>result</color><color=#f8f8f2>.</color><color=#a6e22e>isSuccess</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>pkRange</color><color=#f8f8f2>.</color><color=#a6e22e>checkBegin</color><color=#f8f8f2>(</color><color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#f8f8f2>oldCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>result</color> <color=#f92672>=</color> <color=#f8f8f2>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>options</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>endOperation</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>result</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>result</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>getCurrent</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>initialized</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"Cursor not initialized"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>pKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>CURRENT</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrent</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>pKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>CURRENT</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getCurrent</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Pass-thru methods.</color>
+<color=#75715e>   */</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>count</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>count</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>delete</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>delete</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putNoOverwrite</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>putNoDupData</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putNoDupData</color><color=#f8f8f2>(</color><color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>putCurrent</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>putCurrent</color><color=#f8f8f2>(</color><color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>putAfter</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>putAfter</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OperationStatus</color> <color=#a6e22e>putBefore</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>DatabaseEntry</color> <color=#f8f8f2>data</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>putBefore</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>key</color><color=#f8f8f2>,</color> <color=#f8f8f2>data</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>FIRST</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>FIRST</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetLast</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>LAST</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>LAST</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetNext</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNext</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNextDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT_NO_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>NEXT_NO_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getNextNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrev</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetPrevNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV_NO_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>PREV_NO_DUP</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getPrevNoDup</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkRecordNumber</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKey</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkRecordNumber</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_GTE</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_GTE</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchKeyRange</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkRecordNumber</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_BOTH</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_BOTH</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchBoth</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>checkRecordNumber</color><color=#f8f8f2>()</color> <color=#f92672>&&</color> <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_BOTH_GTE</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>secCursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* <!-- begin JE only --> */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>IS_JE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>Get</color><color=#f8f8f2>.</color><color=#a6e22e>SEARCH_BOTH_GTE</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>jeOptions</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+      <color=#75715e>/* <!-- end JE only --> */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchBothRange</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>OpResult</color> <color=#a6e22e>doGetSearchRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>OpReadOptions</color> <color=#f8f8f2>options</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>privKey</color><color=#f8f8f2>)</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>FAILURE</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>secCursor</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>privPKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchRecordNumber</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>secCursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privPKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>OpResult</color><color=#f8f8f2>.</color><color=#a6e22e>make</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>DbCompat</color><color=#f8f8f2>.</color><color=#a6e22e>getSearchRecordNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#f8f8f2>privKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>privData</color><color=#f8f8f2>,</color> <color=#f8f8f2>options</color><color=#f8f8f2>.</color><color=#a6e22e>getLockMode</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Protected methods for duping and closing cursors.  These are overridden</color>
+<color=#75715e>   * by the collections API to implement cursor pooling for CDS.</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** Dups the given cursor. */</color>
+  <color=#66d9ef>protected</color> <color=#f8f8f2>Cursor</color> <color=#a6e22e>dupCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>samePosition</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>dup</color><color=#f8f8f2>(</color><color=#f8f8f2>samePosition</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Closes the given cursor. */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>closeCursor</color><color=#f8f8f2>(</color><color=#f8f8f2>Cursor</color> <color=#f8f8f2>cursor</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>cursor</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * If the database is a RECNO or QUEUE database, we know its keys are record numbers. We treat a</color>
+<color=#75715e>   * non-positive record number as out of bounds, that is, we return NOTFOUND rather than throwing</color>
+<color=#75715e>   * IllegalArgumentException as would happen if we passed a non-positive record number into the DB</color>
+<color=#75715e>   * cursor. This behavior is required by the collections interface.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>checkRecordNumber</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

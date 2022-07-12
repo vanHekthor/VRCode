@@ -1,0 +1,422 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.Loggable</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.LNLogEntry</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Per-file utilization counters. The UtilizationProfile stores a persistent map of file number to</color>
+<color=#75715e> * FileSummary.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>FileSummary</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Loggable</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cloneable</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* Persistent fields. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalCount</color><color=#f8f8f2>;</color> <color=#75715e>// Total # of log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>;</color> <color=#75715e>// Total bytes in log file</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalINCount</color><color=#f8f8f2>;</color> <color=#75715e>// Number of IN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalINSize</color><color=#f8f8f2>;</color> <color=#75715e>// Byte size of IN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalLNCount</color><color=#f8f8f2>;</color> <color=#75715e>// Number of LN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>;</color> <color=#75715e>// Byte size of LN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxLNSize</color><color=#f8f8f2>;</color> <color=#75715e>// Byte size of largest LN log entry</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteINCount</color><color=#f8f8f2>;</color> <color=#75715e>// Number of obsolete IN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>;</color> <color=#75715e>// Number of obsolete LN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>;</color> <color=#75715e>// Byte size of obsolete LN log entries</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>;</color> <color=#75715e>// Number obsolete LNs with size counted</color>
+
+  <color=#75715e>/** Creates an empty summary. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>FileSummary</color><color=#f8f8f2>()</color> <color=#f8f8f2>{}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileSummary</color> <color=#a6e22e>clone</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileSummary</color><color=#f8f8f2>)</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>CloneNotSupportedException</color> <color=#f8f8f2>willNeverOccur</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether this summary contains any non-zero totals. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isEmpty</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>totalCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>totalSize</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>obsoleteINCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>obsoleteLNCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the approximate byte size of all obsolete LN entries, using the average LN size for LN</color>
+<color=#75715e>   * sizes that were not counted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getObsoleteLNSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalLNCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Normalize obsolete amounts to account for double-counting. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNCount</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSizeCounted</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsLNCount</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use the tracked obsolete size for all entries for which the size was</color>
+<color=#75715e>     * counted, plus the average size for all obsolete entries whose size</color>
+<color=#75715e>     * was not counted.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>obsSize</color> <color=#f92672>=</color> <color=#f8f8f2>obsLNSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSizeCounted</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * When there are any obsolete LNs with sizes uncounted, we add an</color>
+<color=#75715e>       * obsolete amount that is the product of the number of LNs</color>
+<color=#75715e>       * uncounted and the average LN size.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>avgLNSizeNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>getAvgObsoleteLNSizeNotCounted</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>Float</color><color=#f8f8f2>.</color><color=#a6e22e>isNaN</color><color=#f8f8f2>(</color><color=#f8f8f2>avgLNSizeNotCounted</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>obsSize</color> <color=#f92672>+=</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>*</color> <color=#f8f8f2>avgLNSizeNotCounted</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Don't return an impossibly large estimate. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsSize</color> <color=#f92672>></color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>totalLNSize</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>obsSize</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the average size for LNs with sizes not counted, or NaN if there are no such LNs.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In FileSummaryLN version 3 and greater the obsolete size is normally counted, but not in</color>
+<color=#75715e>   * exceptional circumstances such as recovery. If it is not counted, obsoleteLNSizeCounted will be</color>
+<color=#75715e>   * less than obsoleteLNCount.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>In log version 8 and greater, we don't count the size when the LN is not resident in cache</color>
+<color=#75715e>   * during update/delete, and CLEANER_FETCH_OBSOLETE_SIZE is false (the default setting).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>We added maxLNSize in version 8 for use in estimating obsolete LN sizes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>To compute the average LN size, we only consider the LNs (both obsolete and non-obsolete)</color>
+<color=#75715e>   * for which the size has not been counted. This increases accuracy when counted and uncounted LN</color>
+<color=#75715e>   * sizes are not uniform. An example is when large LNs are inserted and deleted. The size of the</color>
+<color=#75715e>   * deleted LN log entry (which is small) is always counted, but the previous version (which has a</color>
+<color=#75715e>   * large size) may not be counted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>float</color> <color=#a6e22e>getAvgObsoleteLNSizeNotCounted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Normalize obsolete amounts to account for double-counting. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNCount</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSizeCounted</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsLNCount</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSizeCounted</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsCountNotCounted</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Float</color><color=#f8f8f2>.</color><color=#a6e22e>NaN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalSizeNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>totalLNSize</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>totalCountNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>totalLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSizeCounted</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalSizeNotCounted</color> <color=#f92672><=</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>totalCountNotCounted</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>Float</color><color=#f8f8f2>.</color><color=#a6e22e>NaN</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>totalSizeNotCounted</color> <color=#f92672>/</color> <color=#f8f8f2>((</color><color=#66d9ef>float</color><color=#f8f8f2>)</color> <color=#f8f8f2>totalCountNotCounted</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the maximum possible obsolete LN size, using the maximum LN size for LN sizes that were</color>
+<color=#75715e>   * not counted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getMaxObsoleteLNSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * In log version 7 and earlier the maxLNSize is not available.  It is</color>
+<color=#75715e>     * safe to use getObsoleteLNSize in that case, because LSN locking was</color>
+<color=#75715e>     * not used and the obsolete size was counted for updates and deletes.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxLNSize</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>getObsoleteLNSize</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalLNCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Normalize obsolete amounts to account for double-counting. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNCount</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsLNSizeCounted</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsLNCount</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Use the tracked obsolete size for all entries for which the size was</color>
+<color=#75715e>     * counted, plus the maximum possible size for all obsolete entries</color>
+<color=#75715e>     * whose size was not counted.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>obsSize</color> <color=#f92672>=</color> <color=#f8f8f2>obsLNSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>obsLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSizeCounted</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * When there are any obsolete LNs with sizes uncounted, we add an</color>
+<color=#75715e>       * obsolete amount that is the minimum of two values.  Either value</color>
+<color=#75715e>       * may be much higher than the true obsolete amount, but by taking</color>
+<color=#75715e>       * their minimum we use a much more realistic obsolete amount.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * maxLNSizeNotCounted is the maximum obsolete not counted, based</color>
+<color=#75715e>       * on the multiplying maxLNSize and the number of obsolete LNs not</color>
+<color=#75715e>       * counted.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * maxObsSizeNotCounted is also an upper bound on the obsolete size</color>
+<color=#75715e>       * not not counted.  The (totalLNSize - obsLNSize) gives the amount</color>
+<color=#75715e>       * non-obsolete plus the obsolete amount not counted.  From this we</color>
+<color=#75715e>       * subtract the minimum non-obsolete size, based on the minimum</color>
+<color=#75715e>       * size of any LN.  This leaves the maximum obsolete size not</color>
+<color=#75715e>       * counted.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * Note that the mutiplication immediately below would overflow if</color>
+<color=#75715e>       * type 'int' instead of 'long' were used for the operands.  This</color>
+<color=#75715e>       * was fixed in [#21106].</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxLNSizeNotCounted</color> <color=#f92672>=</color> <color=#f8f8f2>obsCountNotCounted</color> <color=#f92672>*</color> <color=#f8f8f2>maxLNSize</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>maxObsSizeNotCounted</color> <color=#f92672>=</color>
+          <color=#f8f8f2>totalLNSize</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNSize</color> <color=#f92672>-</color> <color=#f8f8f2>((</color><color=#f8f8f2>totalLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>obsLNCount</color><color=#f8f8f2>)</color> <color=#f92672>*</color> <color=#f8f8f2>LNLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>MIN_LOG_SIZE</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>obsSize</color> <color=#f92672>+=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>maxLNSizeNotCounted</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxObsSizeNotCounted</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Don't return an impossibly large estimate. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsSize</color> <color=#f92672>></color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>totalLNSize</color> <color=#f8f8f2>:</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>obsSize</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the approximate byte size of all obsolete IN entries. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getObsoleteINSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalINCount</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Normalize obsolete amounts to account for double-counting. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>obsINCount</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteINCount</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalINCount</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Use average IN size to compute total. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>totalINSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>float</color> <color=#f8f8f2>avgSizePerIN</color> <color=#f92672>=</color> <color=#f8f8f2>size</color> <color=#f92672>/</color> <color=#f8f8f2>totalINCount</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsINCount</color> <color=#f92672>*</color> <color=#f8f8f2>avgSizePerIN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns an estimate of the total bytes that are obsolete, using getObsoleteLNSize instead of</color>
+<color=#75715e>   * getMaxObsoleteLNSize.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getObsoleteSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>calculateObsoleteSize</color><color=#f8f8f2>(</color><color=#f8f8f2>getObsoleteLNSize</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns an estimate of the total bytes that are obsolete, using getMaxObsoleteLNSize instead of</color>
+<color=#75715e>   * getObsoleteLNSize.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getMaxObsoleteSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>calculateObsoleteSize</color><color=#f8f8f2>(</color><color=#f8f8f2>getMaxObsoleteLNSize</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>calculateObsoleteSize</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>lnObsoleteSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color> <color=#f92672><=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>/* Leftover (non-IN non-LN) space is considered obsolete. */</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>leftoverSize</color> <color=#f92672>=</color> <color=#f8f8f2>totalSize</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalINSize</color> <color=#f92672>+</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>obsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>lnObsoleteSize</color> <color=#f92672>+</color> <color=#f8f8f2>getObsoleteINSize</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#f8f8f2>leftoverSize</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Don't report more obsolete bytes than the total.  We may</color>
+<color=#75715e>     * calculate more than the total because of (intentional)</color>
+<color=#75715e>     * double-counting during recovery.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsoleteSize</color> <color=#f92672>></color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>obsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the total number of entries counted. This value is guaranteed to increase whenever the</color>
+<color=#75715e>   * tracking information about a file changes. It is used a key discriminator for FileSummaryLN</color>
+<color=#75715e>   * records.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>int</color> <color=#a6e22e>getEntriesCounted</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>totalCount</color> <color=#f92672>+</color> <color=#f8f8f2>obsoleteLNCount</color> <color=#f92672>+</color> <color=#f8f8f2>obsoleteINCount</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Calculates utilization percentage using average LN sizes. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>utilization</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>utilization</color><color=#f8f8f2>(</color><color=#f8f8f2>getObsoleteSize</color><color=#f8f8f2>(),</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Calculates a utilization percentage. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>utilization</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>round</color><color=#f8f8f2>(((</color><color=#ae81ff>100.0F</color> <color=#f92672>*</color> <color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color> <color=#f92672>-</color> <color=#f8f8f2>obsoleteSize</color><color=#f8f8f2>))</color> <color=#f92672>/</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Reset all totals to zero. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>reset</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>totalCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalINCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalINSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalLNCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalLNSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>maxLNSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteINCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNCount</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNSizeCounted</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Add the totals of the given summary object to the totals of this object. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>FileSummary</color> <color=#f8f8f2>o</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>totalCount</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalINCount</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalLNCount</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>totalLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>maxLNSize</color> <color=#f92672><</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>maxLNSize</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>maxLNSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>obsoleteINCount</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>obsoleteLNSizeCounted</color> <color=#f92672>+=</color> <color=#f8f8f2>o</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#ae81ff>11</color> <color=#f92672>*</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getIntLogSize</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalINCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalINSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>maxLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsoleteINCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>writeInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>totalCount</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalINCount</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalINSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalLNCount</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>totalLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>>=</color> <color=#ae81ff>8</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>maxLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>obsoleteINCount</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>obsoleteINCount</color> <color=#f92672>==</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * If INs were not counted in an older log file written by 1.5.3 or</color>
+<color=#75715e>       * earlier, consider all INs to be obsolete.  This causes the file</color>
+<color=#75715e>       * to be cleaned, and then IN counting will be accurate.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>obsoleteINCount</color> <color=#f92672>=</color> <color=#f8f8f2>totalINCount</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>obsoleteLNCount</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * obsoleteLNSize and obsoleteLNSizeCounted were added in FileSummaryLN</color>
+<color=#75715e>     * version 3.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672>>=</color> <color=#ae81ff>3</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>obsoleteLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>obsoleteLNSizeCounted</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readInt</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>obsoleteLNSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>obsoleteLNSizeCounted</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>verbose</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<summary totalCount=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" totalSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" totalINCount=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalINCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" totalINSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalINSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" totalLNCount=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalLNCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" totalLNSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>totalLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" maxLNSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>maxLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" obsoleteINCount=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteINCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" obsoleteLNCount=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNCount</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" obsoleteLNSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSize</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" obsoleteLNSizeCounted=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>obsoleteLNSizeCounted</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getObsoleteSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getObsoleteSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getObsoleteINSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getObsoleteINSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getObsoleteLNSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getObsoleteLNSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getMaxObsoleteSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getMaxObsoleteSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getMaxObsoleteLNSize=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getMaxObsoleteLNSize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\" getAvgObsoleteLNSizeNotCounted=\""</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>getAvgObsoleteLNSizeNotCounted</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"\"/>"</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Never called. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>getTransactionId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Always return false, this item should never be compared. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>logicalEquals</color><color=#f8f8f2>(</color><color=#f8f8f2>Loggable</color> <color=#f8f8f2>other</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>buf</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>buf</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>buf</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

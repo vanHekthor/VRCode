@@ -1,0 +1,400 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.stream</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileProtector.ProtectedFileSet</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.config.EnvironmentParams</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.ChecksumException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.ReplicationSecurityException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.Feeder</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.RepNode</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.EntryRequest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.EntryRequestType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.RestoreRequest</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.stream.BaseProtocol.StartStream</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.subscription.StreamAuthenticator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.Message</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.NamedChannel</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNIndex</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.vlsn.VLSNRange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.*</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Establish where the replication stream should start for a feeder and replica pair. The Feeder's</color>
+<color=#75715e> * job is to send the replica the parts of the replication stream it needs, so that the two can</color>
+<color=#75715e> * determine a common matchpoint.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>If a successful matchpoint is found the feeder learns where to start the replication stream</color>
+<color=#75715e> * for this replica.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>FeederReplicaSyncup</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* A test hook that is called after a syncup has started. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Feeder</color><color=#f92672>></color> <color=#f8f8f2>afterSyncupStartedHook</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* A test hook that is called after a syncup has ended. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Feeder</color><color=#f92672>></color> <color=#f8f8f2>afterSyncupEndedHook</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Feeder</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>RepNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NamedChannel</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSNIndex</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>FeederSyncupReader</color> <color=#f8f8f2>backwardsReader</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>public</color> <color=#a6e22e>FeederReplicaSyncup</color><color=#f8f8f2>(</color><color=#f8f8f2>Feeder</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>,</color> <color=#f8f8f2>NamedChannel</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>,</color> <color=#f8f8f2>Protocol</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>feeder</color> <color=#f92672>=</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>repNode</color> <color=#f92672>=</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNode</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLogger</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>namedChannel</color> <color=#f92672>=</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>protocol</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>vlsnIndex</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The feeder's side of the protocol. Find out where to start the replication stream.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws NetworkRestoreException if sync up failed and network store is required</color>
+<color=#75715e>   * @throws ChecksumException if checksum validation failed</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>execute</color><color=#f8f8f2>()</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>InterruptedException</color><color=#f8f8f2>,</color> <color=#f8f8f2>NetworkRestoreException</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>startTime</color> <color=#f92672>=</color> <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>RepImpl</color> <color=#f8f8f2>repImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+        <color=#e6db74>"Feeder-replica "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+            <color=#f92672>+</color> <color=#e6db74>" syncup started. Feeder range: "</color>
+            <color=#f92672>+</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSNIndex</color><color=#f8f8f2>().</color><color=#a6e22e>getRange</color><color=#f8f8f2>());</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Prevent the VLSNIndex range from being changed and protect all files</color>
+<color=#75715e>     * in the range. To search the index and read files within this range</color>
+<color=#75715e>     * safely, VLSNIndex.getRange must be called after syncupStarted.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>ProtectedFileSet</color> <color=#f8f8f2>protectedFileSet</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>syncupStarted</color><color=#f8f8f2>(</color><color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>());</color>
+
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>afterSyncupStartedHook</color><color=#f8f8f2>,</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Wait for the replica to start the syncup message exchange. The</color>
+<color=#75715e>       * first message will always be an EntryRequest. This relies on the</color>
+<color=#75715e>       * fact that a brand new group always begins with a master that has</color>
+<color=#75715e>       * a few vlsns from creating the nameDb that exist before a replica</color>
+<color=#75715e>       * syncup. The replica will never issue a StartStream before doing</color>
+<color=#75715e>       * an EntryRequest.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * The first entry request has three possible types of message</color>
+<color=#75715e>       * responses - EntryNotFound, AlternateMatchpoint, or Entry.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color> <color=#f92672>=</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>EntryRequest</color> <color=#f8f8f2>firstRequest</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>EntryRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Message</color> <color=#f8f8f2>response</color> <color=#f92672>=</color> <color=#f8f8f2>makeResponseToEntryRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>firstRequest</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>response</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Now the replica may send one of three messages:</color>
+<color=#75715e>       * - a StartStream message indicating that the replica wants to</color>
+<color=#75715e>       * start normal operations</color>
+<color=#75715e>       * - a EntryRequest message if it's still hunting for a</color>
+<color=#75715e>       * matchpoint. There's the possibility that the new EntryRequest</color>
+<color=#75715e>       * asks for a VLSN that has been log cleaned, so check that we can</color>
+<color=#75715e>       * supply it.</color>
+<color=#75715e>       * - a RestoreRequest message that indicates that the replica</color>
+<color=#75715e>       * has given up, and will want a network restore.</color>
+<color=#75715e>       */</color>
+
+      <color=#f8f8f2>VLSN</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>Message</color> <color=#f8f8f2>message</color> <color=#f92672>=</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>read</color><color=#f8f8f2>(</color><color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>.</color><color=#a6e22e>isLoggable</color><color=#f8f8f2>(</color><color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>FINEST</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>finest</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+              <color=#e6db74>"Replica "</color> <color=#f92672>+</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" message op: "</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>.</color><color=#a6e22e>getOp</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>StartStream</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>StartStream</color> <color=#f8f8f2>startMessage</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>StartStream</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>startVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>startMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+
+          <color=#75715e>/* set feeder filter */</color>
+          <color=#66d9ef>final</color> <color=#f8f8f2>FeederFilter</color> <color=#f8f8f2>filter</color> <color=#f92672>=</color> <color=#f8f8f2>startMessage</color><color=#f8f8f2>.</color><color=#a6e22e>getFeederFilter</color><color=#f8f8f2>();</color>
+          <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>setFeederFilter</color><color=#f8f8f2>(</color><color=#f8f8f2>filter</color><color=#f8f8f2>);</color>
+
+          <color=#75715e>/*</color>
+<color=#75715e>           * skip security check if not needed, e.g., a replica in</color>
+<color=#75715e>           * a secure store</color>
+<color=#75715e>           */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>needSecurityChecks</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+
+          <color=#66d9ef>final</color> <color=#f8f8f2>StreamAuthenticator</color> <color=#f8f8f2>auth</color> <color=#f92672>=</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getAuthenticator</color><color=#f8f8f2>();</color>
+          <color=#75715e>/* if security check is needed, auth cannot be null */</color>
+          <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>auth</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+          <color=#75715e>/* remember table id strings of subscribed tables */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>filter</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>auth</color><color=#f8f8f2>.</color><color=#a6e22e>setTableIds</color><color=#f8f8f2>(</color><color=#f8f8f2>filter</color><color=#f8f8f2>.</color><color=#a6e22e>getTableIds</color><color=#f8f8f2>());</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#75715e>/* if no filter, subscribe all tables */</color>
+            <color=#f8f8f2>auth</color><color=#f8f8f2>.</color><color=#a6e22e>setTableIds</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#75715e>/* security check */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>auth</color><color=#f8f8f2>.</color><color=#a6e22e>checkAccess</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>err</color> <color=#f92672>=</color>
+                <color=#e6db74>"Replica "</color> <color=#f92672>+</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color> <color=#f92672>+</color> <color=#e6db74>" fails security check."</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>warning</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>err</color><color=#f8f8f2>);</color>
+
+            <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationSecurityException</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>err</color><color=#f8f8f2>,</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#66d9ef>null</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>EntryRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>response</color> <color=#f92672>=</color> <color=#f8f8f2>makeResponseToEntryRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>(</color><color=#f8f8f2>EntryRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>response</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>message</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>RestoreRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>answerRestore</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>((</color><color=#f8f8f2>RestoreRequest</color><color=#f8f8f2>)</color> <color=#f8f8f2>message</color><color=#f8f8f2>).</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>());</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color> <color=#e6db74>"Expected StartStream or EntryRequest but got "</color> <color=#f92672>+</color> <color=#f8f8f2>message</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#e6db74>"Feeder-replica "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+              <color=#f92672>+</color> <color=#e6db74>" start stream at VLSN: "</color>
+              <color=#f92672>+</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+
+      <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>initMasterFeederSource</color><color=#f8f8f2>(</color><color=#f8f8f2>startVLSN</color><color=#f8f8f2>);</color>
+
+    <color=#f8f8f2>}</color> <color=#66d9ef>finally</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>syncupEnded</color><color=#f8f8f2>(</color><color=#f8f8f2>protectedFileSet</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>TestHookExecute</color><color=#f8f8f2>.</color><color=#a6e22e>doHookIfSet</color><color=#f8f8f2>(</color><color=#f8f8f2>afterSyncupEndedHook</color><color=#f8f8f2>,</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>info</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>repImpl</color><color=#f8f8f2>,</color>
+          <color=#f8f8f2>String</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color>
+              <color=#e6db74>"Feeder-replica "</color>
+                  <color=#f92672>+</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>().</color><color=#a6e22e>getName</color><color=#f8f8f2>()</color>
+                  <color=#f92672>+</color> <color=#e6db74>" syncup ended. Elapsed time: %,dms"</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>(</color><color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#f8f8f2>startTime</color><color=#f8f8f2>)));</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For testing. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setAfterSyncupStartedHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Feeder</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>afterSyncupStartedHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For testing. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>void</color> <color=#a6e22e>setAfterSyncupEndedHook</color><color=#f8f8f2>(</color><color=#f8f8f2>TestHook</color><color=#f92672><</color><color=#f8f8f2>Feeder</color><color=#f92672>></color> <color=#f8f8f2>hook</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>afterSyncupEndedHook</color> <color=#f92672>=</color> <color=#f8f8f2>hook</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>FeederSyncupReader</color> <color=#a6e22e>setupReader</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>envImpl</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color> <color=#f92672>=</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getConfigManager</color><color=#f8f8f2>().</color><color=#a6e22e>getInt</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentParams</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_ITERATOR_READ_SIZE</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * A BackwardsReader for scanning the log file backwards.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>lastUsedLsn</color> <color=#f92672>=</color> <color=#f8f8f2>envImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getFileManager</color><color=#f8f8f2>().</color><color=#a6e22e>getLastUsedLsn</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>.</color><color=#a6e22e>getRange</color><color=#f8f8f2>().</color><color=#a6e22e>getFirst</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>firstFile</color> <color=#f92672>=</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>.</color><color=#a6e22e>getLTEFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>firstVLSN</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>finishLsn</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>makeLsn</color><color=#f8f8f2>(</color><color=#f8f8f2>firstFile</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>FeederSyncupReader</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>vlsnIndex</color><color=#f8f8f2>,</color> <color=#f8f8f2>lastUsedLsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color> <color=#f8f8f2>startVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>finishLsn</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>Message</color> <color=#a6e22e>makeResponseToEntryRequest</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryRequest</color> <color=#f8f8f2>request</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>isFirstResponse</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>requestMatchpoint</color> <color=#f92672>=</color> <color=#f8f8f2>request</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>EntryRequestType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>request</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* if NOW mode, return high end regardless of requested vlsn */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>EntryRequestType</color><color=#f8f8f2>.</color><color=#a6e22e>NOW</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/*</color>
+<color=#75715e>       * VLSN range is not empty even without user data, so we can</color>
+<color=#75715e>       * always get a valid entry.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>Entry</color><color=#f8f8f2>(</color><color=#f8f8f2>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>()));</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* stream modes other than NOW */</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * The matchpoint must be in the VLSN range, or more specifically, in</color>
+<color=#75715e>     * the VLSN index so we can map the VLSN to the lsn in order to fetch</color>
+<color=#75715e>     * the associated log record.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>requestMatchpoint</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* request point is smaller than lower bound of range */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>EntryRequestType</color><color=#f8f8f2>.</color><color=#a6e22e>AVAILABLE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>Entry</color><color=#f8f8f2>(</color><color=#f8f8f2>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* default mode */</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>EntryNotFound</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>().</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>requestMatchpoint</color><color=#f8f8f2>)</color> <color=#f92672><</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* request point is higher than upper bound of range */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>EntryRequestType</color><color=#f8f8f2>.</color><color=#a6e22e>AVAILABLE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>Entry</color><color=#f8f8f2>(</color><color=#f8f8f2>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * default mode:</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * The matchpoint is after the last one in the range. We have to</color>
+<color=#75715e>       * suggest the lastSync entry on this node as an alternative. This</color>
+<color=#75715e>       * should only happen on the feeder's first response. For example,</color>
+<color=#75715e>       * suppose the feeder's range is vlsns 1-100. It's possible that</color>
+<color=#75715e>       * the exchange is as follows:</color>
+<color=#75715e>       *  1 - replica has 1-110, asks feeder for 110</color>
+<color=#75715e>       *  2 - feeder doesn't have 110, counters with 100</color>
+<color=#75715e>       *  3 - from this point on, the replica should only ask for vlsns</color>
+<color=#75715e>       *      that are <= the feeder's counter offer of 100</color>
+<color=#75715e>       * Guard that this holds true, because the feeder's log reader is</color>
+<color=#75715e>       * only set to search backwards; it does not expect to toggle</color>
+<color=#75715e>       * between forward and backwards.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>backwardsReader</color> <color=#f92672>==</color> <color=#66d9ef>null</color>
+          <color=#f8f8f2>:</color> <color=#e6db74>"Replica request for vlsn > feeder range should only happen "</color>
+              <color=#f92672>+</color> <color=#e6db74>"on the first exchange."</color><color=#f8f8f2>;</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLastSync</color><color=#f8f8f2>().</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/*</color>
+<color=#75715e>         * We have no syncable entry at all. The replica will have to</color>
+<color=#75715e>         * do a network restore.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>EntryNotFound</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isFirstResponse</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>OutputWireRecord</color> <color=#f8f8f2>lastSync</color> <color=#f92672>=</color> <color=#f8f8f2>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLastSync</color><color=#f8f8f2>());</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>lastSync</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f8f8f2>:</color> <color=#e6db74>"Look for alternative, range="</color> <color=#f92672>+</color> <color=#f8f8f2>range</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>AlternateMatchpoint</color><color=#f8f8f2>(</color><color=#f8f8f2>lastSync</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>(),</color>
+          <color=#e6db74>"RequestMatchpoint="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>requestMatchpoint</color>
+              <color=#f92672>+</color> <color=#e6db74>" range="</color>
+              <color=#f92672>+</color> <color=#f8f8f2>range</color>
+              <color=#f92672>+</color> <color=#e6db74>"should only happen on first response"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* The matchpoint is within the range. Find it. */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>OutputWireRecord</color> <color=#f8f8f2>matchRecord</color> <color=#f92672>=</color> <color=#f8f8f2>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>requestMatchpoint</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>matchRecord</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>(</color>
+          <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRepImpl</color><color=#f8f8f2>(),</color>
+          <color=#e6db74>"Couldn't find matchpoint "</color> <color=#f92672>+</color> <color=#f8f8f2>requestMatchpoint</color> <color=#f92672>+</color> <color=#e6db74>" in log. VLSN range="</color> <color=#f92672>+</color> <color=#f8f8f2>range</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>Entry</color><color=#f8f8f2>(</color><color=#f8f8f2>matchRecord</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* scan log backwards to find match point record */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>OutputWireRecord</color> <color=#a6e22e>getMatchPtRecord</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSN</color> <color=#f8f8f2>matchPointVLSN</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color><color=#f8f8f2>,</color> <color=#f8f8f2>ChecksumException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>backwardsReader</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>backwardsReader</color> <color=#f92672>=</color> <color=#f8f8f2>setupReader</color><color=#f8f8f2>(</color><color=#f8f8f2>matchPointVLSN</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>backwardsReader</color><color=#f8f8f2>.</color><color=#a6e22e>scanBackwards</color><color=#f8f8f2>(</color><color=#f8f8f2>matchPointVLSN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>NetworkRestoreException</color> <color=#a6e22e>answerRestore</color><color=#f8f8f2>(</color><color=#f8f8f2>VLSNRange</color> <color=#f8f8f2>range</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>failedMatchpoint</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Note that getGlobalCBVLSN returns a null VLSN if the GlobalCBVLSN</color>
+<color=#75715e>     * is defunct. In that case the RestoreResponse.cbvlsn field is unused.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>Message</color> <color=#f8f8f2>response</color> <color=#f92672>=</color>
+        <color=#f8f8f2>protocol</color>
+        <color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#f8f8f2>RestoreResponse</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getRestoreResponseVLSN</color><color=#f8f8f2>(</color><color=#f8f8f2>range</color><color=#f8f8f2>),</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getLogProviders</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>protocol</color><color=#f8f8f2>.</color><color=#a6e22e>write</color><color=#f8f8f2>(</color><color=#f8f8f2>response</color><color=#f8f8f2>,</color> <color=#f8f8f2>namedChannel</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>return</color> <color=#66d9ef>new</color> <color=#f8f8f2>NetworkRestoreException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>failedMatchpoint</color><color=#f8f8f2>,</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getFirst</color><color=#f8f8f2>(),</color> <color=#f8f8f2>range</color><color=#f8f8f2>.</color><color=#a6e22e>getLast</color><color=#f8f8f2>(),</color> <color=#f8f8f2>feeder</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"serial"</color><color=#f8f8f2>)</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>NetworkRestoreException</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Exception</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* The out-of-range vlsn that provoked the exception */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/* The replica that made the request. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>public</color> <color=#a6e22e>NetworkRestoreException</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>,</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>firstVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>firstVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>lastVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>replicaNameIdPair</color> <color=#f92672>=</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMessage</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#e6db74>"Matchpoint vlsn "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>vlsn</color>
+          <color=#f92672>+</color> <color=#e6db74>" requested by node: "</color>
+          <color=#f92672>+</color> <color=#f8f8f2>replicaNameIdPair</color>
+          <color=#f92672>+</color> <color=#e6db74>" was outside the VLSN range: "</color>
+          <color=#f92672>+</color> <color=#e6db74>"["</color>
+          <color=#f92672>+</color> <color=#f8f8f2>firstVLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>"-"</color>
+          <color=#f92672>+</color> <color=#f8f8f2>lastVLSN</color>
+          <color=#f92672>+</color> <color=#e6db74>"]"</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getVlsn</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getReplicaNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>replicaNameIdPair</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

@@ -1,0 +1,331 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.cleaner</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collection</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Shared implementation for all utilization trackers. The base implementation keeps track of</color>
+<color=#75715e> * per-file utilization info only. Subclasses keep track of per-database info.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>abstract</color> <color=#66d9ef>class</color> <color=#a6e22e>BaseUtilizationTracker</color> <color=#f8f8f2>{</color>
+
+  <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>Cleaner</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>long</color> <color=#f8f8f2>activeFile</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The tracked files are maintained in a volatile field Map that is "copied on write" whenever an</color>
+<color=#75715e>   * element is added or removed. Add and remove are called only under the log write latch, but get</color>
+<color=#75715e>   * and iteration may be performed at any time because the map is read-only.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>;</color>
+
+  <color=#f8f8f2>BaseUtilizationTracker</color><color=#f8f8f2>(</color><color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color> <color=#f8f8f2>Cleaner</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>cleaner</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>env</color> <color=#f92672>=</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>cleaner</color> <color=#f92672>=</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>fileSummaries</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>activeFile</color> <color=#f92672>=</color> <color=#f92672>-</color><color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>EnvironmentImpl</color> <color=#a6e22e>getEnvironment</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>env</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getNumTFSs</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>size</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a snapshot of the files being tracked as of the last time a log entry was added. The</color>
+<color=#75715e>   * summary info returned is the delta since the last checkpoint, not the grand totals, and is</color>
+<color=#75715e>   * approximate since it is changing in real time. This method may be called without holding the</color>
+<color=#75715e>   * log write latch.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If files are added or removed from the collection of tracked files in real time, the</color>
+<color=#75715e>   * returned collection will not be changed since it is a snapshot. But the objects contained in</color>
+<color=#75715e>   * the collection are live and will be updated in real time under the log write latch. The</color>
+<color=#75715e>   * collection and the objects in the collection should not be modified by the caller.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>Collection</color><color=#f92672><</color><color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color> <color=#a6e22e>getTrackedFiles</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns one file from the snapshot of tracked files, or null if the given file number is not in</color>
+<color=#75715e>   * the snapshot array.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #getTrackedFiles</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>TrackedFileSummary</color> <color=#a6e22e>getTrackedFile</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>return</color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Counts the addition of all new log entries including LNs.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For the global tracker, must be called under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>countNew</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color> <color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>assert</color> <color=#f8f8f2>type</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#75715e>/* Count in per-file and per-file-per-db summaries. */</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>fileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>isLN</color> <color=#f92672>=</color> <color=#f8f8f2>isLNType</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color> <color=#f92672>&&</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>maxLNSize</color> <color=#f92672><</color> <color=#f8f8f2>size</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>maxLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trackObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>databaseKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color>
+          <color=#f8f8f2>:</color> <color=#e6db74>"No DB for lsn="</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" type: "</color> <color=#f92672>+</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>DbFileSummary</color> <color=#f8f8f2>dbFileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getDbFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbFileSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbFileSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Counts an obsolete node by incrementing the obsolete count and size. Tracks the LSN offset if</color>
+<color=#75715e>   * trackOffset is true and the offset is non-zero.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For the global tracker, must be called under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>final</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsolete</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>size</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>countPerFile</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>countPerDb</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>trackOffset</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>boolean</color> <color=#f8f8f2>checkDupOffsets</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>assert</color> <color=#f8f8f2>trackObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>isLN</color> <color=#f92672>=</color> <color=#f8f8f2>isLNType</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countPerFile</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>fileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#75715e>/* The size is optional when tracking obsolete LNs. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#75715e>/* The size is not allowed when tracking obsolete INs. */</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>size</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>trackOffset</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>long</color> <color=#f8f8f2>offset</color> <color=#f92672>=</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getFileOffset</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>offset</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>trackObsolete</color><color=#f8f8f2>(</color><color=#f8f8f2>offset</color><color=#f8f8f2>,</color> <color=#f8f8f2>checkDupOffsets</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>countPerDb</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>assert</color> <color=#f8f8f2>databaseKey</color> <color=#f92672>!=</color> <color=#66d9ef>null</color>
+          <color=#f8f8f2>:</color> <color=#e6db74>"No DB for lsn="</color> <color=#f92672>+</color> <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>getNoFormatString</color><color=#f8f8f2>(</color><color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#e6db74>" type: "</color> <color=#f92672>+</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+
+      <color=#f8f8f2>DbFileSummary</color> <color=#f8f8f2>dbFileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getDbFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbFileSummary</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isLN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#75715e>/* The size is optional when tracking obsolete LNs. */</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>size</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#75715e>/* The size is not allowed when tracking obsolete INs. */</color>
+          <color=#66d9ef>assert</color> <color=#f8f8f2>size</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Counts all active LSNs in a database as obsolete in the per-file utilization summaries. This</color>
+<color=#75715e>   * method is called during database remove/truncate or when replaying those operations during</color>
+<color=#75715e>   * recovery.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For the global tracker, must be called under the log write latch.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param dbFileSummaries the map of Long file number to DbFileSummary for a database that is</color>
+<color=#75715e>   *     being deleted.</color>
+<color=#75715e>   * @param mapLnLsn is the LSN of the MapLN when recovery is replaying the truncate/remove, or</color>
+<color=#75715e>   *     NULL_LSN when called outside of recovery; obsolete totals should only be counted when this</color>
+<color=#75715e>   *     LSN is prior to the LSN of the FileSummaryLN for the file being counted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsoleteDb</color><color=#f8f8f2>(</color><color=#f8f8f2>DbFileSummaryMap</color> <color=#f8f8f2>dbFileSummaries</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>mapLnLsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>Map</color><color=#f8f8f2>.</color><color=#a6e22e>Entry</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>DbFileSummary</color><color=#f92672>></color> <color=#f8f8f2>entry</color> <color=#f8f8f2>:</color> <color=#f8f8f2>dbFileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>entrySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>isFileUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>mapLnLsn</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DbFileSummary</color> <color=#f8f8f2>dbFileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>entry</color><color=#f8f8f2>.</color><color=#a6e22e>getValue</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>fileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>getFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>.</color><color=#a6e22e>longValue</color><color=#f8f8f2>());</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Count as obsolete the currently active amounts in the</color>
+<color=#75715e>         * database, which are the total amounts minus the previously</color>
+<color=#75715e>         * counted obsolete amounts.</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>lnObsoleteCount</color> <color=#f92672>=</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>lnObsoleteSize</color> <color=#f92672>=</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color> <color=#f92672>-</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>inObsoleteCount</color> <color=#f92672>=</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>-</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#f8f8f2>lnObsoleteCount</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>lnObsoleteSize</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#f8f8f2>inObsoleteCount</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * When a DB becomes obsolete, the size of all obsolete LNs can</color>
+<color=#75715e>         * now be counted accurately because all LN bytes in the DB are</color>
+<color=#75715e>         * now obsolete.  The lnObsoleteSize value calculated above</color>
+<color=#75715e>         * includes LNs that become obsolete now, plus those that</color>
+<color=#75715e>         * became obsolete previously but whose size was not counted.</color>
+<color=#75715e>         * The obsoleteLNSizeCounted field is updated accordingly</color>
+<color=#75715e>         * below.  In other words, DB obsolescence is self-healing with</color>
+<color=#75715e>         * respect to obsolete LN sizes.  [#19144]</color>
+<color=#75715e>         */</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>lnObsoleteSizeCounted</color> <color=#f92672>=</color>
+            <color=#f8f8f2>lnObsoleteCount</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>-</color> <color=#f8f8f2>dbFileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color> <color=#f92672>+=</color> <color=#f8f8f2>lnObsoleteSizeCounted</color><color=#f8f8f2>;</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Do not update the DbFileSummary.  It will be flushed when</color>
+<color=#75715e>         * the MapLN is deleted.  If later replayed during recovery, we</color>
+<color=#75715e>         * will call this method to update the per-file utilization.</color>
+<color=#75715e>         */</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether file summary information for the given LSN is not already counted. Outside of</color>
+<color=#75715e>   * recovery, always returns true. For recovery, is overridden by RecoveryUtilizationTracker and</color>
+<color=#75715e>   * returns whether the FileSummaryLN for the given file is prior to the given LSN. .</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>isFileUncounted</color><color=#f8f8f2>(</color><color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>lsn</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a DbFileSummary for the given database key and file number, adding an empty one if the</color>
+<color=#75715e>   * file is not already being tracked.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is implemented by subclasses which interpret the databaseKey as either the</color>
+<color=#75715e>   * DatabaseImpl or a DatabaseId.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For the global tracker, must be called under the log write latch.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the summary, or null if the DB should not be tracked because the file has been deleted.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>abstract</color> <color=#f8f8f2>DbFileSummary</color> <color=#a6e22e>getDbFileSummary</color><color=#f8f8f2>(</color><color=#f8f8f2>Object</color> <color=#f8f8f2>databaseKey</color><color=#f8f8f2>,</color> <color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns a tracked file for the given file number, adding an empty one if the file is not</color>
+<color=#75715e>   * already being tracked.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>For the global tracker, must be called under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#f8f8f2>TrackedFileSummary</color> <color=#a6e22e>getFileSummary</color><color=#f8f8f2>(</color><color=#66d9ef>long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>activeFile</color> <color=#f92672><</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>activeFile</color> <color=#f92672>=</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNumLong</color> <color=#f92672>=</color> <color=#f8f8f2>Long</color><color=#f8f8f2>.</color><color=#a6e22e>valueOf</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNum</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumLong</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>file</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Assign fileSummaries field after modifying the new map. */</color>
+      <color=#f8f8f2>file</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#f8f8f2>cleaner</color><color=#f8f8f2>.</color><color=#a6e22e>trackDetail</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color> <color=#f8f8f2>newFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>fileSummaries</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>newFiles</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>fileNumLong</color><color=#f8f8f2>,</color> <color=#f8f8f2>file</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>fileSummaries</color> <color=#f92672>=</color> <color=#f8f8f2>newFiles</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>file</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Called after the FileSummaryLN is written to the log during checkpoint.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>We keep the active file summary in the tracked file map, but we remove older files to</color>
+<color=#75715e>   * prevent unbounded growth of the map.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Must be called under the log write latch.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>resetFile</color><color=#f8f8f2>(</color><color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>()</color> <color=#f92672><</color> <color=#f8f8f2>activeFile</color> <color=#f92672>&&</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getAllowFlush</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Assign fileSummaries field after modifying the new map. */</color>
+      <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color> <color=#f8f8f2>newFiles</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>Long</color><color=#f8f8f2>,</color> <color=#f8f8f2>TrackedFileSummary</color><color=#f92672>></color><color=#f8f8f2>(</color><color=#f8f8f2>fileSummaries</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>newFiles</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>getFileNumber</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>fileSummaries</color> <color=#f92672>=</color> <color=#f8f8f2>newFiles</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns whether obsoleteness is tracked for the given type. Obsoleteness is tracked for node</color>
+<color=#75715e>   * types and BIN-deltas. A null type is assumed to be an LN.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>trackObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#66d9ef>null</color>
+        <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>isNodeType</color><color=#f8f8f2>()</color>
+        <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color>
+        <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns whether the given type is an LN; a null type is assumed to be an LN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLNType</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>isLNType</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Update memory budgets when this tracker is closed and will never be accessed again. */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>close</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>TrackedFileSummary</color> <color=#f8f8f2>t</color> <color=#f8f8f2>:</color> <color=#f8f8f2>fileSummaries</color><color=#f8f8f2>.</color><color=#a6e22e>values</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>t</color><color=#f8f8f2>.</color><color=#a6e22e>close</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

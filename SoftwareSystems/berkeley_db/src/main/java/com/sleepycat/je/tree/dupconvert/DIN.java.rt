@@ -1,0 +1,226 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.tree.dupConvert</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.MemoryBudget</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogEntryType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.LogUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.ChildReference</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.IN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.Key</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.TreeUtils</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.SizeofMarker</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * An DIN represents an Duplicate Internal Node in the JE tree.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Obsolete in log version 8, only used by DupConvert and some log readers.</color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>final</color> <color=#66d9ef>class</color> <color=#a6e22e>DIN</color> <color=#66d9ef>extends</color> <color=#f8f8f2>IN</color> <color=#f8f8f2>{</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>BEGIN_TAG</color> <color=#f92672>=</color> <color=#e6db74>"<din>"</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>END_TAG</color> <color=#f92672>=</color> <color=#e6db74>"</din>"</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Full key for this set of duplicates. For example, if the tree contains k1/d1, k1/d2, k1/d3, the</color>
+<color=#75715e>   * dupKey = k1.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color><color=#f92672>[]</color> <color=#f8f8f2>dupKey</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Reference to DupCountLN which stores the count. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ChildReference</color> <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Create an empty DIN, with no node ID, to be filled in from the log. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DIN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>();</color>
+
+    <color=#f8f8f2>dupCountLNRef</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ChildReference</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>EMPTY_KEY</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** For Sizeof, set all array fields to null, since they are not part of the fixed overhead. */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>DIN</color><color=#f8f8f2>(</color><color=#f8f8f2>SizeofMarker</color> <color=#f8f8f2>marker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color><color=#f8f8f2>marker</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dupKey</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDIN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>ChildReference</color> <color=#a6e22e>getDupCountLNRef</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if this node is a duplicate-bearing node type, false if otherwise. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>containsDuplicates</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Count up the memory usage attributable to this node alone. LNs children are counted by their</color>
+<color=#75715e>   * BIN/DIN parents, but INs are not counted by their parents because they are resident on the IN</color>
+<color=#75715e>   * list.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>long</color> <color=#a6e22e>computeMemorySize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>computeMemorySize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>().</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>size</color> <color=#f92672>+=</color> <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>().</color><color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/* Utility method used during unit testing. */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#a6e22e>printMemorySize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>inTotal</color> <color=#f92672>=</color> <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>printMemorySize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>dupKeySize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>long</color> <color=#f8f8f2>dupLNSize</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dupKeySize</color> <color=#f92672>=</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>byteArraySize</color><color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getKey</color><color=#f8f8f2>().</color><color=#a6e22e>length</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>dupLNSize</color> <color=#f92672>=</color> <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>getTarget</color><color=#f8f8f2>().</color><color=#a6e22e>getMemorySizeIncludedByParent</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>dupTotal</color> <color=#f92672>=</color> <color=#f8f8f2>inTotal</color> <color=#f92672>+</color> <color=#f8f8f2>dupKeySize</color> <color=#f92672>+</color> <color=#f8f8f2>dupLNSize</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>out</color><color=#f8f8f2>.</color><color=#a6e22e>format</color><color=#f8f8f2>(</color><color=#e6db74>"DIN: %d dkey: %d ln: %d %n"</color><color=#f8f8f2>,</color> <color=#f8f8f2>dupTotal</color><color=#f8f8f2>,</color> <color=#f8f8f2>dupKeySize</color><color=#f8f8f2>,</color> <color=#f8f8f2>dupLNSize</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dupTotal</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>long</color> <color=#a6e22e>getFixedMemoryOverhead</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>MemoryBudget</color><color=#f8f8f2>.</color><color=#a6e22e>DIN_FIXED_OVERHEAD</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Logging Support</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/** @see IN#getLogType */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LogEntryType</color> <color=#a6e22e>getLogType</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DIN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see IN#getLogSize */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>int</color> <color=#a6e22e>getLogSize</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see IN#writeToLog */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>writeToLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>logBuffer</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>throw</color> <color=#f8f8f2>EnvironmentFailureException</color><color=#f8f8f2>.</color><color=#a6e22e>unexpectedState</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @see IN#readFromLog */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>unpacked</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryVersion</color> <color=#f92672><</color> <color=#ae81ff>6</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>dupKey</color> <color=#f92672>=</color> <color=#f8f8f2>LogUtils</color><color=#f8f8f2>.</color><color=#a6e22e>readByteArray</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>unpacked</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* DupCountLN */</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>dupCountLNRefExists</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>byte</color> <color=#f8f8f2>booleans</color> <color=#f92672>=</color> <color=#f8f8f2>itemBuffer</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>dupCountLNRefExists</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>booleans</color> <color=#f92672>&</color> <color=#ae81ff>1</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRefExists</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>readFromLog</color><color=#f8f8f2>(</color><color=#f8f8f2>itemBuffer</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryVersion</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dupCountLNRef</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** DINS need to dump their dup key */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>void</color> <color=#a6e22e>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLogAdditional</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>dupKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>dumpLog</color><color=#f8f8f2>(</color><color=#f8f8f2>sb</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Dumping</color>
+<color=#75715e>   */</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>beginTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>BEGIN_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>endTag</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>END_TAG</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * For unit test support:</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return a string that dumps information about this DIN, without</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>StringBuilder</color> <color=#f8f8f2>sb</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>StringBuilder</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>beginTag</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<dupkey>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>dupKey</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>?</color> <color=#e6db74>""</color> <color=#f8f8f2>:</color> <color=#f8f8f2>Key</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>dupKey</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"</dupkey>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color> <color=#f92672>+</color> <color=#ae81ff>2</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>"<dupCountLN/>"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>dupCountLNRef</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color> <color=#f92672>+</color> <color=#ae81ff>4</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#e6db74>'\n'</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#66d9ef>super</color><color=#f8f8f2>.</color><color=#a6e22e>dumpString</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>));</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>dumpTags</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>TreeUtils</color><color=#f8f8f2>.</color><color=#a6e22e>indent</color><color=#f8f8f2>(</color><color=#f8f8f2>nSpaces</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>append</color><color=#f8f8f2>(</color><color=#f8f8f2>endTag</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>sb</color><color=#f8f8f2>.</color><color=#a6e22e>toString</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>toString</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>dumpString</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>shortClassName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#e6db74>"DIN"</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

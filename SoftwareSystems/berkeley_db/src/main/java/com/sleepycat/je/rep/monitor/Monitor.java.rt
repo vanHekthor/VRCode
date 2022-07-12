@@ -1,0 +1,833 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.rep.monitor</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.EnvironmentFailureException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.JEVersion</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Learner</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.MasterValue</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Proposer.Proposal</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Protocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.Protocol.Value</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.elections.TimebasedProposalGenerator</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.NodeStateProtocol</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.NodeStateProtocol.NodeStateResponse</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.NodeStateService</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepGroupImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.RepNodeImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.TextProtocol.MessageExchange</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.TextProtocol.ResponseMessage</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.impl.node.NameIdPair</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.monitor.GroupChangeEvent.GroupChangeType</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.monitor.LeaveGroupEvent.LeaveReason</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.net.DataChannelFactory</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.util.DbPing</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.util.ReplicationGroupAdmin</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.BinaryProtocol.ProtocolException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ReplicationFormatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.ServiceDispatcher.ServiceConnectFailedException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.rep.utilint.net.DataChannelFactoryBuilder</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.LoggerUtils</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.io.IOException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.net.InetSocketAddress</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Collections</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Set</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.ConcurrentHashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.concurrent.atomic.AtomicBoolean</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Formatter</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Level</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.logging.Logger</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Provides a lightweight mechanism to track the current master node and the members of the</color>
+<color=#75715e> * replication group. The information provided by the monitor can be used to route update requests</color>
+<color=#75715e> * to the node that is currently the master and distribute read requests across the other members of</color>
+<color=#75715e> * the group.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The Monitor is typically run on a machine that participates in load balancing, request routing</color>
+<color=#75715e> * or is simply serving as a basis for application level monitoring and does not have a replicated</color>
+<color=#75715e> * environment. To avoid creating a single point of failure, an application may need to create</color>
+<color=#75715e> * multiple monitor instances, with each monitor running on a distinct machine.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>Applications with direct access to a {@link com.sleepycat.je.rep.ReplicatedEnvironment</color>
+<color=#75715e> * ReplicatedEnvironment} can use its {@link <a</color>
+<color=#75715e> * href="{@docRoot}/../ReplicationGuide/replicawrites.html">synchronous and asynchronous</color>
+<color=#75715e> * mechanisms</a>} for determining the master node and group composition changes. The Monitor class</color>
+<color=#75715e> * is not needed by such applications.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The Monitor generally learns about changes to group status through events issued by</color>
+<color=#75715e> * replication group members. In addition, the Monitor maintains a daemon thread which periodically</color>
+<color=#75715e> * pings members of the group so that the Monitor can proactively discover group status changes that</color>
+<color=#75715e> * occur when it is down or has lost network connectivity.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <p>The following code excerpt illustrates the typical code sequence used to initiate a Monitor.</color>
+<color=#75715e> * Exception handling has been omitted to simplify the example.</color>
+<color=#75715e> *</color>
+<color=#75715e> * <pre class="code"></color>
+<color=#75715e> * MonitorConfig monConfig = new MonitorConfig();</color>
+<color=#75715e> * monConfig.setGroupName("PlanetaryRepGroup");</color>
+<color=#75715e> * monConfig.setNodeName("mon1");</color>
+<color=#75715e> * monConfig.setNodeHostPort("monhost1.acme.com:7000");</color>
+<color=#75715e> * monConfig.setHelperHosts("mars.acme.com:5000,jupiter.acme.com:5000");</color>
+<color=#75715e> *</color>
+<color=#75715e> * Monitor monitor = new Monitor(monConfig);</color>
+<color=#75715e> *</color>
+<color=#75715e> * // If the monitor has not been registered as a member of the group,</color>
+<color=#75715e> * // register it now. register() returns the current node that is the</color>
+<color=#75715e> * // master.</color>
+<color=#75715e> *</color>
+<color=#75715e> * ReplicationNode currentMaster = monitor.register();</color>
+<color=#75715e> *</color>
+<color=#75715e> * // Start up the listener, so that it can be used to track changes</color>
+<color=#75715e> * // in the master node, or group composition. It can also be used to help</color>
+<color=#75715e> * // determine the electable nodes that are currently active and participating</color>
+<color=#75715e> * // in the replication group.</color>
+<color=#75715e> * monitor.startListener(new MyChangeListener());</color>
+<color=#75715e> * </pre></color>
+<color=#75715e> *</color>
+<color=#75715e> * @see MonitorChangeListener</color>
+<color=#75715e> * @see <a href="{@docRoot}../ReplicationGuide/monitors.html">Writing Monitor Nodes</a></color>
+<color=#75715e> * @see <a href="{@docRoot}../examples/je/rep/quote/package-summary.html">je.rep.quote Examples</a></color>
+<color=#75715e> */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>Monitor</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/* The Monitor Id */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>NameIdPair</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The configuration in use by this Monitor. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>MonitorConfig</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Provides the admin functionality for the monitor. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationGroupAdmin</color> <color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The underlying learner that drives the Monitor. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>Learner</color> <color=#f8f8f2>learner</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The Master change listener used by the Learner agent */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>MasterChangeListener</color> <color=#f8f8f2>masterChangeListener</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The Monitor's logger. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Logger</color> <color=#f8f8f2>logger</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Formatter</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The user designated monitor change listener to be invoked. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>MonitorChangeListener</color> <color=#f8f8f2>monitorChangeListener</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The channel factory */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>DataChannelFactory</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* The service dispatcher used by the Learner Agent and the Monitor. */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>ServiceDispatcher</color> <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/* Set to true to force a shutdown of this monitor. */</color>
+  <color=#66d9ef>final</color> <color=#f8f8f2>AtomicBoolean</color> <color=#f8f8f2>shutdown</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>AtomicBoolean</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>);</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * The groupMembers set saves the names of all nodes known to be part of</color>
+<color=#75715e>   * the group.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * 1. If a node is not in the set, it means this node has not been added to</color>
+<color=#75715e>   *    the group or has been removed from the group already.  Note that a</color>
+<color=#75715e>   *    node not in the groupMembers set may have an entry in the joinEvents</color>
+<color=#75715e>   *    map if a join event arrived for the node without an associated group</color>
+<color=#75715e>   *    add event, possibly because of an event delivery failure.</color>
+<color=#75715e>   * 2. If a node is in the set, but does not have an entry in the joinEvents</color>
+<color=#75715e>   *    map, this node may have closed itself (due to either crash or normal</color>
+<color=#75715e>   *    close) or has issued an ADD GroupChangeEvent. However, it hasn't</color>
+<color=#75715e>   *    issued a JoinGroupChangeEvent yet (because ADD GroupChangeEvent and</color>
+<color=#75715e>   *    JoinGroupEvent are notified in two phases).</color>
+<color=#75715e>   * 3. If a node is in the set, and is also in the joinEvents map, the node</color>
+<color=#75715e>   *    has already issued a JoinGroupEvent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f92672>></color> <color=#f8f8f2>groupMembers</color> <color=#f92672>=</color>
+      <color=#f8f8f2>Collections</color><color=#f8f8f2>.</color><color=#a6e22e>newSetFromMap</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>ConcurrentHashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Boolean</color><color=#f92672>></color><color=#f8f8f2>());</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * This map records whether a JoinGroupEvent has been issued for this node.</color>
+<color=#75715e>   * Used when the ping thread is issuing a LeaveGroupEvent.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ConcurrentHashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>JoinGroupEvent</color><color=#f92672>></color> <color=#f8f8f2>joinEvents</color> <color=#f92672>=</color>
+      <color=#66d9ef>new</color> <color=#f8f8f2>ConcurrentHashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>JoinGroupEvent</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A thread which proactively checks on group status. TODO: ideally</color>
+<color=#75715e>   * implementation would be changed to use an ExecutorService rather than</color>
+<color=#75715e>   * a Thread.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>PingThread</color> <color=#f8f8f2>pingThread</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * A TestHook, used by unit tests. If it's true, no MonitorChangeEvents</color>
+<color=#75715e>   * except NewMasterEvent will be issued.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>disableNotify</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Deprecated as of JE5. Creates a monitor instance using a {@link ReplicationConfig}.</color>
+<color=#75715e>   * Monitor-specific properties that are not available in ReplicationConfig use default settings.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified.</color>
+<color=#75715e>   * @deprecated As of JE 5, replaced by {@link Monitor#Monitor(MonitorConfig)}</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Deprecated</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>Monitor</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationConfig</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>MonitorConfig</color><color=#f8f8f2>(</color><color=#f8f8f2>monitorConfig</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Creates a monitor instance.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p></color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param monitorConfig configuration used by a Monitor</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>Monitor</color><color=#f8f8f2>(</color><color=#f8f8f2>MonitorConfig</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>groupName</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupName</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>groupName</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Missing group name"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>nameIdPair</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>(</color><color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>nodeHost</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeHostPort</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>nodeHost</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color><color=#e6db74>"Missing nodeHost"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>monitorConfig</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>clone</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>channelFactory</color> <color=#f92672>=</color>
+        <color=#f8f8f2>DataChannelFactoryBuilder</color><color=#f8f8f2>.</color><color=#a6e22e>construct</color><color=#f8f8f2>(</color><color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getRepNetConfig</color><color=#f8f8f2>(),</color> <color=#f8f8f2>groupName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>repGroupAdmin</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationGroupAdmin</color><color=#f8f8f2>(</color><color=#f8f8f2>groupName</color><color=#f8f8f2>,</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getHelperSockets</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>logger</color> <color=#f92672>=</color> <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>getLoggerFormatterNeeded</color><color=#f8f8f2>(</color><color=#f8f8f2>getClass</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>formatter</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ReplicationFormatter</color><color=#f8f8f2>(</color><color=#f8f8f2>nameIdPair</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the name of the group associated with the Monitor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the group name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getGroupName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupName</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * @hidden Returns the group-wide unique id associated with the monitor</color>
+<color=#75715e>   * @return the monitor id</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>NameIdPair</color> <color=#a6e22e>getMonitorNameIdPair</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the group-wide unique name associated with the monitor</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the monitor name</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getNodeName</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the socket used by this monitor to listen for group changes</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the monitor socket address</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>InetSocketAddress</color> <color=#a6e22e>getMonitorSocketAddress</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeSocketAddress</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Registers the monitor with the group so that it can be kept informed of the outcome of</color>
+<color=#75715e>   * elections and group membership changes. The monitor, just like a replication node, is</color>
+<color=#75715e>   * identified by its nodeName. The Monitor uses the helper nodes to locate a master with which it</color>
+<color=#75715e>   * can register itself. If the helper nodes are not available the registration will fail.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>A monitor must be registered at least once in order to be informed of ongoing election</color>
+<color=#75715e>   * results and group changes. Attempts to re-register the same monitor are ignored. Registration,</color>
+<color=#75715e>   * once it has been completed successfully, persists beyond the lifetime of the Monitor instance</color>
+<color=#75715e>   * and does not need to be repeated. Repeated registrations are benign and merely confirm that the</color>
+<color=#75715e>   * current monitor configuration is consistent with earlier registrations of this monitor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the node that is the current master</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the monitor has been shutdown, or no helper sockets were</color>
+<color=#75715e>   *     specified at Monitor initialization.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationNode</color> <color=#a6e22e>register</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>EnvironmentFailureException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"The monitor has been shutdown"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>.</color><color=#a6e22e>getHelperSockets</color><color=#f8f8f2>().</color><color=#a6e22e>size</color><color=#f8f8f2>()</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"No helper sockets were specified at Monitor initialization"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>RepNodeImpl</color> <color=#f8f8f2>monitorNode</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>RepNodeImpl</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>NodeType</color><color=#f8f8f2>.</color><color=#a6e22e>MONITOR</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeHostname</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodePort</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>JEVersion</color><color=#f8f8f2>.</color><color=#a6e22e>CURRENT_VERSION</color><color=#f8f8f2>);</color>
+    <color=#75715e>/* Ensure that the monitor is part of the group. */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>.</color><color=#a6e22e>ensureMonitor</color><color=#f8f8f2>(</color><color=#f8f8f2>monitorNode</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Starts the listener so it's actively listening for election results and broadcasts of</color>
+<color=#75715e>   * replication group changes.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>{@link Monitor#register} should be called before starting the listener. If the monitor has</color>
+<color=#75715e>   * not been registered, it will not be updated, and its listener will not be invoked.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Once the registration has been completed, the Monitor can start listening even if none of</color>
+<color=#75715e>   * the other nodes in the group are available. It will be contacted automatically by the other</color>
+<color=#75715e>   * nodes as they come up.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>If the group has a Master, invoking <code>startListener</code> results in a synchronous</color>
+<color=#75715e>   * callback to the application via the {@link MonitorChangeListener#notify(NewMasterEvent)}</color>
+<color=#75715e>   * method. If there is no Master at this time, the callback takes place asynchronously, after the</color>
+<color=#75715e>   * method returns, when a Master is eventually elected.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>Starting the listener will start the underlying ping thread, which proactively checks group</color>
+<color=#75715e>   * status for changes that might have been missed when this Monitor instance has lost network</color>
+<color=#75715e>   * connectivity or is down.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param newListener the listener used to monitor events of interest.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IOException if the monitor socket could not be set up</color>
+<color=#75715e>   * @throws IllegalArgumentException if an invalid parameter is specified.</color>
+<color=#75715e>   * @throws IllegalStateException if the monitor has been shutdown, or a listener has already been</color>
+<color=#75715e>   *     established.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>startListener</color><color=#f8f8f2>(</color><color=#f8f8f2>MonitorChangeListener</color> <color=#f8f8f2>newListener</color><color=#f8f8f2>)</color>
+      <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color><color=#f8f8f2>,</color> <color=#f8f8f2>IOException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"The monitor has been shutdown"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>newListener</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+          <color=#e6db74>"A MonitorChangeListener must be associated with "</color>
+              <color=#f92672>+</color> <color=#e6db74>" this Monitor when invoking this method"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>monitorChangeListener</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"A Listener has already been established"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>monitorChangeListener</color> <color=#f92672>=</color> <color=#f8f8f2>newListener</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>serviceDispatcher</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>ServiceDispatcher</color><color=#f8f8f2>(</color><color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeSocketAddress</color><color=#f8f8f2>(),</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>Protocol</color> <color=#f8f8f2>electionProtocol</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>Protocol</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>TimebasedProposalGenerator</color><color=#f8f8f2>.</color><color=#a6e22e>getParser</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>MasterValue</color><color=#f8f8f2>.</color><color=#a6e22e>getParser</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getGroupName</color><color=#f8f8f2>(),</color>
+            <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>,</color>
+            <color=#66d9ef>null</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>learner</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>Learner</color><color=#f8f8f2>(</color><color=#f8f8f2>electionProtocol</color><color=#f8f8f2>,</color> <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>register</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>MonitorService</color><color=#f8f8f2>(</color><color=#66d9ef>this</color><color=#f8f8f2>,</color> <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>));</color>
+    <color=#f8f8f2>masterChangeListener</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>MasterChangeListener</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>learner</color><color=#f8f8f2>.</color><color=#a6e22e>addListener</color><color=#f8f8f2>(</color><color=#f8f8f2>masterChangeListener</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>learner</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Notify the listener about the current master. */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>repGroup</color> <color=#f92672>=</color> <color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>group</color> <color=#f92672>=</color> <color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * In the absence of a network failure, the query should result in</color>
+<color=#75715e>       * a call to the notify method of MonitorChangeListener.</color>
+<color=#75715e>       */</color>
+      <color=#f8f8f2>learner</color><color=#f8f8f2>.</color><color=#a6e22e>queryForMaster</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getAllLearnerSockets</color><color=#f8f8f2>());</color>
+
+      <color=#75715e>/* Notify JoinGroupEvents for those current active nodes. */</color>
+      <color=#f8f8f2>notifyJoinGroupEventsForActiveNodes</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>);</color>
+
+      <color=#75715e>/* Start an underlying ping thread. */</color>
+      <color=#f8f8f2>pingThread</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>PingThread</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>pingThread</color><color=#f8f8f2>.</color><color=#a6e22e>start</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>UnknownMasterException</color> <color=#f8f8f2>ume</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* The Listener will be informed when a Master is elected. */</color>
+      <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#e6db74>"No current master."</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Used by unit test, disable notifying any GroupChangeEvents or</color>
+<color=#75715e>   * JoinGroupEvents.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>disableNotify</color><color=#f8f8f2>(</color><color=#a6e22e>@SuppressWarnings</color><color=#f8f8f2>(</color><color=#e6db74>"hiding"</color><color=#f8f8f2>)</color> <color=#66d9ef>final</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>disableNotify</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>disableNotify</color> <color=#f92672>=</color> <color=#f8f8f2>disableNotify</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Notify JoinGroupEvents for currently active nodes in replication group, and update the list of</color>
+<color=#75715e>   * group members.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>notifyJoinGroupEventsForActiveNodes</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>group</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>NodeStateProtocol</color> <color=#f8f8f2>stateProtocol</color> <color=#f92672>=</color>
+        <color=#66d9ef>new</color> <color=#f8f8f2>NodeStateProtocol</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>NameIdPair</color><color=#f8f8f2>.</color><color=#a6e22e>NOCHECK</color><color=#f8f8f2>,</color> <color=#66d9ef>null</color><color=#f8f8f2>,</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color> <color=#f8f8f2>:</color> <color=#f8f8f2>group</color><color=#f8f8f2>.</color><color=#a6e22e>getNodes</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Note any existing nodes with persistent id as group</color>
+<color=#75715e>       * members. Nodes w/ transient id never send add or remove</color>
+<color=#75715e>       * events, so they are not included in groupMembers.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>hasTransientId</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Send out a NodeState request message for this node, but only for</color>
+<color=#75715e>       * electable and secondary nodes, since monitor nodes don't support</color>
+<color=#75715e>       * the NodeStateService.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>isMonitor</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>continue</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>MessageExchange</color> <color=#f8f8f2>me</color> <color=#f92672>=</color>
+          <color=#f8f8f2>stateProtocol</color>
+          <color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#f8f8f2>MessageExchange</color><color=#f8f8f2>(</color>
+              <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getSocketAddress</color><color=#f8f8f2>(),</color>
+              <color=#f8f8f2>NodeStateService</color><color=#f8f8f2>.</color><color=#a6e22e>SERVICE_NAME</color><color=#f8f8f2>,</color>
+              <color=#f8f8f2>stateProtocol</color><color=#f8f8f2>.</color><color=#a6e22e>new</color> <color=#a6e22e>NodeStateRequest</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>me</color><color=#f8f8f2>.</color><color=#a6e22e>run</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>ResponseMessage</color> <color=#f8f8f2>resp</color> <color=#f92672>=</color> <color=#f8f8f2>me</color><color=#f8f8f2>.</color><color=#a6e22e>getResponseMessage</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>resp</color> <color=#66d9ef>instanceof</color> <color=#f8f8f2>NodeStateResponse</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>NodeStateResponse</color> <color=#f8f8f2>response</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>NodeStateResponse</color><color=#f8f8f2>)</color> <color=#f8f8f2>resp</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>notifyJoin</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>JoinGroupEvent</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>response</color><color=#f8f8f2>.</color><color=#a6e22e>getJoinTime</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Identifies the master of the replication group, resulting from the last successful election.</color>
+<color=#75715e>   * This method relies on the helper nodes supplied to the monitor and queries them for the master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>This method is useful when a Monitor first starts up and the Master needs to be determined.</color>
+<color=#75715e>   * Once a Monitor is registered and the Listener has been started, it's kept up to date via events</color>
+<color=#75715e>   * that are delivered to the Listener.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the id associated with the master replication node.</color>
+<color=#75715e>   * @throws UnknownMasterException if the master could not be determined from the set of helpers</color>
+<color=#75715e>   *     made available to the Monitor.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the monitor has been shutdown.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>String</color> <color=#a6e22e>getMasterNodeName</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>UnknownMasterException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"The monitor has been shutdown"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterNodeName</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the current composition of the group. It does so by first querying the helpers to</color>
+<color=#75715e>   * determine the master and then obtaining the group information from the master.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return an instance of RepGroup denoting the current composition of the group</color>
+<color=#75715e>   * @throws UnknownMasterException if the master could not be determined from the set of helpers</color>
+<color=#75715e>   *     made available to the Monitor.</color>
+<color=#75715e>   * @throws EnvironmentFailureException if an unexpected, internal or environment-wide failure</color>
+<color=#75715e>   *     occurs.</color>
+<color=#75715e>   * @throws IllegalStateException if the monitor has been shutdown.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>ReplicationGroup</color> <color=#a6e22e>getGroup</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalStateException</color><color=#f8f8f2>(</color><color=#e6db74>"The monitor has been shutdown"</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * TODO: Should we use this information to update the helper set as an</color>
+<color=#75715e>     * optimization?</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>repGroupAdmin</color><color=#f8f8f2>.</color><color=#a6e22e>getGroup</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Release monitor resources and shut down the monitor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @throws InterruptedException</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>shutdown</color><color=#f8f8f2>()</color> <color=#66d9ef>throws</color> <color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#f8f8f2>shutdown</color><color=#f8f8f2>.</color><color=#a6e22e>compareAndSet</color><color=#f8f8f2>(</color><color=#66d9ef>false</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>changed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color><color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#e6db74>"Shutting down monitor "</color> <color=#f92672>+</color> <color=#f8f8f2>nameIdPair</color><color=#f8f8f2>);</color>
+
+    <color=#75715e>/* Shutdown the Ping thread. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>pingThread</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>pingThread</color><color=#f8f8f2>.</color><color=#a6e22e>stopThread</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>pingThread</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>learner</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>learner</color><color=#f8f8f2>.</color><color=#a6e22e>shutdown</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>serviceDispatcher</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>serviceDispatcher</color><color=#f8f8f2>.</color><color=#a6e22e>shutdown</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Notify the MonitorChangeListener that a GroupChangeEvent occurred. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>notifyGroupChange</color><color=#f8f8f2>(</color><color=#f8f8f2>GroupChangeEvent</color> <color=#f8f8f2>event</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>disableNotify</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getChangeType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>REMOVE</color><color=#f8f8f2>:</color>
+        <color=#75715e>/* If the REMOVE event has been fired before, do nothing. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#75715e>/* Remove the deleted node from the group members set. */</color>
+        <color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>ADD</color><color=#f8f8f2>:</color>
+        <color=#75715e>/* If the ADD event has been fired before, do nothing. */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Add the node to the group members set. */</color>
+        <color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>add</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>IllegalArgumentException</color><color=#f8f8f2>(</color>
+            <color=#e6db74>"Unrecognized GroupChangeType: "</color> <color=#f92672>+</color> <color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getChangeType</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#f8f8f2>monitorChangeListener</color><color=#f8f8f2>.</color><color=#a6e22e>notify</color><color=#f8f8f2>(</color><color=#f8f8f2>event</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Notify the MonitorChangeListener that a JoinGroupEvent happens. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>notifyJoin</color><color=#f8f8f2>(</color><color=#f8f8f2>JoinGroupEvent</color> <color=#f8f8f2>event</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>disableNotify</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>();</color>
+    <color=#75715e>/* If this JoinGroupEvent has been fired before, do nothing. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Save the JoinGroupEvent for this node so that it can be used while</color>
+<color=#75715e>     * notifying an abnormal LeaveGroupEvent for this node.</color>
+<color=#75715e>     */</color>
+    <color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>event</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>monitorChangeListener</color><color=#f8f8f2>.</color><color=#a6e22e>notify</color><color=#f8f8f2>(</color><color=#f8f8f2>event</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Notify the MonitorChangeListener that a LeaveGroupEvent occurred. */</color>
+  <color=#66d9ef>synchronized</color> <color=#66d9ef>void</color> <color=#a6e22e>notifyLeave</color><color=#f8f8f2>(</color><color=#f8f8f2>LeaveGroupEvent</color> <color=#f8f8f2>event</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+    <color=#75715e>/* Only notify a leave event if the node is currently joined */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>remove</color><color=#f8f8f2>(</color><color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>())</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>monitorChangeListener</color><color=#f8f8f2>.</color><color=#a6e22e>notify</color><color=#f8f8f2>(</color><color=#f8f8f2>event</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The Listener used to learn about new Masters */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>MasterChangeListener</color> <color=#66d9ef>implements</color> <color=#f8f8f2>Learner</color><color=#f8f8f2>.</color><color=#a6e22e>Listener</color> <color=#f8f8f2>{</color>
+    <color=#75715e>/* The current learned value. */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>MasterValue</color> <color=#f8f8f2>currentValue</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/** Implements the Listener protocol. */</color>
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>notify</color><color=#f8f8f2>(</color><color=#f8f8f2>Proposal</color> <color=#f8f8f2>proposal</color><color=#f8f8f2>,</color> <color=#f8f8f2>Value</color> <color=#f8f8f2>value</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* We have a winning new proposal, is it truly different? */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>value</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>currentValue</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>currentValue</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>MasterValue</color><color=#f8f8f2>)</color> <color=#f8f8f2>value</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>currentMasterName</color> <color=#f92672>=</color> <color=#f8f8f2>currentValue</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeName</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color> <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color> <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color> <color=#e6db74>"Monitor notified of new Master: "</color> <color=#f92672>+</color> <color=#f8f8f2>currentMasterName</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>monitorChangeListener</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>/* No interest */</color>
+          <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>monitorChangeListener</color><color=#f8f8f2>.</color><color=#a6e22e>notify</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>NewMasterEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>currentValue</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>SEVERE</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"Monitor change event processing exception: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * PingThread periodically queries the replication group state in order</color>
+<color=#75715e>   * to proactively find group changes that this monitor may have missed</color>
+<color=#75715e>   * if the monitor was down or had network connectivity problems. Any</color>
+<color=#75715e>   * missed changes are propagated as the appropriate type of events.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * PingThread takes these steps:</color>
+<color=#75715e>   * 1. Get the current group information. If not available, use the last</color>
+<color=#75715e>   *    valid group information. Get information for both removed and</color>
+<color=#75715e>   *    non-removed nodes.</color>
+<color=#75715e>   * 2. Walk through the removed nodes set. If there is a node which is in</color>
+<color=#75715e>   *    the removed nodes set but still contained in groupMembers, send a</color>
+<color=#75715e>   *    REMOVE GroupChangeEvent.</color>
+<color=#75715e>   * 2a. Also walk through the group members remembered by the monitor, and</color>
+<color=#75715e>   *     send REMOVE GroupChangeEvent for each one that is not recorded in</color>
+<color=#75715e>   *     the current group info for removed or unremoved nodes, to account</color>
+<color=#75715e>   *     for deleted nodes.</color>
+<color=#75715e>   * 3. Walk through all unremoved nodes. There are three cases:</color>
+<color=#75715e>   *    a. If a node is reachable (it acks state request), but it's not</color>
+<color=#75715e>   *       in groupMembers, emit an ADD GroupChangeEvent.  Only do this for</color>
+<color=#75715e>   *       electable and monitor nodes -- secondary nodes don't send these</color>
+<color=#75715e>   *       events.</color>
+<color=#75715e>   *    b. If a node is reachable, but joinEvents.containsKey(node name)</color>
+<color=#75715e>   *       returns false, send a JoinGroupEvent.</color>
+<color=#75715e>   *    c. If a node is unreachable, but joinEvents.containsKey(node name)</color>
+<color=#75715e>   *       returns true, we want to send a LeaveGroupEvent, but guard against</color>
+<color=#75715e>   *       this being a transient situation. We do some retries and if we get</color>
+<color=#75715e>   *       the same result for all retries, send a missed LeaveGroupEvent.</color>
+<color=#75715e>   * 3a. Also walk through all nodes removed nodes, and do cases 3.b. and</color>
+<color=#75715e>   *     3.c. for those nodes</color>
+<color=#75715e>   * 4. Walk through all nodes in joinEvents, and perform 3.c. for ones which</color>
+<color=#75715e>   *    are not present as removed or unremoved nodes in the group.  These</color>
+<color=#75715e>   *    nodes are secondary nodes, which are removed from the group when the</color>
+<color=#75715e>   *    node becomes unavailable.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>class</color> <color=#a6e22e>PingThread</color> <color=#66d9ef>extends</color> <color=#f8f8f2>Thread</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>volatile</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>running</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>group</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>retries</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>long</color> <color=#f8f8f2>retryInterval</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>socketConnectTimeout</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Track the missed LeaveEvents, mapping from the node name to the</color>
+<color=#75715e>     * frequency it is thought to be missed.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f92672>></color> <color=#f8f8f2>missedLeaveEvents</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>String</color><color=#f8f8f2>,</color> <color=#f8f8f2>Integer</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Construct an underlying PingThread. */</color>
+    <color=#66d9ef>public</color> <color=#a6e22e>PingThread</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>group</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>group</color> <color=#f92672>=</color> <color=#f8f8f2>group</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retries</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getNumRetries</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>retryInterval</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getRetryInterval</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>socketConnectTimeout</color> <color=#f92672>=</color> <color=#f8f8f2>monitorConfig</color><color=#f8f8f2>.</color><color=#a6e22e>getSocketConnectTimeout</color><color=#f8f8f2>();</color>
+      <color=#f8f8f2>setDaemon</color><color=#f8f8f2>(</color><color=#66d9ef>true</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#a6e22e>@Override</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>run</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>running</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>retries</color> <color=#f92672>&&</color> <color=#f8f8f2>running</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color><color=#f92672>++</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+            <color=#f8f8f2>queryNodes</color><color=#f8f8f2>();</color>
+
+            <color=#75715e>/*</color>
+<color=#75715e>             * Ensure that the monitor hasn't missed any election</color>
+<color=#75715e>             * results due to network interruptions by explicitly</color>
+<color=#75715e>             * querying for a new master on a periodic basis.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>RepGroupImpl</color> <color=#f8f8f2>groupImpl</color> <color=#f92672>=</color> <color=#f8f8f2>RepInternal</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupImpl</color><color=#f8f8f2>(</color><color=#f8f8f2>group</color><color=#f8f8f2>);</color>
+            <color=#75715e>/*</color>
+<color=#75715e>             * The query for a master will result in</color>
+<color=#75715e>             * NewMasterEvents, if there are any changes in the</color>
+<color=#75715e>             * master.</color>
+<color=#75715e>             */</color>
+            <color=#f8f8f2>learner</color><color=#f8f8f2>.</color><color=#a6e22e>queryForMaster</color><color=#f8f8f2>(</color><color=#f8f8f2>groupImpl</color><color=#f8f8f2>.</color><color=#a6e22e>getAllLearnerSockets</color><color=#f8f8f2>());</color>
+
+            <color=#75715e>/* Sleep a while after querying all the nodes. */</color>
+            <color=#f8f8f2>sleep</color><color=#f8f8f2>(</color><color=#f8f8f2>retryInterval</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+          <color=#f8f8f2>missedLeaveEvents</color><color=#f8f8f2>.</color><color=#a6e22e>clear</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>InterruptedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>LoggerUtils</color><color=#f8f8f2>.</color><color=#a6e22e>logMsg</color><color=#f8f8f2>(</color>
+            <color=#f8f8f2>logger</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>formatter</color><color=#f8f8f2>,</color>
+            <color=#f8f8f2>Level</color><color=#f8f8f2>.</color><color=#a6e22e>INFO</color><color=#f8f8f2>,</color>
+            <color=#e6db74>"The daemon PingThread is interrupted: "</color> <color=#f92672>+</color> <color=#f8f8f2>e</color><color=#f8f8f2>.</color><color=#a6e22e>getMessage</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/**</color>
+<color=#75715e>     * Ping all nodes to find out about possible missed events. Manufacture notifications for any</color>
+<color=#75715e>     * missed events.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>queryNodes</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#75715e>/* Get the current valid group information. */</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>repGroup</color> <color=#f92672>=</color> <color=#f8f8f2>getValidGroup</color><color=#f8f8f2>();</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>Set</color><color=#f92672><?</color> <color=#66d9ef>extends</color> <color=#f8f8f2>ReplicationNode</color><color=#f92672>></color> <color=#f8f8f2>removedNodes</color> <color=#f92672>=</color>
+          <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getRemovedNodes</color><color=#f8f8f2>();</color>
+
+      <color=#75715e>/* Send missed REMOVE GroupChangeEvents for removed nodes. */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color> <color=#f8f8f2>:</color> <color=#f8f8f2>removedNodes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>notifyGroupChange</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>GroupChangeEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>GroupChangeType</color><color=#f8f8f2>.</color><color=#a6e22e>REMOVE</color><color=#f8f8f2>));</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Also send REMOVE GroupChangeEvents for nodes in groupMembers</color>
+<color=#75715e>       * that are no longer in the replication group, to account for</color>
+<color=#75715e>       * deleted nodes, which will not be remembered as removed nodes</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>groupMembers</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getNode</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>notifyGroupChange</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>GroupChangeEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>nodeName</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupChangeType</color><color=#f8f8f2>.</color><color=#a6e22e>REMOVE</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Ping nodes to send missed ADD GroupChangeEvents, JoinGroupEvent</color>
+<color=#75715e>       * and LeaveGroupEvent.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color> <color=#f8f8f2>:</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getNodes</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>pingNode</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#66d9ef>false</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/* Also ping removed nodes for missed leave events */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color> <color=#f8f8f2>:</color> <color=#f8f8f2>removedNodes</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>pingNode</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#66d9ef>true</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Send leave events for secondary nodes that no longer appear in</color>
+<color=#75715e>       * the group, since those nodes are completely removed as soon as</color>
+<color=#75715e>       * they disconnect from the feeder, which, because they are not</color>
+<color=#75715e>       * removed from the feeder otherwise, should only happen due to a</color>
+<color=#75715e>       * shutdown or network failure.</color>
+<color=#75715e>       *</color>
+<color=#75715e>       * TODO: Provide for distinguishing secondary and deleted electable</color>
+<color=#75715e>       * nodes.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>nodeName</color> <color=#f8f8f2>:</color> <color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>keySet</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>final</color> <color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color> <color=#f92672>=</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>.</color><color=#a6e22e>getRepGroupImpl</color><color=#f8f8f2>().</color><color=#a6e22e>getNode</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>notifyMissedLeaveEvents</color><color=#f8f8f2>(</color><color=#f8f8f2>nodeName</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/** Ping node to issue missed events. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>pingNode</color><color=#f8f8f2>(</color><color=#f8f8f2>ReplicationNode</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#66d9ef>boolean</color> <color=#f8f8f2>removed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+      <color=#75715e>/* Monitor nodes don't respond to pings */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>isMonitor</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>name</color> <color=#f92672>=</color> <color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getName</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>DbPing</color> <color=#f8f8f2>ping</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>DbPing</color><color=#f8f8f2>(</color><color=#f8f8f2>repNode</color><color=#f8f8f2>,</color> <color=#f8f8f2>getGroupName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>socketConnectTimeout</color><color=#f8f8f2>,</color> <color=#f8f8f2>channelFactory</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>NodeState</color> <color=#f8f8f2>state</color> <color=#f92672>=</color> <color=#f8f8f2>ping</color><color=#f8f8f2>.</color><color=#a6e22e>getNodeState</color><color=#f8f8f2>();</color>
+
+        <color=#75715e>/* Send ADD GroupChangeEvent if needed */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>groupMembers</color><color=#f8f8f2>.</color><color=#a6e22e>contains</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>)</color>
+            <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>isSecondary</color><color=#f8f8f2>()</color>
+            <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>repNode</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>().</color><color=#a6e22e>isExternal</color><color=#f8f8f2>()</color>
+            <color=#f92672>&&</color> <color=#f92672>!</color><color=#f8f8f2>removed</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>notifyGroupChange</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>GroupChangeEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>repGroup</color><color=#f8f8f2>,</color> <color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>GroupChangeType</color><color=#f8f8f2>.</color><color=#a6e22e>ADD</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+
+        <color=#75715e>/* Send JoinGroupEvent if needed */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>containsKey</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>notifyJoin</color><color=#f8f8f2>(</color><color=#66d9ef>new</color> <color=#f8f8f2>JoinGroupEvent</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>state</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterName</color><color=#f8f8f2>(),</color> <color=#f8f8f2>state</color><color=#f8f8f2>.</color><color=#a6e22e>getJoinTime</color><color=#f8f8f2>()));</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>IOException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Increase the counter of this down node. */</color>
+        <color=#f8f8f2>notifyMissedLeaveEvents</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ServiceConnectFailedException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>/* Increase the counter of this down node. */</color>
+        <color=#f8f8f2>notifyMissedLeaveEvents</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>ProtocolException</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/*</color>
+<color=#75715e>         * Thrown if a node is restarted with a new name on a</color>
+<color=#75715e>         * hostname/port combination used for an earlier node, meaning</color>
+<color=#75715e>         * the old node is offline.  Increase the counter of this down</color>
+<color=#75715e>         * node.</color>
+<color=#75715e>         */</color>
+        <color=#f8f8f2>notifyMissedLeaveEvents</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * If the master is currently unknown, use the last valid group</color>
+<color=#75715e>     * information so that the ping thread can continue working.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>private</color> <color=#f8f8f2>ReplicationGroup</color> <color=#a6e22e>getValidGroup</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>ReplicationGroup</color> <color=#f8f8f2>repGroup</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>try</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repGroup</color> <color=#f92672>=</color> <color=#f8f8f2>getGroup</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>group</color> <color=#f92672>=</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>catch</color> <color=#f8f8f2>(</color><color=#f8f8f2>Exception</color> <color=#f8f8f2>e</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>repGroup</color> <color=#f92672>=</color> <color=#f8f8f2>group</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>return</color> <color=#f8f8f2>repGroup</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Notify a missed LeaveGroupEvent. */</color>
+    <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>notifyMissedLeaveEvents</color><color=#f8f8f2>(</color><color=#f8f8f2>String</color> <color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>JoinGroupEvent</color> <color=#f8f8f2>event</color> <color=#f92672>=</color> <color=#f8f8f2>joinEvents</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>event</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#66d9ef>int</color> <color=#f8f8f2>counter</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>missedLeaveEvents</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#f8f8f2>missedLeaveEvents</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>missedLeaveEvents</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>,</color> <color=#f8f8f2>counter</color><color=#f8f8f2>);</color>
+
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>missedLeaveEvents</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>name</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>retries</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>notifyLeave</color><color=#f8f8f2>(</color>
+            <color=#66d9ef>new</color> <color=#f8f8f2>LeaveGroupEvent</color><color=#f8f8f2>(</color>
+                <color=#f8f8f2>name</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getMasterName</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>LeaveReason</color><color=#f8f8f2>.</color><color=#a6e22e>ABNORMAL_TERMINATION</color><color=#f8f8f2>,</color>
+                <color=#f8f8f2>event</color><color=#f8f8f2>.</color><color=#a6e22e>getJoinTime</color><color=#f8f8f2>().</color><color=#a6e22e>getTime</color><color=#f8f8f2>(),</color>
+                <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>currentTimeMillis</color><color=#f8f8f2>()));</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>stopThread</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>running</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

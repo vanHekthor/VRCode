@@ -1,0 +1,308 @@
+<color=#75715e>/*-</color>
+<color=#75715e> * Copyright (C) 2002, 2017, Oracle and/or its affiliates. All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * This file was distributed by Oracle as part of a version of Oracle Berkeley</color>
+<color=#75715e> * DB Java Edition made available at:</color>
+<color=#75715e> *</color>
+<color=#75715e> * http://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html</color>
+<color=#75715e> *</color>
+<color=#75715e> * Please see the LICENSE file included in the top-level directory of the</color>
+<color=#75715e> * appropriate version of Oracle Berkeley DB Java Edition for a copy of the</color>
+<color=#75715e> * license and additional information.</color>
+<color=#75715e> */</color>
+
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.je.log</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.DatabaseException</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.BaseUtilizationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.ExpirationTracker</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.FileSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.cleaner.INSummary</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseId</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.DatabaseImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.dbi.EnvironmentImpl</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.log.entry.*</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.BIN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.IN</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.tree.OldBINDelta</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.DbLsn</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>com.sleepycat.je.utilint.VLSN</color><color=#f8f8f2>;</color>
+
+<color=#f92672>import</color> <color=#f8f8f2>java.nio.ByteBuffer</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.HashMap</color><color=#f8f8f2>;</color>
+<color=#f92672>import</color> <color=#f8f8f2>java.util.Map</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/** CleanerFileReader scans log files for INs and LNs. */</color>
+<color=#66d9ef>public</color> <color=#66d9ef>class</color> <color=#a6e22e>CleanerFileReader</color> <color=#66d9ef>extends</color> <color=#f8f8f2>FileReader</color> <color=#f8f8f2>{</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_LN</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_IN</color> <color=#f92672>=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_BIN_DELTA</color> <color=#f92672>=</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_OLD_BIN_DELTA</color> <color=#f92672>=</color> <color=#ae81ff>3</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_DBTREE</color> <color=#f92672>=</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>byte</color> <color=#f8f8f2>IS_FILEHEADER</color> <color=#f92672>=</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>Map</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>></color> <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>byte</color> <color=#f8f8f2>targetCategory</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>INSummary</color> <color=#f8f8f2>inSummary</color><color=#f8f8f2>;</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>final</color> <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The first VLSN, or null if none has been found */</color>
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>firstVLSN</color> <color=#f92672>=</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+
+  <color=#66d9ef>private</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>lastVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Create this reader to start at a given LSN.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param env The relevant EnvironmentImpl.</color>
+<color=#75715e>   * @param readBufferSize buffer size in bytes for reading in log.</color>
+<color=#75715e>   * @param startLsn where to start in the log, or null for the beginning.</color>
+<color=#75715e>   * @param fileNum single file number.</color>
+<color=#75715e>   * @param fileSummary returns true utilization.</color>
+<color=#75715e>   * @param inSummary returns IN utilization.</color>
+<color=#75715e>   * @param expTracker returns expiration info, if non-null.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#a6e22e>CleanerFileReader</color><color=#f8f8f2>(</color>
+      <color=#f8f8f2>EnvironmentImpl</color> <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+      <color=#66d9ef>long</color> <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>Long</color> <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>FileSummary</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>INSummary</color> <color=#f8f8f2>inSummary</color><color=#f8f8f2>,</color>
+      <color=#f8f8f2>ExpirationTracker</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>super</color><color=#f8f8f2>(</color>
+        <color=#f8f8f2>env</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>readBufferSize</color><color=#f8f8f2>,</color>
+        <color=#66d9ef>true</color><color=#f8f8f2>,</color> <color=#75715e>// forward</color>
+        <color=#f8f8f2>startLsn</color><color=#f8f8f2>,</color>
+        <color=#f8f8f2>fileNum</color><color=#f8f8f2>,</color> <color=#75715e>// single file number</color>
+        <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>,</color> <color=#75715e>// endOfFileLsn</color>
+        <color=#f8f8f2>DbLsn</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_LSN</color><color=#f8f8f2>);</color> <color=#75715e>// finishLsn</color>
+
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>fileSummary</color> <color=#f92672>=</color> <color=#f8f8f2>fileSummary</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>inSummary</color> <color=#f92672>=</color> <color=#f8f8f2>inSummary</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>expTracker</color> <color=#f92672>=</color> <color=#f8f8f2>expTracker</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>targetEntryMap</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#f8f8f2>HashMap</color><color=#f92672><</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>,</color> <color=#f8f8f2>EntryInfo</color><color=#f92672>></color><color=#f8f8f2>();</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color> <color=#f8f8f2>:</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>getAllTypes</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>isLNType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_LN</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+
+      <color=#75715e>/*</color>
+<color=#75715e>       * Note that DBIN/DIN are not included because they are</color>
+<color=#75715e>       * automatically considered obsolete.</color>
+<color=#75715e>       */</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>isINType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_IN</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_BIN_DELTA</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_OLD_BIN_DELTA</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_DBTREE</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_DBTREE</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>addTargetType</color><color=#f8f8f2>(</color><color=#f8f8f2>IS_FILEHEADER</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>addTargetType</color><color=#f8f8f2>(</color><color=#66d9ef>byte</color> <color=#f8f8f2>category</color><color=#f8f8f2>,</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>entryType</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>.</color><color=#a6e22e>put</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>,</color> <color=#66d9ef>new</color> <color=#f8f8f2>EntryInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>entryType</color><color=#f8f8f2>.</color><color=#a6e22e>getNewLogEntry</color><color=#f8f8f2>(),</color> <color=#f8f8f2>category</color><color=#f8f8f2>));</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Process the header to track the last VLSN and count true utilization. Then read the entry and</color>
+<color=#75715e>   * return true if the LogEntryType is of interest.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>We don't override isTargetEntry so it always returns true and we can count utilization</color>
+<color=#75715e>   * correctly here in processEntry. We call getLastLsn to count utilization and this is not allowed</color>
+<color=#75715e>   * from isTargetEntry.</color>
+<color=#75715e>   */</color>
+  <color=#a6e22e>@Override</color>
+  <color=#66d9ef>protected</color> <color=#66d9ef>boolean</color> <color=#a6e22e>processEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>ByteBuffer</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>)</color> <color=#66d9ef>throws</color> <color=#f8f8f2>DatabaseException</color> <color=#f8f8f2>{</color>
+
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>getLastEntrySize</color><color=#f8f8f2>();</color>
+
+    <color=#75715e>/* Count true utilization for new log entries. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>()</color> <color=#f92672>!=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_FILE_HEADER</color><color=#f8f8f2>.</color><color=#a6e22e>getTypeNum</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>BaseUtilizationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>trackObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>BaseUtilizationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>isLNType</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>isINType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color>
+              <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalBINDeltaCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>totalBINDeltaSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Invisible entries should not be processed further. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>isInvisible</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>skipEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>countObsolete</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/* Maintain first and last VLSN encountered. */</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getReplicated</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>VLSN</color> <color=#f8f8f2>vlsn</color> <color=#f92672>=</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getVLSN</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+
+        <color=#75715e>/* Use a null comparison in this inner loop, for speed */</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstVLSN</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>firstVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>assert</color> <color=#f8f8f2>(</color><color=#f8f8f2>vlsn</color><color=#f8f8f2>.</color><color=#a6e22e>compareTo</color><color=#f8f8f2>(</color><color=#f8f8f2>lastVLSN</color><color=#f8f8f2>)</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color>
+            <color=#f8f8f2>:</color> <color=#e6db74>"vlsns out of order, last="</color> <color=#f92672>+</color> <color=#f8f8f2>lastVLSN</color> <color=#f92672>+</color> <color=#e6db74>" current="</color> <color=#f92672>+</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>lastVLSN</color> <color=#f92672>=</color> <color=#f8f8f2>vlsn</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#75715e>/*</color>
+<color=#75715e>     * Call readEntry and return true if this is a LogEntryType of</color>
+<color=#75715e>     * interest.</color>
+<color=#75715e>     */</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>EntryInfo</color> <color=#f8f8f2>info</color> <color=#f92672>=</color> <color=#f8f8f2>targetEntryMap</color><color=#f8f8f2>.</color><color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>info</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>skipEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>countObsolete</color><color=#f8f8f2>();</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>targetCategory</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>targetCategory</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>targetLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>info</color><color=#f8f8f2>.</color><color=#a6e22e>targetLogEntry</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>readEntry</color><color=#f8f8f2>(</color><color=#f8f8f2>envImpl</color><color=#f8f8f2>,</color> <color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>,</color> <color=#f8f8f2>entryBuffer</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Records the current log entry as obsolete in the FileSummary used to count true utilization.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countObsolete</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>final</color> <color=#f8f8f2>LogEntryType</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>findType</color><color=#f8f8f2>(</color><color=#f8f8f2>currentEntryHeader</color><color=#f8f8f2>.</color><color=#a6e22e>getType</color><color=#f8f8f2>());</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f92672>!</color><color=#f8f8f2>BaseUtilizationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>trackObsoleteInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>size</color> <color=#f92672>=</color> <color=#f8f8f2>getLastEntrySize</color><color=#f8f8f2>();</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>BaseUtilizationTracker</color><color=#f8f8f2>.</color><color=#a6e22e>isLNType</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteLNSizeCounted</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>fileSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>isINType</color><color=#f8f8f2>())</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteINSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_BIN_DELTA</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>type</color><color=#f8f8f2>.</color><color=#a6e22e>equals</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntryType</color><color=#f8f8f2>.</color><color=#a6e22e>LOG_OLD_BIN_DELTA</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteBINDeltaCount</color> <color=#f92672>+=</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>inSummary</color><color=#f8f8f2>.</color><color=#a6e22e>obsoleteBINDeltaSize</color> <color=#f92672>+=</color> <color=#f8f8f2>size</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>void</color> <color=#a6e22e>countExpired</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>expTracker</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>expTracker</color><color=#f8f8f2>.</color><color=#a6e22e>track</color><color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>,</color> <color=#f8f8f2>getLastEntrySize</color><color=#f8f8f2>());</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was an IN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isIN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_IN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a live BIN delta. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isBINDelta</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_BIN_DELTA</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was an Old BIN-delta. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isOldBINDelta</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_OLD_BIN_DELTA</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a LN. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isLN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_LN</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** @return true if the last entry was a DbTree entry. */</color>
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isDbTree</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_DBTREE</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#66d9ef>boolean</color> <color=#a6e22e>isFileHeader</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_FILEHEADER</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Get the last LN log entry seen by the reader. Note that LNLogEntry.postFetchInit must be called</color>
+<color=#75715e>   * before calling certain LNLogEntry methods.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color> <color=#f8f8f2>getLNLogEntry</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>LNLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the last entry seen by the reader as an IN. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>IN</color> <color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>DatabaseImpl</color> <color=#f8f8f2>dbImpl</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>INLogEntry</color><color=#f92672><?></color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>).</color><color=#a6e22e>getIN</color><color=#f8f8f2>(</color><color=#f8f8f2>dbImpl</color><color=#f8f8f2>);</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>BIN</color> <color=#a6e22e>getBINDelta</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>BINDeltaLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>).</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>OldBINDelta</color> <color=#a6e22e>getOldBINDelta</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>((</color><color=#f8f8f2>OldBINDeltaLogEntry</color><color=#f8f8f2>)</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>).</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>public</color> <color=#f8f8f2>FileHeader</color> <color=#a6e22e>getFileHeader</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>FileHeader</color><color=#f8f8f2>)</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getMainItem</color><color=#f8f8f2>());</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Get the last databaseId seen by the reader. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>DatabaseId</color> <color=#a6e22e>getDatabaseId</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_LN</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_IN</color><color=#f8f8f2>)</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_BIN_DELTA</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>targetCategory</color> <color=#f92672>==</color> <color=#f8f8f2>IS_OLD_BIN_DELTA</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>.</color><color=#a6e22e>getDbId</color><color=#f8f8f2>();</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>null</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the first VLSN encountered, or NULL_VLSN if no entries were replicated. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getFirstVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>firstVLSN</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#f8f8f2>firstVLSN</color> <color=#f8f8f2>:</color> <color=#f8f8f2>VLSN</color><color=#f8f8f2>.</color><color=#a6e22e>NULL_VLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** Returns the last VLSN encountered, or NULL_VLSN if no entries were replicated. */</color>
+  <color=#66d9ef>public</color> <color=#f8f8f2>VLSN</color> <color=#a6e22e>getLastVLSN</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>lastVLSN</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>class</color> <color=#a6e22e>EntryInfo</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>public</color> <color=#f8f8f2>LogEntry</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>public</color> <color=#66d9ef>byte</color> <color=#f8f8f2>targetCategory</color><color=#f8f8f2>;</color>
+
+    <color=#f8f8f2>EntryInfo</color><color=#f8f8f2>(</color><color=#f8f8f2>LogEntry</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>,</color> <color=#66d9ef>byte</color> <color=#f8f8f2>targetCategory</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>targetLogEntry</color> <color=#f92672>=</color> <color=#f8f8f2>targetLogEntry</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>this</color><color=#f8f8f2>.</color><color=#a6e22e>targetCategory</color> <color=#f92672>=</color> <color=#f8f8f2>targetCategory</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>

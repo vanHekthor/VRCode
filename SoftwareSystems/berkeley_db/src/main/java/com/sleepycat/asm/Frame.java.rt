@@ -1,0 +1,1364 @@
+<color=#75715e>/***</color>
+<color=#75715e> * ASM: a very small and fast Java bytecode manipulation framework</color>
+<color=#75715e> * Copyright (c) 2000-2011 INRIA, France Telecom</color>
+<color=#75715e> * All rights reserved.</color>
+<color=#75715e> *</color>
+<color=#75715e> * Redistribution and use in source and binary forms, with or without</color>
+<color=#75715e> * modification, are permitted provided that the following conditions</color>
+<color=#75715e> * are met:</color>
+<color=#75715e> * 1. Redistributions of source code must retain the above copyright</color>
+<color=#75715e> *    notice, this list of conditions and the following disclaimer.</color>
+<color=#75715e> * 2. Redistributions in binary form must reproduce the above copyright</color>
+<color=#75715e> *    notice, this list of conditions and the following disclaimer in the</color>
+<color=#75715e> *    documentation and/or other materials provided with the distribution.</color>
+<color=#75715e> * 3. Neither the name of the copyright holders nor the names of its</color>
+<color=#75715e> *    contributors may be used to endorse or promote products derived from</color>
+<color=#75715e> *    this software without specific prior written permission.</color>
+<color=#75715e> *</color>
+<color=#75715e> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"</color>
+<color=#75715e> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</color>
+<color=#75715e> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</color>
+<color=#75715e> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</color>
+<color=#75715e> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</color>
+<color=#75715e> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</color>
+<color=#75715e> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</color>
+<color=#75715e> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</color>
+<color=#75715e> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</color>
+<color=#75715e> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF</color>
+<color=#75715e> * THE POSSIBILITY OF SUCH DAMAGE.</color>
+<color=#75715e> */</color>
+<color=#f92672>package</color> <color=#f8f8f2>com.sleepycat.asm</color><color=#f8f8f2>;</color>
+
+<color=#75715e>/**</color>
+<color=#75715e> * Information about the input and output stack map frames of a basic block.</color>
+<color=#75715e> *</color>
+<color=#75715e> * @author Eric Bruneton</color>
+<color=#75715e> */</color>
+<color=#66d9ef>final</color> <color=#66d9ef>class</color> <color=#a6e22e>Frame</color> <color=#f8f8f2>{</color>
+
+  <color=#75715e>/*</color>
+<color=#75715e>   * Frames are computed in a two steps process: during the visit of each</color>
+<color=#75715e>   * instruction, the state of the frame at the end of current basic block is</color>
+<color=#75715e>   * updated by simulating the action of the instruction on the previous state</color>
+<color=#75715e>   * of this so called "output frame". In visitMaxs, a fix point algorithm is</color>
+<color=#75715e>   * used to compute the "input frame" of each basic block, i.e. the stack map</color>
+<color=#75715e>   * frame at the beginning of the basic block, starting from the input frame</color>
+<color=#75715e>   * of the first basic block (which is computed from the method descriptor),</color>
+<color=#75715e>   * and by using the previously computed output frames to compute the input</color>
+<color=#75715e>   * state of the other blocks.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * All output and input frames are stored as arrays of integers. Reference</color>
+<color=#75715e>   * and array types are represented by an index into a type table (which is</color>
+<color=#75715e>   * not the same as the constant pool of the class, in order to avoid adding</color>
+<color=#75715e>   * unnecessary constants in the pool - not all computed frames will end up</color>
+<color=#75715e>   * being stored in the stack map table). This allows very fast type</color>
+<color=#75715e>   * comparisons.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Output stack map frames are computed relatively to the input frame of the</color>
+<color=#75715e>   * basic block, which is not yet known when output frames are computed. It</color>
+<color=#75715e>   * is therefore necessary to be able to represent abstract types such as</color>
+<color=#75715e>   * "the type at position x in the input frame locals" or "the type at</color>
+<color=#75715e>   * position x from the top of the input frame stack" or even "the type at</color>
+<color=#75715e>   * position x in the input frame, with y more (or less) array dimensions".</color>
+<color=#75715e>   * This explains the rather complicated type format used in output frames.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * This format is the following: DIM KIND VALUE (4, 4 and 24 bits). DIM is a</color>
+<color=#75715e>   * signed number of array dimensions (from -8 to 7). KIND is either BASE,</color>
+<color=#75715e>   * LOCAL or STACK. BASE is used for types that are not relative to the input</color>
+<color=#75715e>   * frame. LOCAL is used for types that are relative to the input local</color>
+<color=#75715e>   * variable types. STACK is used for types that are relative to the input</color>
+<color=#75715e>   * stack types. VALUE depends on KIND. For LOCAL types, it is an index in</color>
+<color=#75715e>   * the input local variable types. For STACK types, it is a position</color>
+<color=#75715e>   * relatively to the top of input frame stack. For BASE types, it is either</color>
+<color=#75715e>   * one of the constants defined below, or for OBJECT and UNINITIALIZED</color>
+<color=#75715e>   * types, a tag and an index in the type table.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * Output frames can contain types of any kind and with a positive or</color>
+<color=#75715e>   * negative dimension (and even unassigned types, represented by 0 - which</color>
+<color=#75715e>   * does not correspond to any valid type value). Input frames can only</color>
+<color=#75715e>   * contain BASE types of positive or null dimension. In all cases the type</color>
+<color=#75715e>   * table contains only internal type names (array type descriptors are</color>
+<color=#75715e>   * forbidden - dimensions must be represented through the DIM field).</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * The LONG and DOUBLE types are always represented by using two slots (LONG</color>
+<color=#75715e>   * + TOP or DOUBLE + TOP), for local variable types as well as in the</color>
+<color=#75715e>   * operand stack. This is necessary to be able to simulate DUPx_y</color>
+<color=#75715e>   * instructions, whose effect would be dependent on the actual type values</color>
+<color=#75715e>   * if types were always represented by a single slot in the stack (and this</color>
+<color=#75715e>   * is not possible, since actual type values are not always known - cf LOCAL</color>
+<color=#75715e>   * and STACK type kinds).</color>
+<color=#75715e>   */</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Mask to get the dimension of a frame type. This dimension is a signed integer between -8 and 7.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>DIM</color> <color=#f92672>=</color> <color=#ae81ff>0xF0000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Constant to be added to a type to get a type with one more dimension. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ARRAY_OF</color> <color=#f92672>=</color> <color=#ae81ff>0x10000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Constant to be added to a type to get a type with one less dimension. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>ELEMENT_OF</color> <color=#f92672>=</color> <color=#ae81ff>0xF0000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Mask to get the kind of a frame type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #BASE</color>
+<color=#75715e>   * @see #LOCAL</color>
+<color=#75715e>   * @see #STACK</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>KIND</color> <color=#f92672>=</color> <color=#ae81ff>0xF000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Flag used for LOCAL and STACK types. Indicates that if this type happens to be a long or double</color>
+<color=#75715e>   * type (during the computations of input frames), then it must be set to TOP because the second</color>
+<color=#75715e>   * word of this value has been reused to store other data in the basic block. Hence the first word</color>
+<color=#75715e>   * no longer stores a valid long or double value.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>TOP_IF_LONG_OR_DOUBLE</color> <color=#f92672>=</color> <color=#ae81ff>0x800000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Mask to get the value of a frame type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>VALUE</color> <color=#f92672>=</color> <color=#ae81ff>0x7FFFFF</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Mask to get the kind of base types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>BASE_KIND</color> <color=#f92672>=</color> <color=#ae81ff>0xFF00000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Mask to get the value of base types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>BASE_VALUE</color> <color=#f92672>=</color> <color=#ae81ff>0xFFFFF</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Kind of the types that are not relative to an input stack map frame. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>BASE</color> <color=#f92672>=</color> <color=#ae81ff>0x1000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Base kind of the base reference types. The BASE_VALUE of such types is an index into the type</color>
+<color=#75715e>   * table.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>0x700000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Base kind of the uninitialized base types. The BASE_VALUE of such types in an index into the</color>
+<color=#75715e>   * type table (the Item at that index contains both an instruction offset and an internal class</color>
+<color=#75715e>   * name).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>UNINITIALIZED</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>0x800000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Kind of the types that are relative to the local variable types of an input stack map frame.</color>
+<color=#75715e>   * The value of such types is a local variable index.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LOCAL</color> <color=#f92672>=</color> <color=#ae81ff>0x2000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Kind of the the types that are relative to the stack of an input stack map frame. The value of</color>
+<color=#75715e>   * such types is a position relatively to the top of this stack.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>STACK</color> <color=#f92672>=</color> <color=#ae81ff>0x3000000</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The TOP type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>TOP</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The BOOLEAN type. This is a BASE type mainly used for array types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>BOOLEAN</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>9</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The BYTE type. This is a BASE type mainly used for array types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>BYTE</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>10</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The CHAR type. This is a BASE type mainly used for array types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>CHAR</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>11</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The SHORT type. This is a BASE type mainly used for array types. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>SHORT</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>12</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The INTEGER type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>INTEGER</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The FLOAT type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>FLOAT</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>2</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The DOUBLE type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>DOUBLE</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>3</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The LONG type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>LONG</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>4</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The NULL type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>NULL</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>5</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The UNINITIALIZED_THIS type. This is a BASE type. */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>UNINITIALIZED_THIS</color> <color=#f92672>=</color> <color=#f8f8f2>BASE</color> <color=#f92672>|</color> <color=#ae81ff>6</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The stack size variation corresponding to each JVM instruction. This stack variation is equal</color>
+<color=#75715e>   * to the size of the values produced by an instruction, minus the size of the values consumed by</color>
+<color=#75715e>   * this instruction.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>static</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>SIZE</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** Computes the stack size variation corresponding to each JVM instruction. */</color>
+  <color=#66d9ef>static</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>b</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>202</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>s</color> <color=#f92672>=</color>
+        <color=#e6db74>"EFFFFFFFFGGFFFGGFFFEEFGFGFEEEEEEEEEEEEEEEEEEEEDEDEDDDDD"</color>
+            <color=#f92672>+</color> <color=#e6db74>"CDCDEEEEEEEEEEEEEEEEEEEEBABABBBBDCFFFGGGEDCDCDCDCDCDCDCDCD"</color>
+            <color=#f92672>+</color> <color=#e6db74>"CDCEEEEDDDDDDDCDCDCEFEFDDEEFFDEDEEEBDDBBDDDDDDCCCCCCCCEFED"</color>
+            <color=#f92672>+</color> <color=#e6db74>"DDCDCDEEEEEEEEEEFEEEEEEDDEEDDEE"</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>b</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>b</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#e6db74>'E'</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#f8f8f2>SIZE</color> <color=#f92672>=</color> <color=#f8f8f2>b</color><color=#f8f8f2>;</color>
+
+    <color=#75715e>// code to generate the above string</color>
+    <color=#75715e>//</color>
+    <color=#75715e>// int NA = 0; // not applicable (unused opcode or variable size opcode)</color>
+    <color=#75715e>//</color>
+    <color=#75715e>// b = new int[] {</color>
+    <color=#75715e>// 0, //NOP, // visitInsn</color>
+    <color=#75715e>// 1, //ACONST_NULL, // -</color>
+    <color=#75715e>// 1, //ICONST_M1, // -</color>
+    <color=#75715e>// 1, //ICONST_0, // -</color>
+    <color=#75715e>// 1, //ICONST_1, // -</color>
+    <color=#75715e>// 1, //ICONST_2, // -</color>
+    <color=#75715e>// 1, //ICONST_3, // -</color>
+    <color=#75715e>// 1, //ICONST_4, // -</color>
+    <color=#75715e>// 1, //ICONST_5, // -</color>
+    <color=#75715e>// 2, //LCONST_0, // -</color>
+    <color=#75715e>// 2, //LCONST_1, // -</color>
+    <color=#75715e>// 1, //FCONST_0, // -</color>
+    <color=#75715e>// 1, //FCONST_1, // -</color>
+    <color=#75715e>// 1, //FCONST_2, // -</color>
+    <color=#75715e>// 2, //DCONST_0, // -</color>
+    <color=#75715e>// 2, //DCONST_1, // -</color>
+    <color=#75715e>// 1, //BIPUSH, // visitIntInsn</color>
+    <color=#75715e>// 1, //SIPUSH, // -</color>
+    <color=#75715e>// 1, //LDC, // visitLdcInsn</color>
+    <color=#75715e>// NA, //LDC_W, // -</color>
+    <color=#75715e>// NA, //LDC2_W, // -</color>
+    <color=#75715e>// 1, //ILOAD, // visitVarInsn</color>
+    <color=#75715e>// 2, //LLOAD, // -</color>
+    <color=#75715e>// 1, //FLOAD, // -</color>
+    <color=#75715e>// 2, //DLOAD, // -</color>
+    <color=#75715e>// 1, //ALOAD, // -</color>
+    <color=#75715e>// NA, //ILOAD_0, // -</color>
+    <color=#75715e>// NA, //ILOAD_1, // -</color>
+    <color=#75715e>// NA, //ILOAD_2, // -</color>
+    <color=#75715e>// NA, //ILOAD_3, // -</color>
+    <color=#75715e>// NA, //LLOAD_0, // -</color>
+    <color=#75715e>// NA, //LLOAD_1, // -</color>
+    <color=#75715e>// NA, //LLOAD_2, // -</color>
+    <color=#75715e>// NA, //LLOAD_3, // -</color>
+    <color=#75715e>// NA, //FLOAD_0, // -</color>
+    <color=#75715e>// NA, //FLOAD_1, // -</color>
+    <color=#75715e>// NA, //FLOAD_2, // -</color>
+    <color=#75715e>// NA, //FLOAD_3, // -</color>
+    <color=#75715e>// NA, //DLOAD_0, // -</color>
+    <color=#75715e>// NA, //DLOAD_1, // -</color>
+    <color=#75715e>// NA, //DLOAD_2, // -</color>
+    <color=#75715e>// NA, //DLOAD_3, // -</color>
+    <color=#75715e>// NA, //ALOAD_0, // -</color>
+    <color=#75715e>// NA, //ALOAD_1, // -</color>
+    <color=#75715e>// NA, //ALOAD_2, // -</color>
+    <color=#75715e>// NA, //ALOAD_3, // -</color>
+    <color=#75715e>// -1, //IALOAD, // visitInsn</color>
+    <color=#75715e>// 0, //LALOAD, // -</color>
+    <color=#75715e>// -1, //FALOAD, // -</color>
+    <color=#75715e>// 0, //DALOAD, // -</color>
+    <color=#75715e>// -1, //AALOAD, // -</color>
+    <color=#75715e>// -1, //BALOAD, // -</color>
+    <color=#75715e>// -1, //CALOAD, // -</color>
+    <color=#75715e>// -1, //SALOAD, // -</color>
+    <color=#75715e>// -1, //ISTORE, // visitVarInsn</color>
+    <color=#75715e>// -2, //LSTORE, // -</color>
+    <color=#75715e>// -1, //FSTORE, // -</color>
+    <color=#75715e>// -2, //DSTORE, // -</color>
+    <color=#75715e>// -1, //ASTORE, // -</color>
+    <color=#75715e>// NA, //ISTORE_0, // -</color>
+    <color=#75715e>// NA, //ISTORE_1, // -</color>
+    <color=#75715e>// NA, //ISTORE_2, // -</color>
+    <color=#75715e>// NA, //ISTORE_3, // -</color>
+    <color=#75715e>// NA, //LSTORE_0, // -</color>
+    <color=#75715e>// NA, //LSTORE_1, // -</color>
+    <color=#75715e>// NA, //LSTORE_2, // -</color>
+    <color=#75715e>// NA, //LSTORE_3, // -</color>
+    <color=#75715e>// NA, //FSTORE_0, // -</color>
+    <color=#75715e>// NA, //FSTORE_1, // -</color>
+    <color=#75715e>// NA, //FSTORE_2, // -</color>
+    <color=#75715e>// NA, //FSTORE_3, // -</color>
+    <color=#75715e>// NA, //DSTORE_0, // -</color>
+    <color=#75715e>// NA, //DSTORE_1, // -</color>
+    <color=#75715e>// NA, //DSTORE_2, // -</color>
+    <color=#75715e>// NA, //DSTORE_3, // -</color>
+    <color=#75715e>// NA, //ASTORE_0, // -</color>
+    <color=#75715e>// NA, //ASTORE_1, // -</color>
+    <color=#75715e>// NA, //ASTORE_2, // -</color>
+    <color=#75715e>// NA, //ASTORE_3, // -</color>
+    <color=#75715e>// -3, //IASTORE, // visitInsn</color>
+    <color=#75715e>// -4, //LASTORE, // -</color>
+    <color=#75715e>// -3, //FASTORE, // -</color>
+    <color=#75715e>// -4, //DASTORE, // -</color>
+    <color=#75715e>// -3, //AASTORE, // -</color>
+    <color=#75715e>// -3, //BASTORE, // -</color>
+    <color=#75715e>// -3, //CASTORE, // -</color>
+    <color=#75715e>// -3, //SASTORE, // -</color>
+    <color=#75715e>// -1, //POP, // -</color>
+    <color=#75715e>// -2, //POP2, // -</color>
+    <color=#75715e>// 1, //DUP, // -</color>
+    <color=#75715e>// 1, //DUP_X1, // -</color>
+    <color=#75715e>// 1, //DUP_X2, // -</color>
+    <color=#75715e>// 2, //DUP2, // -</color>
+    <color=#75715e>// 2, //DUP2_X1, // -</color>
+    <color=#75715e>// 2, //DUP2_X2, // -</color>
+    <color=#75715e>// 0, //SWAP, // -</color>
+    <color=#75715e>// -1, //IADD, // -</color>
+    <color=#75715e>// -2, //LADD, // -</color>
+    <color=#75715e>// -1, //FADD, // -</color>
+    <color=#75715e>// -2, //DADD, // -</color>
+    <color=#75715e>// -1, //ISUB, // -</color>
+    <color=#75715e>// -2, //LSUB, // -</color>
+    <color=#75715e>// -1, //FSUB, // -</color>
+    <color=#75715e>// -2, //DSUB, // -</color>
+    <color=#75715e>// -1, //IMUL, // -</color>
+    <color=#75715e>// -2, //LMUL, // -</color>
+    <color=#75715e>// -1, //FMUL, // -</color>
+    <color=#75715e>// -2, //DMUL, // -</color>
+    <color=#75715e>// -1, //IDIV, // -</color>
+    <color=#75715e>// -2, //LDIV, // -</color>
+    <color=#75715e>// -1, //FDIV, // -</color>
+    <color=#75715e>// -2, //DDIV, // -</color>
+    <color=#75715e>// -1, //IREM, // -</color>
+    <color=#75715e>// -2, //LREM, // -</color>
+    <color=#75715e>// -1, //FREM, // -</color>
+    <color=#75715e>// -2, //DREM, // -</color>
+    <color=#75715e>// 0, //INEG, // -</color>
+    <color=#75715e>// 0, //LNEG, // -</color>
+    <color=#75715e>// 0, //FNEG, // -</color>
+    <color=#75715e>// 0, //DNEG, // -</color>
+    <color=#75715e>// -1, //ISHL, // -</color>
+    <color=#75715e>// -1, //LSHL, // -</color>
+    <color=#75715e>// -1, //ISHR, // -</color>
+    <color=#75715e>// -1, //LSHR, // -</color>
+    <color=#75715e>// -1, //IUSHR, // -</color>
+    <color=#75715e>// -1, //LUSHR, // -</color>
+    <color=#75715e>// -1, //IAND, // -</color>
+    <color=#75715e>// -2, //LAND, // -</color>
+    <color=#75715e>// -1, //IOR, // -</color>
+    <color=#75715e>// -2, //LOR, // -</color>
+    <color=#75715e>// -1, //IXOR, // -</color>
+    <color=#75715e>// -2, //LXOR, // -</color>
+    <color=#75715e>// 0, //IINC, // visitIincInsn</color>
+    <color=#75715e>// 1, //I2L, // visitInsn</color>
+    <color=#75715e>// 0, //I2F, // -</color>
+    <color=#75715e>// 1, //I2D, // -</color>
+    <color=#75715e>// -1, //L2I, // -</color>
+    <color=#75715e>// -1, //L2F, // -</color>
+    <color=#75715e>// 0, //L2D, // -</color>
+    <color=#75715e>// 0, //F2I, // -</color>
+    <color=#75715e>// 1, //F2L, // -</color>
+    <color=#75715e>// 1, //F2D, // -</color>
+    <color=#75715e>// -1, //D2I, // -</color>
+    <color=#75715e>// 0, //D2L, // -</color>
+    <color=#75715e>// -1, //D2F, // -</color>
+    <color=#75715e>// 0, //I2B, // -</color>
+    <color=#75715e>// 0, //I2C, // -</color>
+    <color=#75715e>// 0, //I2S, // -</color>
+    <color=#75715e>// -3, //LCMP, // -</color>
+    <color=#75715e>// -1, //FCMPL, // -</color>
+    <color=#75715e>// -1, //FCMPG, // -</color>
+    <color=#75715e>// -3, //DCMPL, // -</color>
+    <color=#75715e>// -3, //DCMPG, // -</color>
+    <color=#75715e>// -1, //IFEQ, // visitJumpInsn</color>
+    <color=#75715e>// -1, //IFNE, // -</color>
+    <color=#75715e>// -1, //IFLT, // -</color>
+    <color=#75715e>// -1, //IFGE, // -</color>
+    <color=#75715e>// -1, //IFGT, // -</color>
+    <color=#75715e>// -1, //IFLE, // -</color>
+    <color=#75715e>// -2, //IF_ICMPEQ, // -</color>
+    <color=#75715e>// -2, //IF_ICMPNE, // -</color>
+    <color=#75715e>// -2, //IF_ICMPLT, // -</color>
+    <color=#75715e>// -2, //IF_ICMPGE, // -</color>
+    <color=#75715e>// -2, //IF_ICMPGT, // -</color>
+    <color=#75715e>// -2, //IF_ICMPLE, // -</color>
+    <color=#75715e>// -2, //IF_ACMPEQ, // -</color>
+    <color=#75715e>// -2, //IF_ACMPNE, // -</color>
+    <color=#75715e>// 0, //GOTO, // -</color>
+    <color=#75715e>// 1, //JSR, // -</color>
+    <color=#75715e>// 0, //RET, // visitVarInsn</color>
+    <color=#75715e>// -1, //TABLESWITCH, // visiTableSwitchInsn</color>
+    <color=#75715e>// -1, //LOOKUPSWITCH, // visitLookupSwitch</color>
+    <color=#75715e>// -1, //IRETURN, // visitInsn</color>
+    <color=#75715e>// -2, //LRETURN, // -</color>
+    <color=#75715e>// -1, //FRETURN, // -</color>
+    <color=#75715e>// -2, //DRETURN, // -</color>
+    <color=#75715e>// -1, //ARETURN, // -</color>
+    <color=#75715e>// 0, //RETURN, // -</color>
+    <color=#75715e>// NA, //GETSTATIC, // visitFieldInsn</color>
+    <color=#75715e>// NA, //PUTSTATIC, // -</color>
+    <color=#75715e>// NA, //GETFIELD, // -</color>
+    <color=#75715e>// NA, //PUTFIELD, // -</color>
+    <color=#75715e>// NA, //INVOKEVIRTUAL, // visitMethodInsn</color>
+    <color=#75715e>// NA, //INVOKESPECIAL, // -</color>
+    <color=#75715e>// NA, //INVOKESTATIC, // -</color>
+    <color=#75715e>// NA, //INVOKEINTERFACE, // -</color>
+    <color=#75715e>// NA, //INVOKEDYNAMIC, // visitInvokeDynamicInsn</color>
+    <color=#75715e>// 1, //NEW, // visitTypeInsn</color>
+    <color=#75715e>// 0, //NEWARRAY, // visitIntInsn</color>
+    <color=#75715e>// 0, //ANEWARRAY, // visitTypeInsn</color>
+    <color=#75715e>// 0, //ARRAYLENGTH, // visitInsn</color>
+    <color=#75715e>// NA, //ATHROW, // -</color>
+    <color=#75715e>// 0, //CHECKCAST, // visitTypeInsn</color>
+    <color=#75715e>// 0, //INSTANCEOF, // -</color>
+    <color=#75715e>// -1, //MONITORENTER, // visitInsn</color>
+    <color=#75715e>// -1, //MONITOREXIT, // -</color>
+    <color=#75715e>// NA, //WIDE, // NOT VISITED</color>
+    <color=#75715e>// NA, //MULTIANEWARRAY, // visitMultiANewArrayInsn</color>
+    <color=#75715e>// -1, //IFNULL, // visitJumpInsn</color>
+    <color=#75715e>// -1, //IFNONNULL, // -</color>
+    <color=#75715e>// NA, //GOTO_W, // -</color>
+    <color=#75715e>// NA, //JSR_W, // -</color>
+    <color=#75715e>// };</color>
+    <color=#75715e>// for (i = 0; i < b.length; ++i) {</color>
+    <color=#75715e>// System.err.print((char)('E' + b[i]));</color>
+    <color=#75715e>// }</color>
+    <color=#75715e>// System.err.println();</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/** The label (i.e. basic block) to which these input and output stack map frames correspond. */</color>
+  <color=#f8f8f2>Label</color> <color=#f8f8f2>owner</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The input stack map frame locals. */</color>
+  <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>inputLocals</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The input stack map frame stack. */</color>
+  <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>inputStack</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The output stack map frame locals. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>outputLocals</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/** The output stack map frame stack. */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>outputStack</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Relative size of the output stack. The exact semantics of this field depends on the algorithm</color>
+<color=#75715e>   * that is used.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When only the maximum stack size is computed, this field is the size of the output stack</color>
+<color=#75715e>   * relatively to the top of the input stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * <p>When the stack map frames are completely computed, this field is the actual number of types</color>
+<color=#75715e>   * in {@link #outputStack}.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>outputStackTop</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Number of types that are initialized in the basic block.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @see #initializations</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#f8f8f2>initializationCount</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * The types that are initialized in the basic block. A constructor invocation on an UNINITIALIZED</color>
+<color=#75715e>   * or UNINITIALIZED_THIS type must replace <i>every occurence</i> of this type in the local</color>
+<color=#75715e>   * variables and in the operand stack. This cannot be done during the first phase of the algorithm</color>
+<color=#75715e>   * since, during this phase, the local variables and the operand stack are not completely</color>
+<color=#75715e>   * computed. It is therefore necessary to store the types on which constructors are invoked in the</color>
+<color=#75715e>   * basic block, in order to do this replacement during the second phase of the algorithm, where</color>
+<color=#75715e>   * the frames are fully computed. Note that this array can contain types that are relative to</color>
+<color=#75715e>   * input locals or to the input stack (see below for the description of the algorithm).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>initializations</color><color=#f8f8f2>;</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the output frame local variable type at the given index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param local the index of the local that must be returned.</color>
+<color=#75715e>   * @return the output frame local variable type at the given index.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>get</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>local</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputLocals</color> <color=#f92672>==</color> <color=#66d9ef>null</color> <color=#f92672>||</color> <color=#f8f8f2>local</color> <color=#f92672>>=</color> <color=#f8f8f2>outputLocals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// this local has never been assigned in this basic block,</color>
+      <color=#75715e>// so it is still equal to its value in the input frame</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>LOCAL</color> <color=#f92672>|</color> <color=#f8f8f2>local</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>outputLocals</color><color=#f92672>[</color><color=#f8f8f2>local</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// this local has never been assigned in this basic block,</color>
+        <color=#75715e>// so it is still equal to its value in the input frame</color>
+        <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>outputLocals</color><color=#f92672>[</color><color=#f8f8f2>local</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>LOCAL</color> <color=#f92672>|</color> <color=#f8f8f2>local</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Sets the output frame local variable type at the given index.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param local the index of the local that must be set.</color>
+<color=#75715e>   * @param type the value of the local that must be set.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>set</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>local</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// creates and/or resizes the output local variables array if necessary</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputLocals</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputLocals</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>10</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>outputLocals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>local</color> <color=#f92672>>=</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>local</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>outputLocals</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>outputLocals</color> <color=#f92672>=</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>// sets the local variable</color>
+    <color=#f8f8f2>outputLocals</color><color=#f92672>[</color><color=#f8f8f2>local</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Pushes a new type onto the output frame stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param type the type that must be pushed.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>push</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// creates and/or resizes the output stack array if necessary</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputStack</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputStack</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>10</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>outputStack</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputStackTop</color> <color=#f92672>>=</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>outputStackTop</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>outputStack</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>outputStack</color> <color=#f92672>=</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>// pushes the type on the output stack</color>
+    <color=#f8f8f2>outputStack</color><color=#f92672>[</color><color=#f8f8f2>outputStackTop</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>;</color>
+    <color=#75715e>// updates the maximun height reached by the output stack, if needed</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>top</color> <color=#f92672>=</color> <color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>inputStackTop</color> <color=#f92672>+</color> <color=#f8f8f2>outputStackTop</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>top</color> <color=#f92672>></color> <color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>outputStackMax</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>outputStackMax</color> <color=#f92672>=</color> <color=#f8f8f2>top</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Pushes a new type onto the output frame stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param desc the descriptor of the type to be pushed. Can also be a method descriptor (in this</color>
+<color=#75715e>   *     case this method pushes its return type onto the output frame stack).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>push</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>desc</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>desc</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>type</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Returns the int encoding of the given type.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param desc a type descriptor.</color>
+<color=#75715e>   * @return the int encoding of the given type.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>int</color> <color=#a6e22e>type</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>desc</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>String</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>index</color> <color=#f92672>=</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#e6db74>'('</color> <color=#f92672>?</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>indexOf</color><color=#f8f8f2>(</color><color=#e6db74>')'</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#ae81ff>1</color> <color=#f8f8f2>:</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'V'</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'Z'</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'C'</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'B'</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'S'</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'I'</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>INTEGER</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'F'</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>FLOAT</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'J'</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>LONG</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'D'</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#e6db74>'L'</color><color=#f8f8f2>:</color>
+        <color=#75715e>// stores the internal name, not the descriptor!</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>index</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>t</color><color=#f8f8f2>);</color>
+        <color=#75715e>// case '[':</color>
+      <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+        <color=#75715e>// extracts the dimensions and the element type</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>dims</color> <color=#f92672>=</color> <color=#f8f8f2>index</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#f8f8f2>dims</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#e6db74>'['</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f92672>++</color><color=#f8f8f2>dims</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#f8f8f2>dims</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'Z'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>BOOLEAN</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'C'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>CHAR</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'B'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>BYTE</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'S'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>SHORT</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'I'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>INTEGER</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'F'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>FLOAT</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'J'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>LONG</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#e6db74>'D'</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>;</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+            <color=#75715e>// case 'L':</color>
+          <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+            <color=#75715e>// stores the internal name, not the descriptor</color>
+            <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>substring</color><color=#f8f8f2>(</color><color=#f8f8f2>dims</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>()</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>data</color> <color=#f92672>=</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>t</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>(</color><color=#f8f8f2>dims</color> <color=#f92672>-</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f92672><<</color> <color=#ae81ff>28</color> <color=#f92672>|</color> <color=#f8f8f2>data</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Pops a type from the output frame stack and returns its value.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @return the type that has been popped from the output frame stack.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>pop</color><color=#f8f8f2>()</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputStackTop</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>outputStack</color><color=#f92672>[--</color><color=#f8f8f2>outputStackTop</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if the output frame stack is empty, pops from the input stack</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>STACK</color> <color=#f92672>|</color> <color=#f92672>-</color><color=#f8f8f2>(</color><color=#f92672>--</color><color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>inputStackTop</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Pops the given number of types from the output frame stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param elements the number of types that must be popped.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>pop</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>elements</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputStackTop</color> <color=#f92672>>=</color> <color=#f8f8f2>elements</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>outputStackTop</color> <color=#f92672>-=</color> <color=#f8f8f2>elements</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if the number of elements to be popped is greater than the number</color>
+      <color=#75715e>// of elements in the output stack, clear it, and pops the remaining</color>
+      <color=#75715e>// elements from the input stack.</color>
+      <color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>inputStackTop</color> <color=#f92672>-=</color> <color=#f8f8f2>elements</color> <color=#f92672>-</color> <color=#f8f8f2>outputStackTop</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>outputStackTop</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Pops a type from the output frame stack.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param desc the descriptor of the type to be popped. Can also be a method descriptor (in this</color>
+<color=#75715e>   *     case this method pops the types corresponding to the method arguments).</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>pop</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>String</color> <color=#f8f8f2>desc</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>char</color> <color=#f8f8f2>c</color> <color=#f92672>=</color> <color=#f8f8f2>desc</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>);</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'('</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>pop</color><color=#f8f8f2>((</color><color=#f8f8f2>Type</color><color=#f8f8f2>.</color><color=#a6e22e>getArgumentsAndReturnSizes</color><color=#f8f8f2>(</color><color=#f8f8f2>desc</color><color=#f8f8f2>)</color> <color=#f92672>>></color> <color=#ae81ff>2</color><color=#f8f8f2>)</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'J'</color> <color=#f92672>||</color> <color=#f8f8f2>c</color> <color=#f92672>==</color> <color=#e6db74>'D'</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Adds a new type to the list of types on which a constructor is invoked in the basic block.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param var a type on a which a constructor is invoked.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>void</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>var</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#75715e>// creates and/or resizes the initializations array if necessary</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initializations</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>initializations</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>2</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>n</color> <color=#f92672>=</color> <color=#f8f8f2>initializations</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initializationCount</color> <color=#f92672>>=</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>max</color><color=#f8f8f2>(</color><color=#f8f8f2>initializationCount</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#ae81ff>2</color> <color=#f92672>*</color> <color=#f8f8f2>n</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>System</color><color=#f8f8f2>.</color><color=#a6e22e>arraycopy</color><color=#f8f8f2>(</color><color=#f8f8f2>initializations</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>,</color> <color=#f8f8f2>n</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>initializations</color> <color=#f92672>=</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#75715e>// stores the type to be initialized</color>
+    <color=#f8f8f2>initializations</color><color=#f92672>[</color><color=#f8f8f2>initializationCount</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>var</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Replaces the given type with the appropriate type if it is one of the types on which a</color>
+<color=#75715e>   * constructor is invoked in the basic block.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param t a type</color>
+<color=#75715e>   * @return t or, if t is one of the types on which a constructor is invoked in the basic block,</color>
+<color=#75715e>   *     the type corresponding to this constructor.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>int</color> <color=#a6e22e>init</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>t</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>UNINITIALIZED_THIS</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>thisName</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DIM</color> <color=#f92672>|</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>))</color> <color=#f92672>==</color> <color=#f8f8f2>UNINITIALIZED</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>String</color> <color=#f8f8f2>type</color> <color=#f92672>=</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>typeTable</color><color=#f92672>[</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_VALUE</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>strVal1</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>type</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672><</color> <color=#f8f8f2>initializationCount</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>j</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>u</color> <color=#f92672>=</color> <color=#f8f8f2>initializations</color><color=#f92672>[</color><color=#f8f8f2>j</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>dim</color> <color=#f92672>=</color> <color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>kind</color> <color=#f92672>=</color> <color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>KIND</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>LOCAL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>u</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>STACK</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>u</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputStack</color><color=#f92672>[</color><color=#f8f8f2>inputStack</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>u</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Initializes the input frame of the first basic block from the method descriptor.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param access the access flags of the method to which this label belongs.</color>
+<color=#75715e>   * @param args the formal parameter types of this method.</color>
+<color=#75715e>   * @param maxLocals the maximum number of local variables of this method.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>initInputFrame</color><color=#f8f8f2>(</color>
+      <color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>access</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Type</color><color=#f92672>[]</color> <color=#f8f8f2>args</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>maxLocals</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#f8f8f2>inputLocals</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>maxLocals</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>inputStack</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>0</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>access</color> <color=#f92672>&</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ACC_STATIC</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>access</color> <color=#f92672>&</color> <color=#f8f8f2>MethodWriter</color><color=#f8f8f2>.</color><color=#a6e22e>ACC_CONSTRUCTOR</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>thisName</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>UNINITIALIZED_THIS</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#66d9ef>int</color> <color=#f8f8f2>j</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>j</color> <color=#f92672><</color> <color=#f8f8f2>args</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>j</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>int</color> <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>type</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>args</color><color=#f92672>[</color><color=#f8f8f2>j</color><color=#f92672>]</color><color=#f8f8f2>.</color><color=#a6e22e>getDescriptor</color><color=#f8f8f2>());</color>
+      <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>while</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>maxLocals</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>++]</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Simulates the action of the given instruction on the output stack frame.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param opcode the opcode of the instruction.</color>
+<color=#75715e>   * @param arg the operand of the instruction, if any.</color>
+<color=#75715e>   * @param cw the class writer to which this label belongs.</color>
+<color=#75715e>   * @param item the operand of the instructions, if any.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>void</color> <color=#a6e22e>execute</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>opcode</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>arg</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Item</color> <color=#f8f8f2>item</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>t1</color><color=#f8f8f2>,</color> <color=#f8f8f2>t2</color><color=#f8f8f2>,</color> <color=#f8f8f2>t3</color><color=#f8f8f2>,</color> <color=#f8f8f2>t4</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>NOP</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INEG</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LNEG</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FNEG</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DNEG</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2B</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2C</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2S</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>GOTO</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>RETURN</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ACONST_NULL</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>NULL</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_M1</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_0</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_1</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_2</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_3</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_4</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ICONST_5</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>BIPUSH</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>SIPUSH</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ILOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LCONST_0</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LCONST_1</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LLOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FCONST_0</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FCONST_1</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FCONST_2</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FLOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DCONST_0</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DCONST_1</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DLOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LDC</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>type</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>INT</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>LONG</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>FLOAT</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>DOUBLE</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>CLASS</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/Class"</color><color=#f8f8f2>));</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>STR</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/String"</color><color=#f8f8f2>));</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>ClassWriter</color><color=#f8f8f2>.</color><color=#a6e22e>MTYPE</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/invoke/MethodType"</color><color=#f8f8f2>));</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+            <color=#75715e>// case ClassWriter.HANDLE_BASE + [1..9]:</color>
+          <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/invoke/MethodHandle"</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ALOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IALOAD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>BALOAD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>CALOAD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>SALOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LALOAD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>D2L</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FALOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DALOAD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>L2D</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>AALOAD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ELEMENT_OF</color> <color=#f92672>+</color> <color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ISTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FSTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ASTORE</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>,</color> <color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+          <color=#75715e>// if t2 is of kind STACK or LOCAL we cannot know its size!</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t2</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>t2</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t2</color> <color=#f92672>&</color> <color=#f8f8f2>KIND</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#f8f8f2>BASE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>t2</color> <color=#f92672>|</color> <color=#f8f8f2>TOP_IF_LONG_OR_DOUBLE</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LSTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DSTORE</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>,</color> <color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>+</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>get</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>);</color>
+          <color=#75715e>// if t2 is of kind STACK or LOCAL we cannot know its size!</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t2</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>t2</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t2</color> <color=#f92672>&</color> <color=#f8f8f2>KIND</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#f8f8f2>BASE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color> <color=#f92672>-</color> <color=#ae81ff>1</color><color=#f8f8f2>,</color> <color=#f8f8f2>t2</color> <color=#f92672>|</color> <color=#f8f8f2>TOP_IF_LONG_OR_DOUBLE</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>BASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>CASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>SASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>AASTORE</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LASTORE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DASTORE</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>POP</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFEQ</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFNE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFLT</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFGE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFGT</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFLE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IRETURN</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FRETURN</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ARETURN</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>TABLESWITCH</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LOOKUPSWITCH</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ATHROW</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>MONITORENTER</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>MONITOREXIT</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFNULL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IFNONNULL</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>POP2</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPEQ</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPNE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPLT</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPGE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPGT</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ICMPLE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ACMPEQ</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IF_ACMPNE</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LRETURN</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DRETURN</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP_X1</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP_X2</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t3</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t3</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP2</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP2_X1</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t3</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t3</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DUP2_X2</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t3</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t4</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t4</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t3</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>SWAP</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>t2</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>t2</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IADD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ISUB</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IMUL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IDIV</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IREM</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IAND</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IOR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IXOR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ISHL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ISHR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IUSHR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>L2I</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>D2I</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FCMPL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FCMPG</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LADD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LSUB</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LMUL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LDIV</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LREM</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LAND</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LOR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LXOR</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FADD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FSUB</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FMUL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FDIV</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>FREM</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>L2F</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>D2F</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DADD</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DSUB</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DMUL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DDIV</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DREM</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LSHL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LSHR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LUSHR</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>3</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>IINC</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>set</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>,</color> <color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2L</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>F2L</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2F</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>I2D</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>F2D</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>TOP</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>F2I</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ARRAYLENGTH</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INSTANCEOF</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>LCMP</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DCMPL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>DCMPG</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>4</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>JSR</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>RET</color><color=#f8f8f2>:</color>
+        <color=#66d9ef>throw</color> <color=#66d9ef>new</color> <color=#f8f8f2>RuntimeException</color><color=#f8f8f2>(</color><color=#e6db74>"JSR/RET are not supported with computeFrames option"</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>GETSTATIC</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>PUTSTATIC</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>GETFIELD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#ae81ff>1</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>PUTFIELD</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKEVIRTUAL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKESPECIAL</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKESTATIC</color><color=#f8f8f2>:</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKEINTERFACE</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color> <color=#f92672>!=</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKESTATIC</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t1</color> <color=#f92672>=</color> <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>opcode</color> <color=#f92672>==</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKESPECIAL</color> <color=#f92672>&&</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal2</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#e6db74>'<'</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>t1</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal3</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>INVOKEDYNAMIC</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal2</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal2</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>NEW</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>UNINITIALIZED</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addUninitializedType</color><color=#f8f8f2>(</color><color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal1</color><color=#f8f8f2>,</color> <color=#f8f8f2>arg</color><color=#f8f8f2>));</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>NEWARRAY</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>switch</color> <color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_BOOLEAN</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>BOOLEAN</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_CHAR</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>CHAR</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_BYTE</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>BYTE</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_SHORT</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>SHORT</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_INT</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>INTEGER</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_FLOAT</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>FLOAT</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>T_DOUBLE</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+            <color=#75715e>// case Opcodes.T_LONG:</color>
+          <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+            <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>LONG</color><color=#f8f8f2>);</color>
+            <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>ANEWARRAY</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>String</color> <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#e6db74>'['</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#e6db74>'['</color> <color=#f92672>+</color> <color=#f8f8f2>s</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>ARRAY_OF</color> <color=#f92672>|</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>case</color> <color=#f8f8f2>Opcodes</color><color=#f8f8f2>.</color><color=#a6e22e>CHECKCAST</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal1</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>();</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>.</color><color=#a6e22e>charAt</color><color=#f8f8f2>(</color><color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#e6db74>'['</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>s</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#f8f8f2>s</color><color=#f8f8f2>));</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+        <color=#75715e>// case Opcodes.MULTIANEWARRAY:</color>
+      <color=#66d9ef>default</color><color=#f8f8f2>:</color>
+        <color=#f8f8f2>pop</color><color=#f8f8f2>(</color><color=#f8f8f2>arg</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>push</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>item</color><color=#f8f8f2>.</color><color=#a6e22e>strVal1</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>break</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Merges the input frame of the given basic block with the input and output frames of this basic</color>
+<color=#75715e>   * block. Returns <tt>true</tt> if the input frame of the given label has been changed by this</color>
+<color=#75715e>   * operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param frame the basic block whose input frame must be updated.</color>
+<color=#75715e>   * @param edge the kind of the {@link Edge} between this label and 'label'. See {@link Edge#info}.</color>
+<color=#75715e>   * @return <tt>true</tt> if the input frame of the given label has been changed by this operation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>boolean</color> <color=#a6e22e>merge</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#f8f8f2>Frame</color> <color=#f8f8f2>frame</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>edge</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>boolean</color> <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>i</color><color=#f8f8f2>,</color> <color=#f8f8f2>s</color><color=#f8f8f2>,</color> <color=#f8f8f2>dim</color><color=#f8f8f2>,</color> <color=#f8f8f2>kind</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>nLocal</color> <color=#f92672>=</color> <color=#f8f8f2>inputLocals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>nStack</color> <color=#f92672>=</color> <color=#f8f8f2>inputStack</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputLocals</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputLocals</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>nLocal</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nLocal</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>outputLocals</color> <color=#f92672>!=</color> <color=#66d9ef>null</color> <color=#f92672>&&</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>outputLocals</color><color=#f8f8f2>.</color><color=#a6e22e>length</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>outputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>dim</color> <color=#f92672>=</color> <color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>kind</color> <color=#f92672>=</color> <color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>KIND</color><color=#f8f8f2>;</color>
+          <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>BASE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+            <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+          <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>LOCAL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputStack</color><color=#f92672>[</color><color=#f8f8f2>nStack</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+            <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>TOP_IF_LONG_OR_DOUBLE</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+              <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+            <color=#f8f8f2>}</color>
+          <color=#f8f8f2>}</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initializations</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>|=</color> <color=#f8f8f2>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputLocals</color><color=#f8f8f2>,</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>edge</color> <color=#f92672>></color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nLocal</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>changed</color> <color=#f92672>|=</color> <color=#f8f8f2>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputLocals</color><color=#f8f8f2>,</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#ae81ff>1</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>|=</color> <color=#f8f8f2>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>edge</color><color=#f8f8f2>,</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color><color=#f8f8f2>,</color> <color=#ae81ff>0</color><color=#f8f8f2>);</color>
+      <color=#66d9ef>return</color> <color=#f8f8f2>changed</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>int</color> <color=#f8f8f2>nInputStack</color> <color=#f92672>=</color> <color=#f8f8f2>inputStack</color><color=#f8f8f2>.</color><color=#a6e22e>length</color> <color=#f92672>+</color> <color=#f8f8f2>owner</color><color=#f8f8f2>.</color><color=#a6e22e>inputStackTop</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color> <color=#f92672>==</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color> <color=#f92672>=</color> <color=#66d9ef>new</color> <color=#66d9ef>int</color><color=#f92672>[</color><color=#f8f8f2>nInputStack</color> <color=#f92672>+</color> <color=#f8f8f2>outputStackTop</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>=</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>nInputStack</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>inputStack</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initializations</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>|=</color> <color=#f8f8f2>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color><color=#f8f8f2>,</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>for</color> <color=#f8f8f2>(</color><color=#f8f8f2>i</color> <color=#f92672>=</color> <color=#ae81ff>0</color><color=#f8f8f2>;</color> <color=#f8f8f2>i</color> <color=#f92672><</color> <color=#f8f8f2>outputStackTop</color><color=#f8f8f2>;</color> <color=#f92672>++</color><color=#f8f8f2>i</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>s</color> <color=#f92672>=</color> <color=#f8f8f2>outputStack</color><color=#f92672>[</color><color=#f8f8f2>i</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>dim</color> <color=#f92672>=</color> <color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>kind</color> <color=#f92672>=</color> <color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>KIND</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>BASE</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>s</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>kind</color> <color=#f92672>==</color> <color=#f8f8f2>LOCAL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputLocals</color><color=#f92672>[</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>dim</color> <color=#f92672>+</color> <color=#f8f8f2>inputStack</color><color=#f92672>[</color><color=#f8f8f2>nStack</color> <color=#f92672>-</color> <color=#f8f8f2>(</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>VALUE</color><color=#f8f8f2>)</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>s</color> <color=#f92672>&</color> <color=#f8f8f2>TOP_IF_LONG_OR_DOUBLE</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color> <color=#f92672>&&</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>LONG</color> <color=#f92672>||</color> <color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>DOUBLE</color><color=#f8f8f2>))</color> <color=#f8f8f2>{</color>
+          <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>initializations</color> <color=#f92672>!=</color> <color=#66d9ef>null</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>init</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>changed</color> <color=#f92672>|=</color> <color=#f8f8f2>merge</color><color=#f8f8f2>(</color><color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#f8f8f2>frame</color><color=#f8f8f2>.</color><color=#a6e22e>inputStack</color><color=#f8f8f2>,</color> <color=#f8f8f2>nInputStack</color> <color=#f92672>+</color> <color=#f8f8f2>i</color><color=#f8f8f2>);</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#f8f8f2>changed</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+
+  <color=#75715e>/**</color>
+<color=#75715e>   * Merges the type at the given index in the given type array with the given type. Returns</color>
+<color=#75715e>   * <tt>true</tt> if the type array has been modified by this operation.</color>
+<color=#75715e>   *</color>
+<color=#75715e>   * @param cw the ClassWriter to which this label belongs.</color>
+<color=#75715e>   * @param t the type with which the type array element must be merged.</color>
+<color=#75715e>   * @param types an array of types.</color>
+<color=#75715e>   * @param index the index of the type that must be merged in 'types'.</color>
+<color=#75715e>   * @return <tt>true</tt> if the type array has been modified by this operation.</color>
+<color=#75715e>   */</color>
+  <color=#66d9ef>private</color> <color=#66d9ef>static</color> <color=#66d9ef>boolean</color> <color=#a6e22e>merge</color><color=#f8f8f2>(</color><color=#66d9ef>final</color> <color=#f8f8f2>ClassWriter</color> <color=#f8f8f2>cw</color><color=#f8f8f2>,</color> <color=#66d9ef>int</color> <color=#f8f8f2>t</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color><color=#f92672>[]</color> <color=#f8f8f2>types</color><color=#f8f8f2>,</color> <color=#66d9ef>final</color> <color=#66d9ef>int</color> <color=#f8f8f2>index</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>u</color> <color=#f92672>=</color> <color=#f8f8f2>types</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>==</color> <color=#f8f8f2>t</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if the types are equal, merge(u,t)=u, so there is no change</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f92672>~</color><color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>NULL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>==</color> <color=#f8f8f2>NULL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+      <color=#f8f8f2>t</color> <color=#f92672>=</color> <color=#f8f8f2>NULL</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>==</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if types[index] has never been assigned, merge(u,t)=t</color>
+      <color=#f8f8f2>types</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>t</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>int</color> <color=#f8f8f2>v</color><color=#f8f8f2>;</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if u is a reference type of any dimension</color>
+      <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>==</color> <color=#f8f8f2>NULL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if t is the NULL type, merge(u,t)=u, so there is no change</color>
+        <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DIM</color> <color=#f92672>|</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>))</color> <color=#f92672>==</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>(</color><color=#f8f8f2>DIM</color> <color=#f92672>|</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)))</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if t and u have the same dimension and same base kind</color>
+        <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+          <color=#75715e>// if t is also a reference type, and if u and t have the</color>
+          <color=#75715e>// same dimension merge(u,t) = dim(t) | common parent of the</color>
+          <color=#75715e>// element types of u and t</color>
+          <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>|</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>getMergedType</color><color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_VALUE</color><color=#f8f8f2>,</color> <color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_VALUE</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+          <color=#75715e>// if u and t are array types, but not with the same element</color>
+          <color=#75715e>// type, merge(u,t) = dim(u) - 1 | java/lang/Object</color>
+          <color=#66d9ef>int</color> <color=#f8f8f2>vdim</color> <color=#f92672>=</color> <color=#f8f8f2>ELEMENT_OF</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>);</color>
+          <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>vdim</color> <color=#f92672>|</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/Object"</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>}</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>((</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if t is any other reference or array type, the merged type</color>
+        <color=#75715e>// is min(udim, tdim) | java/lang/Object, where udim is the</color>
+        <color=#75715e>// array dimension of u, minus 1 if u is an array type with a</color>
+        <color=#75715e>// primitive element type (and similarly for tdim).</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>tdim</color> <color=#f92672>=</color> <color=#f8f8f2>(((</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>ELEMENT_OF</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>);</color>
+        <color=#66d9ef>int</color> <color=#f8f8f2>udim</color> <color=#f92672>=</color> <color=#f8f8f2>(((</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#ae81ff>0</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color><color=#f8f8f2>)</color> <color=#f92672>?</color> <color=#ae81ff>0</color> <color=#f8f8f2>:</color> <color=#f8f8f2>ELEMENT_OF</color><color=#f8f8f2>)</color> <color=#f92672>+</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>);</color>
+        <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>Math</color><color=#f8f8f2>.</color><color=#a6e22e>min</color><color=#f8f8f2>(</color><color=#f8f8f2>tdim</color><color=#f8f8f2>,</color> <color=#f8f8f2>udim</color><color=#f8f8f2>)</color> <color=#f92672>|</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>|</color> <color=#f8f8f2>cw</color><color=#f8f8f2>.</color><color=#a6e22e>addType</color><color=#f8f8f2>(</color><color=#e6db74>"java/lang/Object"</color><color=#f8f8f2>);</color>
+      <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+        <color=#75715e>// if t is any other type, merge(u,t)=TOP</color>
+        <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+      <color=#f8f8f2>}</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>==</color> <color=#f8f8f2>NULL</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if u is the NULL type, merge(u,t)=t,</color>
+      <color=#75715e>// or TOP if t is not a reference type</color>
+      <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>BASE_KIND</color><color=#f8f8f2>)</color> <color=#f92672>==</color> <color=#f8f8f2>OBJECT</color> <color=#f92672>||</color> <color=#f8f8f2>(</color><color=#f8f8f2>t</color> <color=#f92672>&</color> <color=#f8f8f2>DIM</color><color=#f8f8f2>)</color> <color=#f92672>!=</color> <color=#ae81ff>0</color> <color=#f92672>?</color> <color=#f8f8f2>t</color> <color=#f8f8f2>:</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color> <color=#66d9ef>else</color> <color=#f8f8f2>{</color>
+      <color=#75715e>// if u is any other type, merge(u,t)=TOP whatever t</color>
+      <color=#f8f8f2>v</color> <color=#f92672>=</color> <color=#f8f8f2>TOP</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>if</color> <color=#f8f8f2>(</color><color=#f8f8f2>u</color> <color=#f92672>!=</color> <color=#f8f8f2>v</color><color=#f8f8f2>)</color> <color=#f8f8f2>{</color>
+      <color=#f8f8f2>types</color><color=#f92672>[</color><color=#f8f8f2>index</color><color=#f92672>]</color> <color=#f92672>=</color> <color=#f8f8f2>v</color><color=#f8f8f2>;</color>
+      <color=#66d9ef>return</color> <color=#66d9ef>true</color><color=#f8f8f2>;</color>
+    <color=#f8f8f2>}</color>
+    <color=#66d9ef>return</color> <color=#66d9ef>false</color><color=#f8f8f2>;</color>
+  <color=#f8f8f2>}</color>
+<color=#f8f8f2>}</color>
