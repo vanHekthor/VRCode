@@ -222,8 +222,12 @@ namespace VRVis.Spawner.File {
 
         public LineHighlight SpawnMethodHighlight(int startLine, int endLine) {
             string relativeFilePath = codeFile.GetNode().GetRelativePath();
-            var highlight = SpawnLineHighlight(startLine, endLine);
 
+            var key = Tuple.Create(relativeFilePath, startLine);
+
+            if (HighlightedMethods.ContainsKey(key)) return HighlightedMethods[key];
+
+            var highlight = SpawnLineHighlight(startLine, endLine);
             if (highlight == null) return null;
 
             AddMethodHighlight(highlight, relativeFilePath, startLine);

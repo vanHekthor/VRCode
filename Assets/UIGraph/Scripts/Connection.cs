@@ -67,7 +67,17 @@ public class Connection : MonoBehaviour {
 		ConnectionManager.AddConnection(this);        
     }
 
-	void OnDestroy() {
+    void Start() {
+        if (target[0] != null && target[1] != null) {
+            var node0 = target[0].GetComponent<CallGraphNode>();
+            var node1 = target[1].GetComponent<CallGraphNode>();
+
+            node1.AddPreviousNode(node0);
+            node0.AddNextNode(node1);
+        }    
+    }
+
+    void OnDestroy() {
 		ConnectionManager.RemoveConnection(this);
 	}
 

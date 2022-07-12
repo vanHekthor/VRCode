@@ -39,6 +39,8 @@ namespace VRVis.IO {
         /// <summary>Key = target file instance, Value = list of ids of according edges</summary>
         private Dictionary<Tuple<CodeFile, string>, HashSet<uint>> refEdges = new Dictionary<Tuple<CodeFile, string>, HashSet<uint>>();
 
+        private Dictionary<Tuple<string, string, string>, HashSet<uint>> edgesByStartEndFilePathLineNumber = new Dictionary<Tuple<string, string, string>, HashSet<uint>>(); 
+        
         /// <summary>Path of the currently loaded file</summary>
         private string curFile = "";
         private int edgesTotal = 0;
@@ -123,6 +125,20 @@ namespace VRVis.IO {
             return list;
         }
 
+        public IEnumerable<Edge> GetEdges(string relativeStartFilePath, int startFileLineNumber, string relativeEndFilePath, int endFileLineNumber, string configName) {
+            string startMethodString = $"{relativeStartFilePath}:{startFileLineNumber}";
+            string endMethodString = $"{relativeEndFilePath}:{endFileLineNumber}";
+            var startEndKey = Tuple.Create(startMethodString, endMethodString, configName);
+
+            List<Edge> list = new List<Edge>();
+            foreach (uint edgeID in edgesByStartEndFilePathLineNumber[startEndKey]) {
+                if (!edges.ContainsKey(edgeID)) { continue; }
+                list.Add(edges[edgeID]);
+            }
+
+            return list;
+        }
+
         /// <summary>Returns the edge or null if not found.</summary>
         public Edge GetEdgeByID(uint id) {
             if (!edges.ContainsKey(id)) { return null; }
@@ -181,6 +197,7 @@ namespace VRVis.IO {
             edgeTypes.Clear();
             fileEdges.Clear();
             refEdges.Clear();
+            edgesByStartEndFilePathLineNumber.Clear();
 
             edgeID = 0;
             edgesTotal = 0;
@@ -288,7 +305,18 @@ namespace VRVis.IO {
                 eType.valueMinMax.Update(edgeInstance.GetValue());
 
                 // add edge instance
-                edges.Add(edgeID, edgeInstance);
+                edges.Add(edgeID, edgeInstance);                
+
+                // add edge instance to edgesByStartEndFilePathLineNumber dict
+                string startMethodString = $"{edgeInstance.GetFrom().file}:{edgeInstance.GetFrom().callMethodLines.from}";
+                string endMethodString = $"{edgeInstance.GetTo().file}:{edgeInstance.GetTo().lines.from}";
+
+                var startEndKey = Tuple.Create(startMethodString, endMethodString, parentDirName);
+                if (!edgesByStartEndFilePathLineNumber.ContainsKey(startEndKey)) {
+                    edgesByStartEndFilePathLineNumber.Add(startEndKey, new HashSet<uint>());
+                }
+                edgesByStartEndFilePathLineNumber[startEndKey].Add(edgeID);
+               
                 edgeID++;
 
                 // local counter

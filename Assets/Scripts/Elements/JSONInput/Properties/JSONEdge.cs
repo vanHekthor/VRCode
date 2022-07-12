@@ -23,7 +23,8 @@ namespace VRVis.JSON.Serialization {
         public class NodeLocation {
             public string file;
             public Range lines;
-            public Range columns;            
+            public Range columns;
+            public Range callMethodLines;
         }
 
         public string type;

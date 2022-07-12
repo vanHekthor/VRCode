@@ -6,6 +6,7 @@ using UnityEngine.Experimental.VFX;
 using VRVis.Effects;
 using VRVis.Elements;
 using VRVis.IO;
+using VRVis.IO.Features;
 using VRVis.Mappings;
 using VRVis.Mappings.Methods;
 using VRVis.RegionProperties;
@@ -258,11 +259,26 @@ namespace VRVis.Spawner.Edges {
             if (midHoverPoint) { Destroy(midHoverPoint); }
             if (endHoverPoint) { Destroy(endHoverPoint); }
 
+            var fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+            var edgeLoader = ApplicationLoader.GetInstance().GetEdgeLoader();
+            var similarEdges = edgeLoader.GetEdges(edge.GetFrom().file, edge.GetFrom().callMethodLines.from, edge.GetTo().file, edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
+
+            foreach (var similarEdge in similarEdges) {
+                if (edge.GetID() == similarEdge.GetID()) continue;
+                if (fs.edgeSpawner.EdgeIsSpawned(similarEdge)) return;
+            }
+
             if (LineHighlight != null) {
                 var fileInstance = GetEndCodeFileInstance();
                 toWindowRefs.RemoveMethodHighlight(toWindowRefs.GetCodeFile().GetNode().GetRelativePath(), edge.GetTo().lines.from);
                 Destroy(LineHighlight.gameObject);
             }
+
+            var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+            string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
+            var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
+            connectionComponent.points[0].color = Color.white;
+            connectionComponent.points[1].color = Color.white;
         }
 
 

@@ -8,6 +8,7 @@ using VRVis.Elements;
 using VRVis.IO;
 using VRVis.IO.Features;
 using VRVis.Spawner;
+using VRVis.Spawner.Edges;
 using VRVis.Spawner.File;
 using VRVis.Utilities;
 
@@ -24,13 +25,31 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
 
     public TextMeshProUGUI label;
 
-    private CodeFileReferences refFile;
+    public bool RefMethodIsOpen { get; private set; }
+
+    public CodeFileReferences RefFile { get; private set; }
     private bool refFileIsOpen = false;
 
     public string Id { get; private set; }
+    public HashSet<CallGraphNode> PreviousNodes {  get; private set; }
+    public HashSet<CallGraphNode> NextNodes { get; private set; }
 
     public void SetId(string id) {
         Id = id;
+    }
+
+    public void AddPreviousNode(CallGraphNode node) {
+        if (PreviousNodes == null) {
+            PreviousNodes = new HashSet<CallGraphNode>();
+        }
+        PreviousNodes.Add(node);
+    }
+
+    public void AddNextNode(CallGraphNode node) {
+        if (NextNodes == null) {
+            NextNodes = new HashSet<CallGraphNode>();
+        }
+        NextNodes.Add(node);
     }
 
     private void Start() {
@@ -43,8 +62,9 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
         label.SetText(text);
     }
 
-    public void ChangeBackgroundColor(Color color) {
+    public void ChangeState(Color color, bool refMethodIsOpen) {
         backgroundImage.color = color;
+        RefMethodIsOpen = refMethodIsOpen;
     }
 
     public void OnPointerClick(PointerEventData eventData) {
@@ -58,7 +78,54 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
 
         LineHighlight highlight = openedFileInstance.SpawnMethodHighlight(methodStartLine, methodEndLine);
 
-        openedFileInstance.ScrollTo(highlight.GetComponent<RectTransform>());        
+        openedFileInstance.ScrollTo(highlight.GetComponent<RectTransform>());
+
+        //if (PreviousNodes == null && NextNodes == null) return;
+
+        //if (PreviousNodes != null) {
+        //    foreach (var previousNode in PreviousNodes) {
+        //        if (previousNode.RefMethodIsOpen) {
+        //            var edgeLoader = ApplicationLoader.GetInstance().GetEdgeLoader();
+        //            var edges = ApplicationLoader.GetInstance().GetEdgeLoader().GetEdges(
+        //                previousNode.filePath,
+        //                previousNode.methodStartLine,
+        //                filePath,
+        //                methodStartLine,
+        //                ConfigManager.GetInstance().selectedConfig);
+
+        //            foreach (var edge in edges) {
+        //                var edgeConnection = SpawnEdgeConnection(previousNode.RefFile, RefFile, edge);
+        //                edgeConnection.LineHighlight = highlight;
+        //            }
+        //        }
+        //    }
+        //}
+
+        //if (NextNodes != null) {
+        //    foreach (var nextNode in NextNodes) {
+        //        if (nextNode.RefMethodIsOpen) {
+        //            var edgeLoader = ApplicationLoader.GetInstance().GetEdgeLoader();
+        //            var edges = ApplicationLoader.GetInstance().GetEdgeLoader().GetEdges(
+        //                filePath,
+        //                methodStartLine,
+        //                nextNode.filePath,
+        //                nextNode.methodStartLine,
+        //                ConfigManager.GetInstance().selectedConfig);
+
+        //            foreach (var edge in edges) {
+        //                var edgeConnection = SpawnEdgeConnection(RefFile, nextNode.RefFile, edge);
+        //                edgeConnection.LineHighlight = highlight;
+        //            }
+        //        }
+        //    }
+        //}
+    }
+
+    private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance, Edge edge) {
+        var fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
+        var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, edge);        
+
+        return edgeConnection;
     }
 
     private void HandleCodeWindowOpenEvent(CodeFileReferences openedFileInstance) {
@@ -70,9 +137,9 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
 
         if (refFileWasSpawned) {
             refFileIsOpen = true;
-            refFile = openedFileInstance;
-            refFile.onMethodHighlightSpawned.AddListener(HandleMethodHighlightSpawnEvent);
-            refFile.onMethodHighlightRemoved.AddListener(HandleMethodHighlightRemoveEvent);
+            RefFile = openedFileInstance;
+            RefFile.onMethodHighlightSpawned.AddListener(HandleMethodHighlightSpawnEvent);
+            RefFile.onMethodHighlightRemoved.AddListener(HandleMethodHighlightRemoveEvent);
         }
     }
 
@@ -82,20 +149,20 @@ public class CallGraphNode : MonoBehaviour, IPointerClickHandler {
         bool refFileWasClosed = filePath == closedFileInstance.GetCodeFile().GetNode().GetRelativePath();
         if (refFileWasClosed) {
             refFileIsOpen = false;
-            refFile.onMethodHighlightSpawned.RemoveListener(HandleMethodHighlightSpawnEvent);
-            refFile.onMethodHighlightRemoved.RemoveListener(HandleMethodHighlightRemoveEvent);
-            ChangeBackgroundColor(DEFAULT_COLOR);
-            refFile = null;
+            RefFile.onMethodHighlightSpawned.RemoveListener(HandleMethodHighlightSpawnEvent);
+            RefFile.onMethodHighlightRemoved.RemoveListener(HandleMethodHighlightRemoveEvent);
+            ChangeState(DEFAULT_COLOR, false);
+            RefFile = null;
         }
     }
 
     private void HandleMethodHighlightSpawnEvent(string relativeFilePath, int startLine) {
         if (relativeFilePath == filePath && startLine == methodStartLine)
-            ChangeBackgroundColor(ACTIVE_COLOR);
+            ChangeState(ACTIVE_COLOR, true);
     }
 
     private void HandleMethodHighlightRemoveEvent(string relativeFilePath, int startLine) {
         if (relativeFilePath == filePath && startLine == methodStartLine)
-            ChangeBackgroundColor(DEFAULT_COLOR);
+            ChangeState(DEFAULT_COLOR, false);
     }
 }

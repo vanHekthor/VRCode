@@ -22,12 +22,15 @@ public class CallGraph : MonoBehaviour {
         edges = edgeLoader.GetEdges();
 
         foreach (var edge in edges) {
-            CreateNodesFromEdge(edge);
-            //CreateConnection(edge);
+            CreateNodeFromEdgeEnd(edge);
+        }
+
+        foreach (var edge in edges) {
+            CreateNodeFromEdgeStartAndConnect(edge);
         }
     }
 
-    private void CreateNodesFromEdge(Edge edge) {
+    private void CreateNodeFromEdgeEnd(Edge edge) {
         string filePath = edge.GetTo().file.Replace('/', '.');
         int methodStartLine = edge.GetTo().lines.from;
         int methodEndLine = edge.GetTo().lines.to;
@@ -35,10 +38,7 @@ public class CallGraph : MonoBehaviour {
         string nodeId = $"{filePath}:{methodStartLine}";
 
         if (nodes.ContainsKey(nodeId)) {
-            if (nodes[nodeId].methodStartLine < nodes[nodeId].methodEndLine) {
-                return;
-            }
-            Destroy(nodes[nodeId].gameObject);
+            return;
         }
 
         var node = Instantiate(nodePrefab);
@@ -46,33 +46,42 @@ public class CallGraph : MonoBehaviour {
         node.transform.SetParent(nodesContainer, false);        
 
         var callGraphNodeComponent = node.GetComponent<CallGraphNode>();
-        SetupNode(callGraphNodeComponent, edge.GetTo(), nodeId, edge.GetLabel());
+        SetupToNode(callGraphNodeComponent, edge.GetTo(), nodeId, edge.GetLabel());
 
-        if (!nodes.ContainsKey(nodeId)) {
-            nodes.Add(nodeId, callGraphNodeComponent);
+        nodes.Add(nodeId, callGraphNodeComponent);
+    }
+
+    private void CreateNodeFromEdgeStartAndConnect(Edge edge) {
+        string filePath = edge.GetFrom().file.Replace('/', '.');
+        int methodStartLine = edge.GetFrom().callMethodLines.from;
+        int methodEndLine = edge.GetFrom().callMethodLines.to;
+
+        string nodeId = $"{filePath}:{methodStartLine}";
+
+        CallGraphNode callGraphNodeComponent;
+        if (nodes.ContainsKey(nodeId)) {
+            callGraphNodeComponent = nodes[nodeId];
         }
         else {
-            nodes[nodeId] = callGraphNodeComponent;
+            var node = Instantiate(nodePrefab);
+            node.name = nodeId;
+            node.transform.SetParent(nodesContainer, false);
+
+            callGraphNodeComponent = node.GetComponent<CallGraphNode>();
+            SetupFromNode(callGraphNodeComponent, edge.GetFrom(), nodeId, "Call to " + edge.GetLabel());
+
+            nodes.Add(nodeId, callGraphNodeComponent);
         }
 
-        //filePath = edge.GetFrom().file.Replace('/', '.');
-        //methodStartLine = edge.GetFrom().lines.from;
-        //methodEndLine = edge.GetFrom().lines.to;
+        string targetFilePath = edge.GetTo().file.Replace('/', '.');
+        int targetMethodStartLine = edge.GetTo().lines.from;
+        string targetNodeId = $"{targetFilePath}:{targetMethodStartLine}";
 
-        //nodeId = $"{filePath}:{methodStartLine}";
+        if (!nodes.ContainsKey(targetNodeId)) return;
 
-        //if (nodes.ContainsKey(nodeId)) {
-        //    return;
-        //}
+        nodes[targetNodeId].AddPreviousNode(callGraphNodeComponent);
 
-        //node = Instantiate(nodePrefab);
-        //node.name = nodeId;
-        //node.transform.SetParent(nodesContainer, false);
-
-        //callGraphNodeComponent = node.GetComponent<CallGraphNode>();
-        //SetupNode(callGraphNodeComponent, edge.GetFrom(), nodeId, edge.GetLabel() + "-target");
-
-        //nodes.Add(nodeId, callGraphNodeComponent);
+        CreateConnection(callGraphNodeComponent, nodes[targetNodeId]);
     }
 
     public void CreateConnection(Edge edge) {
@@ -91,10 +100,35 @@ public class CallGraph : MonoBehaviour {
         connectionComponent.Edge = edge;
     }
 
-    private void SetupNode(CallGraphNode node, NodeLocation nodeLocation, string nodeId, string edgeLabel) {
+    public void CreateConnection(CallGraphNode startNode, CallGraphNode endNode) {
+        var connectionObject = Instantiate(connectionPrefab);
+        var connectionComponent = connectionObject.GetComponent<Connection>();
+
+        var startNodeRectTransform = startNode.transform.GetComponent<RectTransform>();
+        var endNodeRectTransform = endNode.transform.GetComponent<RectTransform>();
+
+        connectionComponent.target[0] = startNodeRectTransform;
+        connectionComponent.target[1] = endNodeRectTransform;
+    }
+
+    private void SetupToNode(CallGraphNode node, NodeLocation nodeLocation, string nodeId, string edgeLabel) {
         node.filePath = nodeLocation.file;
         node.methodStartLine = nodeLocation.lines.from;
         node.methodEndLine = nodeLocation.lines.to;
+        node.SetId(nodeId);
+
+        //var splitLabel = edgeLabel.Split('.');
+        //string methodCallName = splitLabel.Length == 1 ? splitLabel[0] : splitLabel[splitLabel.Length - 1];
+        string methodCallName = edgeLabel;
+        node.methodName = methodCallName;
+
+        node.ChangeNodeLabel(methodCallName);
+    }
+
+    private void SetupFromNode(CallGraphNode node, NodeLocation nodeLocation, string nodeId, string edgeLabel) {
+        node.filePath = nodeLocation.file;
+        node.methodStartLine = nodeLocation.callMethodLines.from;
+        node.methodEndLine = nodeLocation.callMethodLines.to;
         node.SetId(nodeId);
 
         //var splitLabel = edgeLabel.Split('.');
