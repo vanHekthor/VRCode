@@ -275,6 +275,9 @@ namespace VRVis.Spawner.Edges {
             }
 
             var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+
+            if (connectionManager == null) return;
+
             string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
             var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
             connectionComponent.points[0].color = Color.white;
