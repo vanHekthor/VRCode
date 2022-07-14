@@ -125,6 +125,19 @@ namespace VRVis.IO {
             return list;
         }
 
+        public IEnumerable<Edge> GetRefEdgesOfMethod(CodeFile codeFile, int endFileLineNumber, string configName) {
+            string endMethodString = $"{codeFile.GetNode().GetRelativePath()}:{endFileLineNumber}";
+            var refEdges = GetRefEdgesOfFile(codeFile, configName);
+
+            List<Edge> refEdgesOfMethod = new List<Edge>();
+            foreach (var edge in refEdges) {
+                string refEdgeEndMethodString = $"{edge.GetTo().file}:{edge.GetTo().lines.from}";
+                if (endMethodString == refEdgeEndMethodString) refEdgesOfMethod.Add(edge);
+            }
+
+            return refEdgesOfMethod;
+        }
+
         public IEnumerable<Edge> GetEdges(string relativeStartFilePath, int startFileLineNumber, string relativeEndFilePath, int endFileLineNumber, string configName) {
             string startMethodString = $"{relativeStartFilePath}:{startFileLineNumber}";
             string endMethodString = $"{relativeEndFilePath}:{endFileLineNumber}";

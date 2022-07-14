@@ -261,27 +261,43 @@ namespace VRVis.Spawner.Edges {
 
             var fs = (FileSpawner)ApplicationLoader.GetInstance().GetSpawner("FileSpawner");
             var edgeLoader = ApplicationLoader.GetInstance().GetEdgeLoader();
-            var similarEdges = edgeLoader.GetEdges(edge.GetFrom().file, edge.GetFrom().callMethodLines.from, edge.GetTo().file, edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
 
-            foreach (var similarEdge in similarEdges) {
-                if (edge.GetID() == similarEdge.GetID()) continue;
-                if (fs.edgeSpawner.EdgeIsSpawned(similarEdge)) return;
+            var edgesWithSameStartAndEndMethod = edgeLoader.GetEdges(edge.GetFrom().file, edge.GetFrom().callMethodLines.from, edge.GetTo().file, edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
+            var edgesWithSameEndMethod = edgeLoader.GetRefEdgesOfMethod(toWindowRefs.GetCodeFile(), edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
+
+            bool keepLineHighlight = false;
+            bool keepCallGraphEdgeMarking = false;
+
+            foreach (var e in edgesWithSameEndMethod) {
+                if (edge.GetID() == e.GetID()) continue;
+                if (fs.edgeSpawner.EdgeIsSpawned(e)) {
+                    keepLineHighlight = true;
+                }
             }
 
-            if (LineHighlight != null) {
+            foreach (var e in edgesWithSameStartAndEndMethod) {
+                if (edge.GetID() == e.GetID()) continue;
+                if (fs.edgeSpawner.EdgeIsSpawned(e)) {
+                    keepCallGraphEdgeMarking = true;
+                }
+            }
+
+            if (LineHighlight != null && !keepLineHighlight) {
                 var fileInstance = GetEndCodeFileInstance();
                 toWindowRefs.RemoveMethodHighlight(toWindowRefs.GetCodeFile().GetNode().GetRelativePath(), edge.GetTo().lines.from);
                 Destroy(LineHighlight.gameObject);
             }
 
-            var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+            if (!keepCallGraphEdgeMarking) {
+                var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
 
-            if (connectionManager == null) return;
+                if (connectionManager == null) return;
 
-            string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
-            var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
-            connectionComponent.points[0].color = Color.white;
-            connectionComponent.points[1].color = Color.white;
+                string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
+                var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
+                connectionComponent.points[0].color = Color.white;
+                connectionComponent.points[1].color = Color.white;
+            }
         }
 
 
