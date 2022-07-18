@@ -314,9 +314,11 @@ namespace VRVis.Spawner.File {
             Canvas.ForceUpdateCanvases();
 
             scrollRect.content.anchoredPosition =
-                    (Vector2)scrollRect.transform.InverseTransformPoint(scrollRect.content.position) * (Vector2)target.up
-                    - (Vector2)scrollRect.transform.InverseTransformPoint(target.position) * (Vector2)target.up
+                    (Vector2)scrollRect.transform.InverseTransformPoint(scrollRect.content.position)// * (Vector2)target.up
+                    - (Vector2)scrollRect.transform.InverseTransformPoint(target.position)// * (Vector2)target.up
                     - new Vector2(0, codeFile.GetLineInfo().lineHeight);
+
+            scrollRect.content.anchoredPosition = new Vector2(0, scrollRect.content.anchoredPosition.y);
         }
 
         private bool visible;
