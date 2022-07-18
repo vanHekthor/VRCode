@@ -17,6 +17,8 @@ public class InteractionScreen : MonoBehaviour {
     private Transform codePopupHolder;
     private Transform callGraphContainer;
 
+    private Vector3 originalCallGraphScale;
+
     void Awake() {
         codePopupHolder = transform.Find("CodePopups");
         if (codePopupHolder == null) {
@@ -34,7 +36,9 @@ public class InteractionScreen : MonoBehaviour {
         var callGraphContainerObject = new GameObject("CallGraphContainer");
         callGraphContainer = callGraphContainerObject.transform;
         callGraph.transform.SetParent(callGraphContainer, false);
-        callGraph.SetActive(showCallGraph);
+        //callGraph.SetActive(showCallGraph);
+        originalCallGraphScale = callGraph.transform.localScale;
+        callGraph.transform.localScale = new Vector3(0 ,0 ,0);
     }
 
     public void LinkWasClicked(List<CodeWindowLink> links) {
@@ -115,7 +119,7 @@ public class InteractionScreen : MonoBehaviour {
         if (showCallGraph) {
             UpdateCallGraphPosition();
         }
-        callGraph.SetActive(showCallGraph);
+        callGraph.transform.localScale = showCallGraph ? originalCallGraphScale : new Vector3(0, 0, 0);
     }
 
     private void UpdateCallGraphPosition() {
