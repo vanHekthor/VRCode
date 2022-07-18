@@ -38,6 +38,7 @@ namespace VRVis.IO {
 
         public bool validateAndEvaluateOnStartUp;
         public bool activateAllEdgeLinksOnStartUp;
+        public bool showPropertyInCodeOnStartUp;
 
 
         // --------------------------------------------------------------------
@@ -200,7 +201,11 @@ namespace VRVis.IO {
                 if (GetApplicationSettings().IsFeatureModelValid()) {
                     terminalInputController.ApplyVariabilityModelConfiguration(null);
                 }
+                if (showPropertyInCodeOnStartUp) {
+                    terminalInputController.ShowNFPRegionMarking(true);
+                }
             }
+
 
             // activate all edge types which means each edge gets indicated and can be displayed
             // by a link button inside the code windows at the corresponding code lines
