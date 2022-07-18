@@ -19,8 +19,8 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show debug points used for region positioning and rescaling in editor")]
         public bool showRegionDebugGizmos = false;
 
-        private const int START_COLUMN = 0;
-        private const int END_COLUMN = 3;
+        private int startColumn = -3; // TODO
+        private int endColumn = 0;
         private const string BUTTON_LABEL = "refs";
 
         private Transform refAnchorTransform;
@@ -79,6 +79,8 @@ namespace VRVis.Spawner.Edges {
 
             // set the edge this connection represents
             RefEdge = edge;
+            endColumn = edge.GetTo().columns.from - 1 - 1;
+            startColumn = endColumn - (BUTTON_LABEL.Length - 1);
 
             // the span of the enclosed connection region
             //declarationRegionSpan = edge.GetTo().lines.to - edge.GetTo().lines.from;
@@ -124,7 +126,7 @@ namespace VRVis.Spawner.Edges {
             PositionRefAnchors(
                 refAnchor.GetComponent<RectTransform>(),
                 RefEdge.GetTo().lines.from,
-                START_COLUMN,
+                startColumn,
                 DeclarationFileInstance);
 
             // get distances between left and right next to each window
@@ -173,7 +175,7 @@ namespace VRVis.Spawner.Edges {
             refButtonComponent.ButtonBody.localScale =
                 new Vector3(columnWidthToScale, refButtonComponent.ButtonBody.localScale.y, refButtonComponent.ButtonBody.localScale.z);
             // 3. stretch button to method call width
-            float stretchVal = refButtonComponent.ButtonBody.localScale.x * (END_COLUMN + 1 - START_COLUMN);
+            float stretchVal = refButtonComponent.ButtonBody.localScale.x * (endColumn + 1 - startColumn);
             refButtonComponent.ButtonBody.localScale =
                 new Vector3(stretchVal, refButtonComponent.ButtonBody.localScale.y, refButtonComponent.ButtonBody.localScale.z);
 
