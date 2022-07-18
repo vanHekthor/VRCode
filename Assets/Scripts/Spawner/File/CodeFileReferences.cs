@@ -319,6 +319,16 @@ namespace VRVis.Spawner.File {
                     - new Vector2(0, codeFile.GetLineInfo().lineHeight);
         }
 
+        private bool visible;
+        public void ToggleVisibility() {
+            visible = !visible;
+            gameObject.SetActive(visible);
+        }
+
+        public void SetVisibility(bool visible) {
+            gameObject.SetActive(visible);
+        }
+
         void OnDrawGizmos() {
             
             // draw edge point gizmos
