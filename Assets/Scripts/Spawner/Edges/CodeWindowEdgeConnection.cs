@@ -289,9 +289,16 @@ namespace VRVis.Spawner.Edges {
             }
 
             if (!keepCallGraphEdgeMarking) {
-                var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+                var edgeSpawner = ApplicationLoader.GetInstance().gameObject.GetComponent<CodeWindowEdgeSpawner>();
+                var connectionManager = edgeSpawner.connectionManager;
+                if (connectionManager == null) {
+                    connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+                }
 
-                if (connectionManager == null) return;
+                if (connectionManager == null) {
+                    Debug.LogError("Connection Manager was not found!");
+                    return;
+                }
 
                 string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
                 var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
@@ -423,7 +430,7 @@ namespace VRVis.Spawner.Edges {
 
             TargetRegion = cf2.GetRegion(edge.GetTo().lines.from + offset, ARProperty.TYPE.NFP);
             if (TargetRegion == null) {
-                Debug.LogError("Target region was not found!");
+                Debug.LogWarning("Target region was not found!");
             }
 
             // code file error handling

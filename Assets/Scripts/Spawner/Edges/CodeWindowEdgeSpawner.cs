@@ -26,6 +26,8 @@ namespace VRVis.Spawner {
         [Tooltip("The UI element that indicates the existence of references to a method and allows opening those.")]
         public GameObject refPrefab;
 
+        public GameObject connectionManager;
+
         /// <summary>
         /// Stores instances of connection instances of spawned edges.<para/>
         /// key = edge id, value = connection instance
@@ -229,7 +231,10 @@ namespace VRVis.Spawner {
                 }
             }
 
-            var connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+            if (connectionManager == null) {
+                connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
+            }
+
             string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
             var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
             connectionComponent.points[0].color = Color.cyan;
