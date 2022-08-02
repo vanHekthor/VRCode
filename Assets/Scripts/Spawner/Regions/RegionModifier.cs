@@ -449,6 +449,15 @@ namespace VRVis.Spawner.Regions {
                 }
             }
 
+            if (ApplicationLoader.GetInstance().propertyValueRangeWithZero) {
+                if (min >= 0 && max >= 0) {
+                    min = 0;
+                }
+                else if (min <= 0 && max <= 0) {
+                    max = 0;
+                }
+            }
+
             // [P1] min/max explicitly set for this method mapping
             if (explicitMinMax.IsMinValueSet()) { min = explicitMinMax.GetMinValue(); }
             if (explicitMinMax.IsMaxValueSet()) { max = explicitMinMax.GetMaxValue(); }

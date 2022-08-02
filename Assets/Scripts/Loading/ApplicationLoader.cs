@@ -39,6 +39,7 @@ namespace VRVis.IO {
         public bool validateAndEvaluateOnStartUp;
         public bool activateAllEdgeLinksOnStartUp;
         public bool showPropertyInCodeOnStartUp;
+        public bool propertyValueRangeWithZero;
 
 
         // --------------------------------------------------------------------
