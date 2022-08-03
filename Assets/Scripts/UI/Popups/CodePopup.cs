@@ -148,9 +148,9 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             return;
         }
 
-        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
+        edgeConnection.TargetMethodHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
 
-        var target = mode == Mode.link ? edgeConnection.LineHighlight.GetComponent<RectTransform>() : edgeConnection.GetStart().GetComponent<RectTransform>();
+        var target = mode == Mode.link ? edgeConnection.TargetMethodHighlight.GetComponent<RectTransform>() : edgeConnection.GetStart().GetComponent<RectTransform>();
         spawnedFileInstance.ScrollTo(target);
     }
 

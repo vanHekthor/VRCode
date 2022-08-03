@@ -271,7 +271,7 @@ public class CodeWindowMethodRefButton : MonoBehaviour, IPointerDownHandler, IPo
 
         var edgeConnection = SpawnEdgeConnection(Ref.DeclarationFileInstance, fileInstance);
 
-        edgeConnection.LineHighlight = HighlightCodeAreaInDeclarationFile(edgeConnection.GetStartCodeFileInstance());
+        edgeConnection.TargetMethodHighlight = HighlightCodeAreaInFileInstance(edgeConnection.GetStartCodeFileInstance(), Ref.RefEdge.GetTo().lines.from, Ref.RefEdge.GetTo().lines.to);
 
         if (!success) {
             string name = "";
@@ -287,13 +287,11 @@ public class CodeWindowMethodRefButton : MonoBehaviour, IPointerDownHandler, IPo
         return edgeConnection;
     }
 
-    private LineHighlight HighlightCodeAreaInDeclarationFile(CodeFileReferences fileInstance) {
-        int startLineToHighlight = Ref.RefEdge.GetTo().lines.from;
-        int endLineToHighlight = Ref.RefEdge.GetTo().lines.to;
-        var highlight = fileInstance.SpawnMethodHighlight(startLineToHighlight, endLineToHighlight);
+    private LineHighlight HighlightCodeAreaInFileInstance(CodeFileReferences fileInstance, int startLine, int endLine) {
+        var highlight = fileInstance.SpawnMethodHighlight(startLine, endLine);
         if (highlight == null) {
-            Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
-                endLineToHighlight + " inside code window for " + CallingFile.GetNode().GetName());
+            Debug.LogError("Could not highlight the lines " + startLine + " to " +
+                endLine + " inside code window for " + CallingFile.GetNode().GetName());
         }
 
         return highlight;

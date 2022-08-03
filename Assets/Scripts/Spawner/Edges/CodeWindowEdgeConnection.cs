@@ -76,7 +76,7 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show bezier curve control points in editor")]
         public bool showControlPointGizmos = false;
 
-        public LineHighlight LineHighlight { get; set; }
+        public LineHighlight TargetMethodHighlight { get; set; }
 
         public Vector3 LineStart { get; private set; }
         public Vector3 ControlPoint1 { get; private set; }
@@ -282,10 +282,9 @@ namespace VRVis.Spawner.Edges {
                 }
             }
 
-            if (LineHighlight != null && !keepLineHighlight) {
-                var fileInstance = GetEndCodeFileInstance();
+            if (TargetMethodHighlight != null && !keepLineHighlight) {
                 toWindowRefs.RemoveMethodHighlight(toWindowRefs.GetCodeFile().GetNode().GetRelativePath(), edge.GetTo().lines.from);
-                Destroy(LineHighlight.gameObject);
+                Destroy(TargetMethodHighlight.gameObject);
             }
 
             if (!keepCallGraphEdgeMarking) {

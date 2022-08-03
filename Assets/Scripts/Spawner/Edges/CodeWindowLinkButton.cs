@@ -272,7 +272,7 @@ public class CodeWindowLinkButton : MonoBehaviour, IPointerDownHandler, IPointer
 
         var edgeConnection = SpawnEdgeConnection(Link.BaseFileInstance, fileInstance);        
 
-        edgeConnection.LineHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
+        edgeConnection.TargetMethodHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
 
         if (!success) {
             string name = "";
