@@ -236,12 +236,10 @@ namespace VRVis.Spawner.File {
         }
 
         /// <summary>
-        /// Spawns a highlighted area for the passed paramaters.
+        /// Spawns a highlighted area from the passed start line to the end line.
         /// </summary>
         /// <param name="start"></param>
         /// <param name="end"></param>
-        /// <param name="width"></param>
-        /// <param name="lineHeight">height of a single line</param>
         /// <returns>line highlight component of the instantiated highlight object</returns>
         public LineHighlight SpawnLineHighlight(int start, int end) {
             float lineHeight = codeFile.GetLineInfo().lineHeight;
