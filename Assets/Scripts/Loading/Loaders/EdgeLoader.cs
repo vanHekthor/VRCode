@@ -89,11 +89,12 @@ namespace VRVis.IO {
         /// Returns null if there are no edges for this file!
         /// </summary>
         public IEnumerable<Edge> GetEdgesOfFile(CodeFile codeFile, string configName) {
+            List<Edge> list = new List<Edge>();
             var key = Tuple.Create(codeFile, configName);
-            if (!fileEdges.ContainsKey(key)) { return null; }
+
+            if (!fileEdges.ContainsKey(key)) { return list; }
 
             // gather all the according edge instances
-            List<Edge> list = new List<Edge>();
             foreach (uint edgeID in fileEdges[key]) {
                 if (!edges.ContainsKey(edgeID)) { continue; }
                 list.Add(edges[edgeID]);
@@ -112,11 +113,12 @@ namespace VRVis.IO {
         }
 
         public IEnumerable<Edge> GetRefEdgesOfFile(CodeFile codeFile, string configName) {
+            List<Edge> list = new List<Edge>();
             var key = Tuple.Create(codeFile, configName);
-            if (!refEdges.ContainsKey(key)) { return null; }
+
+            if (!refEdges.ContainsKey(key)) { return list; }
 
             // gather all the according edge instances
-            List<Edge> list = new List<Edge>();
             foreach (uint edgeID in refEdges[key]) {
                 if (!edges.ContainsKey(edgeID)) { continue; }
                 list.Add(edges[edgeID]);
@@ -130,6 +132,7 @@ namespace VRVis.IO {
             var refEdges = GetRefEdgesOfFile(codeFile, configName);
 
             List<Edge> refEdgesOfMethod = new List<Edge>();
+
             foreach (var edge in refEdges) {
                 string refEdgeEndMethodString = $"{edge.GetTo().file}:{edge.GetTo().lines.from}";
                 if (endMethodString == refEdgeEndMethodString) refEdgesOfMethod.Add(edge);
@@ -143,6 +146,7 @@ namespace VRVis.IO {
             var outEdges = GetEdgesOfFile(codeFile, configName);
 
             List<Edge> outEdgesOfMethod = new List<Edge>();
+
             foreach (var edge in outEdges) {
                 string outEdgeStartMethodString = $"{edge.GetFrom().file}:{edge.GetFrom().callMethodLines.from}";
                 if (startMethodString == outEdgeStartMethodString) outEdgesOfMethod.Add(edge);
