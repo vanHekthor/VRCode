@@ -149,7 +149,7 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
         }
 
         var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
-        edgeConnection.CallingMethodHighlight = HighlightCodeAreaInFileInstance(edgeConnection.GetStartCodeFileInstance(), edge.GetFrom().callMethodLines.from, edge.GetFrom().callMethodLines.to);
+        edgeConnection.CallMethodHighlight = HighlightCodeAreaInFileInstance(edgeConnection.GetStartCodeFileInstance(), edge.GetFrom().callMethodLines.from, edge.GetFrom().callMethodLines.to);
         edgeConnection.TargetMethodHighlight = HighlightCodeAreaInFileInstance(edgeConnection.GetEndCodeFileInstance(), edge.GetTo().lines.from, edge.GetTo().lines.to);
 
         var target = mode == Mode.link ? edgeConnection.TargetMethodHighlight.GetComponent<RectTransform>() : edgeConnection.GetStart().GetComponent<RectTransform>();

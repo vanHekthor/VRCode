@@ -76,7 +76,7 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show bezier curve control points in editor")]
         public bool showControlPointGizmos = false;
 
-        public LineHighlight CallingMethodHighlight { get; set; }
+        public LineHighlight CallMethodHighlight { get; set; }
         public LineHighlight TargetMethodHighlight { get; set; }
 
         public Vector3 LineStart { get; private set; }
@@ -266,16 +266,25 @@ namespace VRVis.Spawner.Edges {
             var edgesWithSameStartMethod = edgeLoader.GetOutgoingEdgesOfMethod(fromWindowRefs.GetCodeFile(), edge.GetFrom().callMethodLines.from, ConfigManager.GetInstance().selectedConfig);
             var edgesWithSameStartAndEndMethod = edgeLoader.GetEdges(edge.GetFrom().file, edge.GetFrom().callMethodLines.from, edge.GetTo().file, edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
             var edgesWithSameEndMethod = edgeLoader.GetRefEdgesOfMethod(toWindowRefs.GetCodeFile(), edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
-            var edgesThatFollow = edgeLoader.GetOutgoingEdgesOfMethod(toWindowRefs.GetCodeFile(), edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
+            var edgesGoingIntoCallMethod = edgeLoader.GetRefEdgesOfMethod(fromWindowRefs.GetCodeFile(), edge.GetFrom().callMethodLines.from, ConfigManager.GetInstance().selectedConfig);
+            var edgesGoingOutOfTargetMethod = edgeLoader.GetOutgoingEdgesOfMethod(toWindowRefs.GetCodeFile(), edge.GetTo().lines.from, ConfigManager.GetInstance().selectedConfig);
 
-            bool keepCallingMethodHighlight = false;
+            bool keepCallMethodHighlight = false;
             bool keepTargetMethodHighlight = false;
             bool keepCallGraphEdgeMarking = false;
 
             foreach (var e in edgesWithSameStartMethod) {
                 if (edge.GetID() == e.GetID()) continue;
                 if (fs.edgeSpawner.EdgeIsSpawned(e)) {
-                    keepCallingMethodHighlight = true;
+                    keepCallMethodHighlight = true;
+                    break;
+                }
+            }
+
+            foreach (var e in edgesGoingIntoCallMethod) {
+                if (edge.GetID() == e.GetID()) continue;
+                if (fs.edgeSpawner.EdgeIsSpawned(e)) {
+                    keepCallMethodHighlight = true;
                     break;
                 }
             }
@@ -288,7 +297,7 @@ namespace VRVis.Spawner.Edges {
                 }
             }
 
-            foreach (var e in edgesThatFollow) {
+            foreach (var e in edgesGoingOutOfTargetMethod) {
                 if (edge.GetID() == e.GetID()) continue;
                 if (fs.edgeSpawner.EdgeIsSpawned(e)) {
                     keepTargetMethodHighlight = true;
@@ -301,6 +310,11 @@ namespace VRVis.Spawner.Edges {
                 if (fs.edgeSpawner.EdgeIsSpawned(e)) {
                     keepCallGraphEdgeMarking = true;
                 }
+            }
+
+            if (CallMethodHighlight != null && !keepCallMethodHighlight) {
+                fromWindowRefs.RemoveMethodHighlight(fromWindowRefs.GetCodeFile().GetNode().GetRelativePath(), edge.GetFrom().callMethodLines.from);
+                Destroy(CallMethodHighlight.gameObject);
             }
 
             if (TargetMethodHighlight != null && !keepTargetMethodHighlight) {
