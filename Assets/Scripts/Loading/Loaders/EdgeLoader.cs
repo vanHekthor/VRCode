@@ -125,8 +125,8 @@ namespace VRVis.IO {
             return list;
         }
 
-        public IEnumerable<Edge> GetRefEdgesOfMethod(CodeFile codeFile, int endFileLineNumber, string configName) {
-            string endMethodString = $"{codeFile.GetNode().GetRelativePath()}:{endFileLineNumber}";
+        public IEnumerable<Edge> GetRefEdgesOfMethod(CodeFile codeFile, int endFileMethodStartLine, string configName) {
+            string endMethodString = $"{codeFile.GetNode().GetRelativePath()}:{endFileMethodStartLine}";
             var refEdges = GetRefEdgesOfFile(codeFile, configName);
 
             List<Edge> refEdgesOfMethod = new List<Edge>();
@@ -136,6 +136,19 @@ namespace VRVis.IO {
             }
 
             return refEdgesOfMethod;
+        }
+
+        public IEnumerable<Edge> GetOutgoingEdgesOfMethod(CodeFile codeFile, int startFileMethodStartLine, string configName) {
+            string startMethodString = $"{codeFile.GetNode().GetRelativePath()}:{startFileMethodStartLine}";
+            var outEdges = GetEdgesOfFile(codeFile, configName);
+
+            List<Edge> outEdgesOfMethod = new List<Edge>();
+            foreach (var edge in outEdges) {
+                string outEdgeStartMethodString = $"{edge.GetFrom().file}:{edge.GetFrom().callMethodLines.from}";
+                if (startMethodString == outEdgeStartMethodString) outEdgesOfMethod.Add(edge);
+            }
+
+            return outEdgesOfMethod;
         }
 
         public IEnumerable<Edge> GetEdges(string relativeStartFilePath, int startFileLineNumber, string relativeEndFilePath, int endFileLineNumber, string configName) {
