@@ -148,7 +148,8 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             return;
         }
 
-        edgeConnection.TargetMethodHighlight = HighlightCodeAreaInTargetfile(edgeConnection.GetEndCodeFileInstance());
+        var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
+        edgeConnection.TargetMethodHighlight = HighlightCodeAreaInFileInstance(edgeConnection.GetEndCodeFileInstance(), edge.GetTo().lines.from, edge.GetTo().lines.to);
 
         var target = mode == Mode.link ? edgeConnection.TargetMethodHighlight.GetComponent<RectTransform>() : edgeConnection.GetStart().GetComponent<RectTransform>();
         spawnedFileInstance.ScrollTo(target);
@@ -193,26 +194,22 @@ public class CodePopup : MonoBehaviour, IPointerClickHandler {
             ClickEvent.Invoke();
     }
 
-        private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
-            var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
-            var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, edge);
+    private CodeWindowEdgeConnection SpawnEdgeConnection(CodeFileReferences startFileInstance, CodeFileReferences endFileInstance) {
+        var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
+        var edgeConnection = fs.edgeSpawner.SpawnSingleEdgeConnection(startFileInstance, endFileInstance, edge);
 
-            return edgeConnection;
+        return edgeConnection;
+    }
+
+    private LineHighlight HighlightCodeAreaInFileInstance(CodeFileReferences fileInstance, int startLine, int endLine) {
+        var highlight = fileInstance.SpawnMethodHighlight(startLine, endLine);
+        if (highlight == null) {
+            Debug.LogError("Could not highlight the lines " + startLine + " to " +
+                endLine + " inside code window for " + fileInstance.GetCodeFile().GetNode().GetName());
         }
 
-        private LineHighlight HighlightCodeAreaInTargetfile(CodeFileReferences fileInstance) {
-            var edge = mode == Mode.link ? Link.EdgeLink : Ref.RefEdge;
-
-            int startLineToHighlight = edge.GetTo().lines.from;
-            int endLineToHighlight = edge.GetTo().lines.to;
-            var highlight = fileInstance.SpawnMethodHighlight(startLineToHighlight, endLineToHighlight);
-            if (highlight == null) {
-                Debug.LogError("Could not highlight the lines " + startLineToHighlight + " to " +
-                    endLineToHighlight + " inside code window for " + fileInstance.GetCodeFile().GetNode().GetName());
-            }
-
-            return highlight;
-        }
+        return highlight;
+    }
 
     /// <summary>
     /// Loads the highlighted source code from the file.<para/>

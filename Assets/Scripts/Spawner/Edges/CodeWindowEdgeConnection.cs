@@ -76,6 +76,7 @@ namespace VRVis.Spawner.Edges {
         [Tooltip("Show bezier curve control points in editor")]
         public bool showControlPointGizmos = false;
 
+        public LineHighlight DeclarationMethodHighlight { get; set; }
         public LineHighlight TargetMethodHighlight { get; set; }
 
         public Vector3 LineStart { get; private set; }
