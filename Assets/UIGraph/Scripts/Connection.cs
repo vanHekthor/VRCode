@@ -99,14 +99,14 @@ public class Connection : MonoBehaviour {
             headArrow = Instantiate(arrowHeadPrefab, transform, true).transform;
             headArrow.name = "headArrow";
             headArrow.position = line.GetPosition(0);
-            headArrow.rotation = Quaternion.LookRotation(target[0].position - headArrow.position);
+            headArrow.rotation = Quaternion.LookRotation(line.GetPosition(0) - line.GetPosition(1));
         }
 
         if (tailArrow == null && endArrow) {
             tailArrow = Instantiate(arrowHeadPrefab, transform, true).transform;
             tailArrow.name = "tailArrow";
             tailArrow.position = line.GetPosition(1);
-            tailArrow.rotation = Quaternion.LookRotation(target[1].position - tailArrow.position);
+            tailArrow.rotation = Quaternion.LookRotation(line.GetPosition(1) - line.GetPosition(0));
         }
 
     }
