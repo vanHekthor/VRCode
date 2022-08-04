@@ -1,5 +1,6 @@
 ﻿using UnityEngine;
 using VRVis.Elements;
+using VRVis.IO;
 
 [RequireComponent(typeof(LineRenderer)), ExecuteInEditMode]
 public class Connection : MonoBehaviour {
@@ -9,6 +10,12 @@ public class Connection : MonoBehaviour {
 
     public ConnectionPoint.ConnectionDirection startDirection = ConnectionPoint.ConnectionDirection.East;
     public ConnectionPoint.ConnectionDirection endDirection = ConnectionPoint.ConnectionDirection.West;
+
+    public bool startArrow;
+    public bool endArrow;
+
+    private Transform headArrow;
+    private Transform tailArrow;
 
     public Edge Edge { get; set; }
 
@@ -74,14 +81,41 @@ public class Connection : MonoBehaviour {
 
             node1.AddPreviousNode(node0);
             node0.AddNextNode(node1);
-        }    
+        }
+
+        headArrow = transform.Find("headArrow");
+        tailArrow = transform.Find("tailArrow");
+
+        if (headArrow != null && tailArrow != null) return;
+
+        var connectionManager = transform.GetComponentInParent<ConnectionManager>();
+        if (connectionManager == null) {
+            connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0].GetComponent<ConnectionManager>();
+        }
+
+        var arrowHeadPrefab = connectionManager.arrowHeadPrefab;
+
+        if (headArrow == null && startArrow) {
+            headArrow = Instantiate(arrowHeadPrefab, transform, true).transform;
+            headArrow.name = "headArrow";
+            headArrow.position = line.GetPosition(0);
+            headArrow.rotation = Quaternion.LookRotation(target[0].position - headArrow.position);
+        }
+
+        if (tailArrow == null && endArrow) {
+            tailArrow = Instantiate(arrowHeadPrefab, transform, true).transform;
+            tailArrow.name = "tailArrow";
+            tailArrow.position = line.GetPosition(1);
+            tailArrow.rotation = Quaternion.LookRotation(target[1].position - tailArrow.position);
+        }
+
     }
 
     void OnDestroy() {
-		ConnectionManager.RemoveConnection(this);
-	}
+        ConnectionManager.RemoveConnection(this);
+    }
 
-	void Update() {
+    void Update() {
 		if (isValid) {
 			if (target[0].hasChanged || target[1].hasChanged) {
 				UpdateCurve();

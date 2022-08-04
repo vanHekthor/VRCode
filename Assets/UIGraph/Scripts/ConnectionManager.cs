@@ -26,6 +26,7 @@ public class ConnectionManager : MonoBehaviour {
 	}
 
 	[SerializeField] Connection connectionPrefab;
+    public GameObject arrowHeadPrefab;
 	[SerializeField] List<Connection> connections = new List<Connection>();
 
 	public static Connection FindConnection(RectTransform t1, RectTransform t2) {
