@@ -203,4 +203,21 @@ public class Connection : MonoBehaviour {
 		target[0] = t1;
 		target[1] = t2;
 	}
+
+    public void ChangeColor(Color color) {
+        points[0].color = color;
+        points[1].color = color;
+
+        if (headArrow != null) {
+            var headArrowRenderer = headArrow.GetComponent<LineRenderer>();
+            headArrowRenderer.startColor = color;
+            headArrowRenderer.endColor = color;
+        }
+
+        if (tailArrow != null) {
+            var tailArrowRenderer = tailArrow.GetComponent<LineRenderer>();
+            tailArrowRenderer.startColor = color;
+            tailArrowRenderer.endColor = color;
+        }
+    }
 }

@@ -237,8 +237,9 @@ namespace VRVis.Spawner {
 
             string connectionName = $"{edge.GetFrom().file.Replace('/', '.')}:{edge.GetFrom().callMethodLines.from} <> {edge.GetTo().file.Replace('/', '.')}:{edge.GetTo().lines.from}";
             var connectionComponent = connectionManager.transform.Find(connectionName).GetComponent<Connection>();
-            connectionComponent.points[0].color = Color.cyan;
-            connectionComponent.points[1].color = Color.cyan;
+            //connectionComponent.points[0].color = Color.cyan;
+            //connectionComponent.points[1].color = Color.cyan;
+            connectionComponent.ChangeColor(Color.cyan);
 
             return (CodeWindowEdgeConnection)linkOrEdge;
         }
