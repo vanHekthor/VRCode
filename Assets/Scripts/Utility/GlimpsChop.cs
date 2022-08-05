@@ -4,9 +4,9 @@ namespace VRVis.Utilities.Glimps {
 
     public partial class GlimpsChop {
         [JsonProperty("startLineNumber")]
-        public long StartLineNumber { get; set; }
+        public int StartLineNumber { get; set; }
 
         [JsonProperty("endLineNumber")]
-        public long EndLineNumber { get; set; }
+        public int EndLineNumber { get; set; }
     }
 }

@@ -7,6 +7,7 @@ using VRVis.Settings;
 using VRVis.Spawner;
 using VRVis.Testing.Interaction;
 using VRVis.Utilities;
+using VRVis.Utilities.Glimps;
 
 namespace VRVis.IO {
 
@@ -81,6 +82,7 @@ namespace VRVis.IO {
         private RegionLoader regionLoader;
         private EdgeLoader edgeLoader;
         private ValueMappingsLoader mappingsLoader;
+        private GlimpsChopsLoader chopsLoader;
 
         /// <summary>Application settings regarding currently shown data (e.g. selected property..)</summary>
         private readonly ApplicationSettings appSettings = new ApplicationSettings();
@@ -160,6 +162,9 @@ namespace VRVis.IO {
                 Debug.LogError("Failed to load mappings!");
             }
 
+            // load chops data from glimps
+            chopsLoader = new GlimpsChopsLoader();
+            chopsLoader.LoadChops();
 
             // add default active features loaded by region loader
             if (addFeatureRegions && regionLoader.LoadedSuccessful()) {
@@ -250,7 +255,8 @@ namespace VRVis.IO {
 
         public ValueMappingsLoader GetMappingsLoader() { return mappingsLoader; }
 
-        
+        public GlimpsChopsLoader GetChopsLoader() { return chopsLoader; }
+
         // SPAWNER
 
         /// <summary>
