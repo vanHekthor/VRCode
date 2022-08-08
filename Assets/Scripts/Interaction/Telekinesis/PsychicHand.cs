@@ -136,11 +136,15 @@ namespace VRVis.Interaction.Telekinesis {
 
         public override bool ButtonDown() {
             if (!IsAvailable()) { return false; }
+            if (FocusedTelekinesable == null && GrabbedTelekinesable == null) { return false; }
+
             return grip.GetStateDown(dominantHand.handType);
         }
 
         public override bool ButtonUp() {
             if (!IsAvailable()) { return false; }
+            if (FocusedTelekinesable == null && GrabbedTelekinesable == null) { return false; }
+
             return grip.GetStateUp(dominantHand.handType);
         }
 
