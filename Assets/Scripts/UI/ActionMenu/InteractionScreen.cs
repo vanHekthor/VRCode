@@ -7,7 +7,7 @@ using VRVis.Spawner.Edges;
 
 public class InteractionScreen : MonoBehaviour {
     public GameObject codePopupPrefab;
-    public float distanceToPlayer = 1.8f;
+    public float distanceToPlayer = 1.3f;
     public float horizontalOffset = -0.1f;
 
     public GameObject callGraph;
