@@ -12,7 +12,7 @@ namespace VRVis.Elements {
     public class LineHighlight : MonoBehaviour {
         private Image background;
 
-        void Start() {
+        void Awake() {
             background = transform.GetComponent<Image>();
         }
 

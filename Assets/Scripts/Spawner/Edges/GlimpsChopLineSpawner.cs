@@ -21,7 +21,7 @@ public class GlimpsChopLineSpawner : MonoBehaviour {
         if (!chops.ContainsKey(relativePath)) { return; }
 
         foreach (var entry in chops[relativePath]) {
-            fileInstance.SpawnLineHighlight(entry.StartLineNumber, entry.EndLineNumber);
+            fileInstance.SpawnLineHighlight(entry.StartLineNumber, entry.EndLineNumber, new Color(1, 0.9f, 0, 0.035f));
         }        
     }
 }

@@ -241,7 +241,10 @@ namespace VRVis.Spawner.File {
         /// <param name="start"></param>
         /// <param name="end"></param>
         /// <returns>line highlight component of the instantiated highlight object</returns>
-        public LineHighlight SpawnLineHighlight(int start, int end) {
+        public LineHighlight SpawnLineHighlight(int start, int end, Color? color = null) {
+            // default color
+            Color lineColor = color ?? new Color(1, 1, 1, 0.0156f);
+
             float lineHeight = codeFile.GetLineInfo().lineHeight;
             float totalWidth_codeMarking = codeFile.GetLineInfo().lineWidth;
 
@@ -292,6 +295,8 @@ namespace VRVis.Spawner.File {
             RectTransform rt = lineHighlightObject.GetComponent<RectTransform>();
             rt.anchoredPosition = new Vector2(x, y);
             rt.sizeDelta = new Vector2(totalWidth_codeMarking, height);
+
+            lineHighlight.ChangeColor(lineColor);
 
             return lineHighlight;
         }
