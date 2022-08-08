@@ -12,10 +12,10 @@ public class GlimpsChopLineSpawner : MonoBehaviour {
 
     void Start() {
         chops = ApplicationLoader.GetInstance().GetChopsLoader().Chops;
-        FileSpawner.GetInstance().onFileSpawned.AddListener(SpawnChopLineHighlightForFileInstance);
+        FileSpawner.GetInstance().onFileSpawned.AddListener(SpawnChopLineHighlightInFileInstance);
     }
 
-    private void SpawnChopLineHighlightForFileInstance(CodeFileReferences fileInstance) {
+    private void SpawnChopLineHighlightInFileInstance(CodeFileReferences fileInstance) {
         string relativePath = fileInstance.GetCodeFile().GetNode().GetRelativePath();
 
         if (!chops.ContainsKey(relativePath)) { return; }
