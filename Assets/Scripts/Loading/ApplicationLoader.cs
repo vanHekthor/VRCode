@@ -41,6 +41,7 @@ namespace VRVis.IO {
         public bool activateAllEdgeLinksOnStartUp;
         public bool showPropertyInCodeOnStartUp;
         public bool propertyValueRangeWithZero;
+        public bool glimpsUserStudy;
 
 
         // --------------------------------------------------------------------
@@ -162,9 +163,11 @@ namespace VRVis.IO {
                 Debug.LogError("Failed to load mappings!");
             }
 
-            // load chops data from glimps
-            chopsLoader = new GlimpsChopsLoader();
-            chopsLoader.LoadChops();
+            if (glimpsUserStudy) {
+                // load chops data from glimps
+                chopsLoader = new GlimpsChopsLoader();
+                chopsLoader.LoadChops();
+            }
 
             // add default active features loaded by region loader
             if (addFeatureRegions && regionLoader.LoadedSuccessful()) {
