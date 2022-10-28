@@ -9,7 +9,7 @@ namespace VRVis.Interaction.LaserPointer {
     public class LaserPointerEventData : PointerEventData {
 
         public GameObject current;
-        public IUILaserPointer controller;
+        public ALaserPointer controller;
 
         public LaserPointerEventData(EventSystem e) : base(e) { }
 

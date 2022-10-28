@@ -11,7 +11,7 @@ using UnityEngine.EventSystems;
 /// </summary>
 namespace VRVis.Interaction.LaserPointer {
 
-    abstract public class IUILaserPointer : MonoBehaviour {
+    abstract public class ALaserPointer : MonoBehaviour {
 
         public Transform laserOrigin;
         public Color laserColor;

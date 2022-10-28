@@ -27,7 +27,7 @@ namespace VRVis.Interaction.LaserHand {
     /// Some methods are from Wacki as mentioned in the default ViveUILaserPointer script.<para/>
     /// This script is modified to work only in the VRVis system.
     /// </summary>
-    public class LaserHand : IUILaserPointerPickup, IPointerClickHandler {
+    public class LaserHand : ALaserPointer, IPointerClickHandler {
 
         public SteamVR_Action_Boolean toggleButton;
         public SteamVR_Action_Boolean triggerButton;

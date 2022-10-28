@@ -10,7 +10,7 @@ using UnityEngine;
  */
 namespace VRVis.Interaction.LaserPointer {
 
-    abstract public class IUILaserPointerPickup : IUILaserPointer {
+    abstract public class IUILaserPointerPickup : ALaserPointer {
 
         protected override void Update() {
             // Don't do anything.

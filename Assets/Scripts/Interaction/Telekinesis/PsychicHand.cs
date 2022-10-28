@@ -9,7 +9,7 @@ namespace VRVis.Interaction.Telekinesis {
     /// <summary>
     /// Component that can control telekinesables.
     /// </summary>
-    public class PsychicHand : IUILaserPointerPickup {
+    public class PsychicHand : ALaserPointer {
 
         // DEFINABLE IN UNITY EDITOR
         public SteamVR_Action_Boolean toggleButton;

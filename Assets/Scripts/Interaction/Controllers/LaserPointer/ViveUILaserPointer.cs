@@ -9,7 +9,7 @@ using VRVis.Interaction.LaserPointer;
  */
 namespace VRVis.Interaction.Controller {
 
-    public class ViveUILaserPointer : IUILaserPointer {
+    public class ViveUILaserPointer : ALaserPointer {
 
         public Hand controller;
         public SteamVR_Action_Boolean toggleButton;

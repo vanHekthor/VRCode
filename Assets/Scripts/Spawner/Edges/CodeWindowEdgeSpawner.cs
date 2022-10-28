@@ -231,6 +231,10 @@ namespace VRVis.Spawner {
                 }
             }
 
+            if (!ApplicationLoader.GetInstance().glimpsUserStudy) {
+                return (CodeWindowEdgeConnection)linkOrEdge;
+            }
+
             if (connectionManager == null) {
                 connectionManager = GameObject.FindGameObjectsWithTag("ConnectionManager")[0];
             }

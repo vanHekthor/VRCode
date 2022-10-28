@@ -322,7 +322,7 @@ namespace VRVis.Spawner.Edges {
                 Destroy(TargetMethodHighlight.gameObject);
             }
 
-            if (!keepCallGraphEdgeMarking) {
+            if (ApplicationLoader.GetInstance().glimpsUserStudy && !keepCallGraphEdgeMarking) {
                 var edgeSpawner = ApplicationLoader.GetInstance().gameObject.GetComponent<CodeWindowEdgeSpawner>();
                 var connectionManager = edgeSpawner.connectionManager;
                 if (connectionManager == null) {

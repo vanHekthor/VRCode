@@ -39,10 +39,10 @@ namespace VRVis.Interaction.LaserPointer {
 
         private Camera UICamera;
         private PhysicsRaycaster raycaster;
-        private HashSet<IUILaserPointer> _controllers;
+        private HashSet<ALaserPointer> _controllers;
 
         // controller data
-        private Dictionary<IUILaserPointer, ControllerData> _controllerData = new Dictionary<IUILaserPointer, ControllerData>();
+        private Dictionary<ALaserPointer, ControllerData> _controllerData = new Dictionary<ALaserPointer, ControllerData>();
 
 
         protected override void Awake() {
@@ -84,7 +84,7 @@ namespace VRVis.Interaction.LaserPointer {
         /// Adds the controller to be an input provider
         /// and synchronizes the layer masks if desired.
         /// </summary>
-        public void AddController(IUILaserPointer controller) {
+        public void AddController(ALaserPointer controller) {
             if (controller.syncLayerMaskInputModule) { controller.rayLayerMask = layerMask; } // synchronize/override layermasks
             _controllerData.Add(controller, new ControllerData());
 
@@ -93,12 +93,12 @@ namespace VRVis.Interaction.LaserPointer {
             Debug.Log("Laser pointer registered");
         }
 
-        public void RemoveController(IUILaserPointer controller) {
+        public void RemoveController(ALaserPointer controller) {
             _controllerData.Remove(controller);
         }
 
 
-        protected void UpdateCameraPosition(IUILaserPointer controller) {
+        protected void UpdateCameraPosition(ALaserPointer controller) {
 
             // use the laser origin if the user set it
             Transform updateTransform = controller.transform;
@@ -134,7 +134,7 @@ namespace VRVis.Interaction.LaserPointer {
 
             foreach (var pair in _controllerData) {
 
-                IUILaserPointer controller = pair.Key;
+                ALaserPointer controller = pair.Key;
                 ControllerData data = pair.Value;
 
                 // use controller layermask if desired
