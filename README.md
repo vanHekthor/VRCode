@@ -1,14 +1,24 @@
-# VR-VIS Framework
+# SoftVR Framework
 
-Created during the thesis of Leon H. in 2018/19.  
+Initially created during the thesis of Leon H. in 2018/19.
 
 A virtual reality framework to explore and analyze software systems  
 using available performance, feature model, and control flow data.  
 Please refer to the publication for more detailed information.  
 
 The following sections will provide an overview of the repository contents,
-including links to installation instructions and more.  
+including links to installation instructions and more.
 
+# Getting Started
+
+1. Download and install Unity 2018.4.35f1 (https://unity3d.com/get-unity/download/archive). We highly recommend to use the Unity Hub in order to manage multiple Unity versions (https://unity3d.com/get-unity/download).
+2. Install Steam VR through Steam.
+3. Clone this repository.
+4. Open Steam VR.
+5. Connect your VR Headset and Controllers.
+6. Add this repository as a project using the Unity Hub.
+7. Open the project using Unity version 2018.4.35f1.
+8. File -> Open Scene. Open the scenes-folder and select a scene.
 
 # Instructions
 
