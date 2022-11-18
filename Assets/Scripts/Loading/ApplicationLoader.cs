@@ -140,10 +140,12 @@ namespace VRVis.IO {
                 Debug.LogError("Failed to load regions!");
             }
 
-            // load influence model
-            influenceModelLoader = new InfluenceModelLoader(mainPath + influenceModelName, variabilityModelLoader.GetModel().GetOptions());
-            if (!influenceModelLoader.Load()) {
-                Debug.LogError("Failed to load influence model!");
+            if (!glimpsUserStudy) {
+                // load influence model
+                influenceModelLoader = new InfluenceModelLoader(mainPath + influenceModelName, variabilityModelLoader.GetModel().GetOptions());
+                if (!influenceModelLoader.Load()) {
+                    Debug.LogError("Failed to load influence model!");
+                }
             }
 
             // load edges from file
