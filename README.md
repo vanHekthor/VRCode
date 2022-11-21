@@ -11,14 +11,32 @@ including links to installation instructions and more.
 
 # Getting Started
 
-1. Download and install Unity 2018.4.35f1 (https://unity3d.com/get-unity/download/archive). We highly recommend to use the Unity Hub in order to manage multiple Unity versions (https://unity3d.com/get-unity/download).
-2. Install Steam VR through Steam.
-3. Clone this repository.
-4. Open Steam VR.
-5. Connect your VR Headset and Controllers.
-6. Add this repository as a project using the Unity Hub.
-7. Open the project using Unity version 2018.4.35f1.
-8. File -> Open Scene. Open the scenes-folder and select a scene.
+### 1. Download and install Unity 2018.4.35f1
+Download link: https://unity3d.com/get-unity/download/archive). We recommend to use the Unity Hub in order to manage multiple Unity versions (https://unity3d.com/get-unity/download
+
+![image.png](./Documentation/example-imgs/download-unity.png)
+
+### 2. Set up Steam VR.
+
+Download and install Steam VR through Steam. Start it afterwards:
+
+![image.png](./Documentation/example-imgs/steam-vr.png)
+
+Make sure to connect your VR Headset and your controllers.
+
+### 3. Clone this repository.
+```
+git clone git@git.informatik.uni-leipzig.de:mweber/sopro-vr.git
+```
+
+### 4. Open the Unity project
+
+Add this repository as a project (using the Unity Hub):
+
+Open the project using Unity version 2018.4.35f1.
+
+### 5. Select a scene
+File -> Open Scene. Open the scenes-folder and select a scene.
 
 # Instructions
 
