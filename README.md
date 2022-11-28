@@ -31,12 +31,20 @@ git clone git@git.informatik.uni-leipzig.de:mweber/sopro-vr.git
 
 ### 4. Open the Unity project
 
-Add this repository as a project (using the Unity Hub):
+Add this repository as a project (using the Unity Hub).
 
-Open the project using Unity version 2018.4.35f1.
+Afterwards, open the project using Unity version 2018.4.35f1.
 
 ### 5. Select a scene
-File -> Open Scene. Open the scenes-folder and select a scene.
+
+Open a scene in the Unity Editor using File -> Open Scene.
+
+![image.png](./Documentation/example-imgs/open-scene.png)
+
+Select the scenes-folder and choose a scene.
+
+![image.png](./Documentation/example-imgs/scene-folder.png)
+![image-1.png](./Documentation/example-imgs/scene-file.png)
 
 # Instructions
 
