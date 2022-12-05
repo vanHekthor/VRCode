@@ -1,10 +1,9 @@
-# VR-VIS Framework
+# SoftVR Framework
 
-Created during the thesis of Leon H. in 2018/19.  
+Initially created during the thesis of Leon H. in 2018/19 (Bauhaus University Weimar).
+Extended during the thesis of Quoc Suong B. in 2021/22 (Leipzig University).
 
-A virtual reality framework to explore and analyze software systems  
-using available performance, feature model, and control flow data.  
-Please refer to the publication for more detailed information.  
+This virtual reality framework should support developers in detecting and understanding energy- and performance bugs of configurable software systems. It reduces utilization of the working memory by visualizes energy- and performance-influence models, feature models, and data- and control flow information in on tool. This reduces the number of necessary context switches between the information sources that are necessary for bug detection. Further, by utilizing the space and position of objects developers can interact with the software system more naturally in the three-dimensional way.
 
 The following sections will provide an overview of the repository contents,
 including links to installation instructions and more.  
