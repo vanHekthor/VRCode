@@ -1,4 +1,4 @@
-# SoftVR Framework
+# VRCode
 
 Initially created during the thesis of Leon H. in 2018/19 (Bauhaus University Weimar).
 Extended during the thesis of Quoc Suong B. in 2021/22 (Leipzig University).
