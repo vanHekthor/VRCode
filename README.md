@@ -25,7 +25,7 @@ Make sure to connect your VR Headset and your controllers.
 
 ### 3. Clone this repository.
 ```
-git clone git@git.informatik.uni-leipzig.de:mweber/sopro-vr.git
+git clone git@github.com:vanHekthor/VRCode.git
 ```
 
 ### 4. Open the Unity project
