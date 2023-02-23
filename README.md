@@ -1,7 +1,7 @@
 # VRCode
 
 Initially created during the thesis of Leon H. in 2018/19 (Bauhaus University Weimar).
-Extended during the thesis of Quoc Suong B. in 2021/22 (Leipzig University).
+Extended during the thesis of Quoc Duong B. in 2021/22 (Leipzig University).
 
 This virtual reality framework should support developers in detecting and understanding energy- and performance bugs of configurable software systems. It reduces utilization of the working memory by visualizes energy- and performance-influence models, feature models, and data- and control flow information in on tool. This reduces the number of necessary context switches between the information sources that are necessary for bug detection. Further, by utilizing the space and position of objects developers can interact with the software system more naturally in the three-dimensional way.
 
