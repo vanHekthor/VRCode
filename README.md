@@ -1,5 +1,7 @@
 # VRCode
 
+![VRCode_overview](https://user-images.githubusercontent.com/35042166/223375847-3e038fc9-8843-427f-ac02-9a8a92f5d064.png)
+
 Initially created during the thesis of Leon H. in 2018/19 (Bauhaus University Weimar).
 Extended during the thesis of Quoc Duong B. in 2021/22 (Leipzig University).
 
