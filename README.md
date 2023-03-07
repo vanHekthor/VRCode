@@ -8,7 +8,21 @@ This virtual reality framework should support developers in detecting and unders
 The following sections will provide an overview of the repository contents,
 including links to installation instructions and more.
 
-# Getting Started
+## Features
+
+### Code analysis tools
+
+![image](https://user-images.githubusercontent.com/35042166/223368962-7c26fc61-0198-48fa-bd00-00860954374c.png)
+
+### Laser and gesture control
+
+![image](https://user-images.githubusercontent.com/35042166/223369126-d799155b-c0f8-4694-b764-26c23b77386f.png)
+
+### Software component analysis with Code City 
+
+![image](https://user-images.githubusercontent.com/35042166/223369206-90bdffbc-bd57-4b42-abb8-3efb96426a3a.png)
+
+## Getting Started
 
 ### 1. Download and install Unity 2018.4.35f1
 Download link: https://unity3d.com/get-unity/download/archive). We recommend to use the Unity Hub in order to manage multiple Unity versions (https://unity3d.com/get-unity/download
@@ -92,11 +106,3 @@ The following tools will help you to perform e.g. syntax highlighting on your pr
 
 - [Syntax Highlighter](Tools/code_to_rt/) - to show syntax highlighting in Unity
 - [NFP Convertion Tool](Tools/nfp_conversion/) - to convert measurement data to the regions format
-
-
-<br/>
-
-![Cone Tree for Casacore](Documentation/example-imgs/software-graph-casacore.png)
-![Code City Visualization for Catena](Documentation/example-imgs/code-city.png)
-![Feature Diagram for Catena](Documentation/example-imgs/feature-diagram-catena.png)
-![Code Windows](Documentation/example-imgs/code-windows.png)
